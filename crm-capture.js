@@ -227,7 +227,9 @@
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.apiToken}`,
+          // Authorization: `Bearer ${this.config.apiToken}`,
+          "x-api-key":
+            this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
         },
         body: JSON.stringify(payload),
       })

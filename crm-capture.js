@@ -223,16 +223,12 @@
     submitLead(leadData) {
       this.log("Submitting lead: ", leadData);
 
-      // Clone without site_id and api_token
       const { site_id, api_token, ...payload } = leadData;
-
-      // payload.site_id = this.config.siteId;
 
       fetch(this.config.endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // Authorization: `Bearer ${this.config.apiToken}`,
           "x-api-key":
             this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
         },
@@ -249,12 +245,12 @@
         .then((data) => {
           this.log("Lead submitted successfully:", data);
           this.dispatchEvent("crmLeadSuccess", data);
-          if (this.config.onSuccess) this.config.onSuccess(data); // ✅ success callback
+          if (this.config.onSuccess) this.config.onSuccess(data);
         })
         .catch((error) => {
           this.log("Error submitting lead:", error, "error");
           this.dispatchEvent("crmLeadError", error);
-          if (this.config.onError) this.config.onError(error); // ✅ error callback
+          if (this.config.onError) this.config.onError(error);
         });
     }
 
@@ -263,13 +259,10 @@
       document.dispatchEvent(event);
     }
 
-    log(message, data, error, level = "log") {
+    log(message, data, level = "log") {
       if (this.config.debug || level === "error") {
         console[level](`[Gamyam CRM] ${message}`, data || "");
       }
-
-      if (this.config.onSuccess) this.config.onSuccess(data, error);
-      if (this.config.onError) this.config.onError(error);
     }
   }
 

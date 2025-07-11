@@ -10,7 +10,7 @@
   const defaults = {
     siteId: "",
     apiToken: "",
-    endpoint: "http://localhost:5000/lead",
+    endpoint: "https://api.gamyam.ai/leads/v1/leads",
     // Default field mappings to your DTO
     fieldMappings: {
       leadOwner: ["leadOwner", "owner"],

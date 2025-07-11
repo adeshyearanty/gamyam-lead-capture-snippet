@@ -138,7 +138,10 @@
     sanitizeInput(value) {
       if (!value) return value;
       // Basic HTML stripping
-      return value.toString().replace(/<\/?[^>]+(>|$)/g, "");
+      return value
+        .toString()
+        .replace(/<script.*?>.*?<\/script>/gi, "")
+        .replace(/<\/?[^>]+(>|$)/g, "");
     }
 
     prepareLeadData(formData) {
@@ -223,6 +226,8 @@
       // Clone without site_id and api_token
       const { site_id, api_token, ...payload } = leadData;
 
+      // payload.site_id = this.config.siteId;
+
       fetch(this.config.endpoint, {
         method: "POST",
         headers: {
@@ -244,10 +249,12 @@
         .then((data) => {
           this.log("Lead submitted successfully:", data);
           this.dispatchEvent("crmLeadSuccess", data);
+          if (this.config.onSuccess) this.config.onSuccess(data); // ✅ success callback
         })
         .catch((error) => {
           this.log("Error submitting lead:", error, "error");
           this.dispatchEvent("crmLeadError", error);
+          if (this.config.onError) this.config.onError(error); // ✅ error callback
         });
     }
 
@@ -256,10 +263,13 @@
       document.dispatchEvent(event);
     }
 
-    log(message, data, level = "log") {
+    log(message, data, error, level = "log") {
       if (this.config.debug || level === "error") {
         console[level](`[Gamyam CRM] ${message}`, data || "");
       }
+
+      if (this.config.onSuccess) this.config.onSuccess(data, error);
+      if (this.config.onError) this.config.onError(error);
     }
   }
 
@@ -278,6 +288,14 @@
         endpoint:
           scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
         debug: scriptEl.hasAttribute("data-crm-debug"),
+        onSuccess:
+          typeof window.crmCaptureConfig?.onSuccess === "function"
+            ? window.crmCaptureConfig.onSuccess
+            : null,
+        onError:
+          typeof window.crmCaptureConfig?.onError === "function"
+            ? window.crmCaptureConfig.onError
+            : null,
       };
       new CRMLeadCapture(options);
     }
@@ -286,22 +304,6 @@
 
 if (typeof window !== "undefined") {
   window.CRMLeadCapture = CRMLeadCapture;
-
-  document.addEventListener("DOMContentLoaded", () => {
-    const scriptEl = document.querySelector(
-      "script[data-crm-site-id], script[data-crm-api-token]"
-    );
-    if (scriptEl) {
-      const options = {
-        siteId: scriptEl.getAttribute("data-crm-site-id"),
-        apiToken: scriptEl.getAttribute("data-crm-api-token"),
-        endpoint:
-          scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
-        debug: scriptEl.hasAttribute("data-crm-debug"),
-      };
-      new CRMLeadCapture(options);
-    }
-  });
 }
 
 // ✅ Add export for test

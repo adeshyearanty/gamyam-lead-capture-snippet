@@ -56,8 +56,74 @@
     }
 
     initialize() {
-      this.bindEvents();
-      this.log("Initialized Gamyam.ai CRM Lead Capture");
+      if (this.config.reactForms) {
+        this.setupReactListener();
+      } else {
+        this.bindEvents();
+      }
+      this.log("Initialized for React/Next.js");
+    }
+
+    setupReactListener() {
+      // Listen for clicks anywhere in document
+      document.addEventListener("click", (e) => {
+        const btn = e.target.closest(".crm-capture-btn");
+        if (btn) {
+          e.preventDefault();
+          const form = btn.closest("form");
+          if (form) this.handleReactForm(form);
+        }
+      });
+
+      // Alternative mutation observer for dynamic forms
+      if (typeof MutationObserver !== "undefined") {
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (node.nodeType === 1) {
+                // Element node
+                const forms = node.querySelectorAll
+                  ? node.querySelectorAll("form")
+                  : [];
+                forms.forEach((form) => {
+                  if (form.querySelector(".crm-capture-btn")) {
+                    form.addEventListener("submit", (e) => {
+                      e.preventDefault();
+                      this.handleReactForm(form);
+                    });
+                  }
+                });
+              }
+            });
+          });
+        });
+
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
+      }
+    }
+
+    handleReactForm(form) {
+      // Special handling for React forms
+      const formData = new FormData(form);
+      const data = {};
+
+      formData.forEach((value, key) => {
+        data[key] = value;
+      });
+
+      const leadData = this.prepareLeadData(data);
+      if (this.validateLeadData(leadData)) {
+        this.submitLead(leadData).then(() => {
+          // Trigger React's state update if needed
+          if (form._reactRootContainer) {
+            const event = new Event("crmLeadSuccess");
+            form.dispatchEvent(event);
+          }
+        });
+      }
     }
 
     bindEvents() {

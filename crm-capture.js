@@ -9,7 +9,7 @@
   // Configuration defaults
   const defaults = {
     siteId: "",
-    apiToken: "",
+    apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
     endpoint: "https://api.gamyam.ai/leads/v1/leads",
     // Default field mappings to your DTO
     fieldMappings: {
@@ -51,7 +51,15 @@
   // Main class
   class CRMLeadCapture {
     constructor(options) {
-      this.config = { ...defaults, ...options };
+      this.config = {
+        ...defaults,
+        ...options,
+        // Only override apiToken if explicitly provided in options
+        apiToken:
+          options?.apiToken !== undefined
+            ? options.apiToken
+            : defaults.apiToken,
+      };
       this.initialize();
     }
 
@@ -265,11 +273,6 @@
         return false;
       }
 
-      if (!this.config.siteId && !this.config.apiToken) {
-        this.log("Site ID or API Token is required", "error");
-        return false;
-      }
-
       // Email format validation
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(leadData.email)) {
@@ -295,8 +298,7 @@
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key":
-            this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
+          "x-api-key": this.config.apiToken,
         },
         body: JSON.stringify(payload),
       })
@@ -343,7 +345,10 @@
     if (scriptEl) {
       const options = {
         siteId: scriptEl.getAttribute("data-crm-site-id"),
-        apiToken: scriptEl.getAttribute("data-crm-api-token"),
+        // Only set apiToken if explicitly provided in data attribute
+        apiToken: scriptEl.hasAttribute("data-crm-api-token")
+          ? scriptEl.getAttribute("data-crm-api-token")
+          : undefined,
         endpoint:
           scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
         debug: scriptEl.hasAttribute("data-crm-debug"),

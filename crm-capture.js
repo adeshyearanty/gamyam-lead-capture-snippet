@@ -292,33 +292,52 @@
     submitLead(leadData) {
       this.log("Submitting lead: ", leadData);
 
-      const { site_id, api_token, ...payload } = leadData;
-
-      fetch(this.config.endpoint, {
+      return fetch(this.config.endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-api-key": this.config.apiToken,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(leadData),
       })
-        .then((response) => {
-          if (!response.ok) {
-            return response.json().then((err) => {
-              throw new Error(err.message || "Failed to submit lead");
-            });
+        .then(async (response) => {
+          const contentType = response.headers.get("content-type");
+
+          // First check if the response is JSON
+          if (contentType && contentType.includes("application/json")) {
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data.message || "Failed to submit lead");
+            }
+            return data;
           }
-          return response.json();
+
+          // If not JSON, get the text and handle accordingly
+          const text = await response.text();
+          if (!response.ok) {
+            // Check if it's HTML
+            if (text.startsWith("<!DOCTYPE")) {
+              throw new Error(
+                "Server returned an HTML error page. Please check the endpoint URL."
+              );
+            }
+            throw new Error(text || "Failed to submit lead");
+          }
+
+          // If successful but not JSON
+          return text;
         })
         .then((data) => {
           this.log("Lead submitted successfully:", data);
           this.dispatchEvent("crmLeadSuccess", data);
           if (this.config.onSuccess) this.config.onSuccess(data);
+          return data;
         })
         .catch((error) => {
           this.log("Error submitting lead:", error, "error");
           this.dispatchEvent("crmLeadError", error);
           if (this.config.onError) this.config.onError(error);
+          throw error; // Re-throw so the React component can catch it
         });
     }
 

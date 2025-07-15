@@ -292,7 +292,16 @@
     submitLead(leadData) {
       this.log("Submitting lead: ", leadData);
 
-      return fetch(this.config.endpoint, {
+      // Validate we have required configuration
+      if (!this.config.apiToken) {
+        const error = new Error("API token is required");
+        this.log(error.message, "error");
+        return Promise.reject(error);
+      }
+
+      const requestUrl = this.config.endpoint;
+
+      return fetch(requestUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -300,32 +309,23 @@
         },
         body: JSON.stringify(leadData),
       })
-        .then(async (response) => {
-          const contentType = response.headers.get("content-type");
-
-          // First check if the response is JSON
-          if (contentType && contentType.includes("application/json")) {
-            const data = await response.json();
-            if (!response.ok) {
-              throw new Error(data.message || "Failed to submit lead");
-            }
-            return data;
-          }
-
-          // If not JSON, get the text and handle accordingly
-          const text = await response.text();
+        .then((response) => {
           if (!response.ok) {
-            // Check if it's HTML
-            if (text.startsWith("<!DOCTYPE")) {
-              throw new Error(
-                "Server returned an HTML error page. Please check the endpoint URL."
-              );
-            }
-            throw new Error(text || "Failed to submit lead");
+            // Try to get error message from response
+            return response.text().then((text) => {
+              let errorMessage = "Request failed";
+              try {
+                const json = JSON.parse(text);
+                errorMessage = json.message || errorMessage;
+              } catch {
+                errorMessage = text.includes("<!DOCTYPE")
+                  ? "Server returned an error page"
+                  : text || errorMessage;
+              }
+              throw new Error(`${response.status}: ${errorMessage}`);
+            });
           }
-
-          // If successful but not JSON
-          return text;
+          return response.json();
         })
         .then((data) => {
           this.log("Lead submitted successfully:", data);
@@ -337,7 +337,7 @@
           this.log("Error submitting lead:", error, "error");
           this.dispatchEvent("crmLeadError", error);
           if (this.config.onError) this.config.onError(error);
-          throw error; // Re-throw so the React component can catch it
+          throw error;
         });
     }
 

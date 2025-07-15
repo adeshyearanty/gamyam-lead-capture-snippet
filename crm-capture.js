@@ -9,7 +9,7 @@
   // Configuration defaults
   const defaults = {
     siteId: "",
-    apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
+    apiToken: "",
     endpoint: "https://api.gamyam.ai/leads/v1/leads",
     // Default field mappings to your DTO
     fieldMappings: {
@@ -51,15 +51,7 @@
   // Main class
   class CRMLeadCapture {
     constructor(options) {
-      this.config = {
-        ...defaults,
-        ...options,
-        // Only override apiToken if explicitly provided in options
-        apiToken:
-          options?.apiToken !== undefined
-            ? options.apiToken
-            : defaults.apiToken,
-      };
+      this.config = { ...defaults, ...options };
       this.initialize();
     }
 
@@ -273,6 +265,11 @@
         return false;
       }
 
+      if (!this.config.siteId && !this.config.apiToken) {
+        this.log("Site ID or API Token is required", "error");
+        return false;
+      }
+
       // Email format validation
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(leadData.email)) {
@@ -292,37 +289,21 @@
     submitLead(leadData) {
       this.log("Submitting lead: ", leadData);
 
-      // Validate we have required configuration
-      if (!this.config.apiToken) {
-        const error = new Error("API token is required");
-        this.log(error.message, "error");
-        return Promise.reject(error);
-      }
+      const { site_id, api_token, ...payload } = leadData;
 
-      const requestUrl = this.config.endpoint;
-
-      return fetch(requestUrl, {
+      fetch(this.config.endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": this.config.apiToken,
+          "x-api-key":
+            this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
         },
-        body: JSON.stringify(leadData),
+        body: JSON.stringify(payload),
       })
         .then((response) => {
           if (!response.ok) {
-            // Try to get error message from response
-            return response.text().then((text) => {
-              let errorMessage = "Request failed";
-              try {
-                const json = JSON.parse(text);
-                errorMessage = json.message || errorMessage;
-              } catch {
-                errorMessage = text.includes("<!DOCTYPE")
-                  ? "Server returned an error page"
-                  : text || errorMessage;
-              }
-              throw new Error(`${response.status}: ${errorMessage}`);
+            return response.json().then((err) => {
+              throw new Error(err.message || "Failed to submit lead");
             });
           }
           return response.json();
@@ -331,13 +312,11 @@
           this.log("Lead submitted successfully:", data);
           this.dispatchEvent("crmLeadSuccess", data);
           if (this.config.onSuccess) this.config.onSuccess(data);
-          return data;
         })
         .catch((error) => {
           this.log("Error submitting lead:", error, "error");
           this.dispatchEvent("crmLeadError", error);
           if (this.config.onError) this.config.onError(error);
-          throw error;
         });
     }
 
@@ -364,10 +343,7 @@
     if (scriptEl) {
       const options = {
         siteId: scriptEl.getAttribute("data-crm-site-id"),
-        // Only set apiToken if explicitly provided in data attribute
-        apiToken: scriptEl.hasAttribute("data-crm-api-token")
-          ? scriptEl.getAttribute("data-crm-api-token")
-          : undefined,
+        apiToken: scriptEl.getAttribute("data-crm-api-token"),
         endpoint:
           scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
         debug: scriptEl.hasAttribute("data-crm-debug"),

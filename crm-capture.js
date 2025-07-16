@@ -336,7 +336,7 @@
     );
     if (scriptEl) {
       const options = {
-        siteId: scriptEl.getAttribute("data-crm-site-id"),
+        // siteId: scriptEl.getAttribute("data-crm-site-id"),
         // apiToken: scriptEl.getAttribute("data-crm-api-token"),
         endpoint:
           scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,

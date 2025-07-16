@@ -264,11 +264,6 @@
         return false;
       }
 
-      if (!this.config.siteId && !this.config.apiToken) {
-        this.log("Site ID or API Token is required", "error");
-        return false;
-      }
-
       // Email format validation
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(leadData.email)) {

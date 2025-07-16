@@ -9,7 +9,7 @@
   // Configuration defaults
   const defaults = {
     siteId: "",
-    apiToken: "",
+    apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
     endpoint: "https://api.gamyam.ai/leads/v1/leads",
     // Default field mappings to your DTO
     fieldMappings: {
@@ -342,7 +342,7 @@
     if (scriptEl) {
       const options = {
         siteId: scriptEl.getAttribute("data-crm-site-id"),
-        apiToken: scriptEl.getAttribute("data-crm-api-token"),
+        // apiToken: scriptEl.getAttribute("data-crm-api-token"),
         endpoint:
           scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
         debug: scriptEl.hasAttribute("data-crm-debug"),

@@ -330,6 +330,13 @@
   // Expose to global scope
   window.CRMLeadCapture = CRMLeadCapture;
 
+  function isReactApp() {
+    const hasReactRoot = !!document.querySelector("#root, [data-reactroot]");
+    const hasReactInternal =
+      !!window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || !!window.React;
+    return hasReactRoot || hasReactInternal;
+  }
+
   // Auto-initialize if options are provided in data attributes
   document.addEventListener("DOMContentLoaded", () => {
     const scriptEl = document.querySelector("script[data-crm-site-id], script[data-crm-api-token]");

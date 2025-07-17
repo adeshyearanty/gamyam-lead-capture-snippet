@@ -332,27 +332,17 @@
 
   // Auto-initialize if options are provided in data attributes
   document.addEventListener("DOMContentLoaded", () => {
-    const scriptEl = document.querySelector(
-      "script[data-crm-site-id], script[data-crm-api-token]"
-    );
-    if (scriptEl) {
-      const options = {
-        // siteId: scriptEl.getAttribute("data-crm-site-id"),
-        // apiToken: scriptEl.getAttribute("data-crm-api-token"),
-        endpoint:
-          scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
-        debug: scriptEl.hasAttribute("data-crm-debug"),
-        onSuccess:
-          typeof window.crmCaptureConfig?.onSuccess === "function"
-            ? window.crmCaptureConfig.onSuccess
-            : null,
-        onError:
-          typeof window.crmCaptureConfig?.onError === "function"
-            ? window.crmCaptureConfig.onError
-            : null,
-      };
-      new CRMLeadCapture(options);
-    }
+    const scriptEl = document.querySelector("script[data-crm-site-id], script[data-crm-api-token]");
+    
+    const options = {
+      endpoint: scriptEl?.getAttribute("data-crm-endpoint") || defaults.endpoint,
+      debug: scriptEl?.hasAttribute("data-crm-debug"),
+      onSuccess: typeof window.crmCaptureConfig?.onSuccess === "function" ? window.crmCaptureConfig.onSuccess : null,
+      onError: typeof window.crmCaptureConfig?.onError === "function" ? window.crmCaptureConfig.onError : null,
+      reactForms: scriptEl?.hasAttribute("data-crm-react") || isReactApp(), // React only if detected or forced
+    };
+  
+    new CRMLeadCapture(options);
   });
 })();
 

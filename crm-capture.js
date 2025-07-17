@@ -41,7 +41,7 @@
     // Default values for required fields
     defaultValues: {
       status: "New",
-      source: "website Form",
+      source: "Website",
       createdDate: () => new Date().toISOString(),
     },
     buttonClass: "crm-capture-btn",
@@ -332,15 +332,27 @@
 
   // Auto-initialize if options are provided in data attributes
   document.addEventListener("DOMContentLoaded", () => {
-    const scriptEl = document.querySelector("script[src*='crm-capture.js']");
-    const config = window.crmCaptureConfig || {};
-    const options = {
-      ...config,
-      endpoint: scriptEl?.getAttribute("data-crm-endpoint") || defaults.endpoint,
-      debug: config.debug || scriptEl?.hasAttribute("data-crm-debug"),
-    };
-  
-    new CRMLeadCapture(options);
+    const scriptEl = document.querySelector(
+      "script[data-crm-site-id], script[data-crm-api-token]"
+    );
+    if (scriptEl) {
+      const options = {
+        // siteId: scriptEl.getAttribute("data-crm-site-id"),
+        // apiToken: scriptEl.getAttribute("data-crm-api-token"),
+        endpoint:
+          scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
+        debug: scriptEl.hasAttribute("data-crm-debug"),
+        onSuccess:
+          typeof window.crmCaptureConfig?.onSuccess === "function"
+            ? window.crmCaptureConfig.onSuccess
+            : null,
+        onError:
+          typeof window.crmCaptureConfig?.onError === "function"
+            ? window.crmCaptureConfig.onError
+            : null,
+      };
+      new CRMLeadCapture(options);
+    }
   });
 })();
 

@@ -41,6 +41,7 @@
     // Default values for required fields
     defaultValues: {
       status: "New",
+      source: "website Form",
       createdDate: () => new Date().toISOString(),
     },
     buttonClass: "crm-capture-btn",

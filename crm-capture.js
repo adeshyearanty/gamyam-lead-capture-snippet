@@ -1,145 +1,362 @@
 /**
- * Universal Lead Capture Snippet - v4.1 (Standalone)
- *
- * A powerful, framework-agnostic script for capturing lead data.
- * - Intelligently maps fields using a comprehensive mapping object.
- * - Provides detailed console logging for API success and error responses.
- * - Configured entirely through data attributes on the script tag.
- *
- * @version 4.1.0
+ * Gamyam.ai CRM Lead Capture Snippet
+ * Version 2.0 - API Compliant
  */
-(() => {
-  document.addEventListener('DOMContentLoaded', () => {
-    const scriptTag = document.currentScript;
-    if (!scriptTag) {
-      console.error("[Lead Capture] Cannot find the script tag. Please ensure the 'defer' attribute is used.");
-      return;
-    }
+(function () {
+  "use strict";
 
-    // --- CONFIGURATION (from script tag data attributes) ---
-    const config = {
-      apiEndpoint: scriptTag.dataset.endpoint,
-      apiKey: scriptTag.dataset.apiKey,
-      debug: scriptTag.hasAttribute('data-debug'),
-    };
-    
-    // --- COMPREHENSIVE FIELD MAPPINGS ---
-    const fieldMappings = {
+  // Configuration defaults
+  const defaults = {
+    siteId: "",
+    apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
+    endpoint: "https://api.gamyam.ai/leads/v1/leads",
+    // Default field mappings to your DTO
+    fieldMappings: {
       leadOwner: ["leadOwner", "owner"],
       fullName: ["fullName", "name", "full_name"],
       salutation: ["salutation", "title"],
       email: ["email", "email_address"],
       website: ["website", "url", "site"],
       contactCountryCode: ["contactCountryCode", "countryCode", "phoneCode"],
-      contactNumber: ["contactNumber", "phone", "mobile", "telephone"],
-      contactExtension: ["contactExtension", "ext", "phoneExt"],
+      contactNumber: ["contactNumber", "phone", "telephone", "mobile"],
+      contactExtension: ["contactExtension", "extension"],
       alternateCountryCode: ["alternateCountryCode", "altCountryCode"],
-      alternateNumber: ["alternateNumber", "altPhone", "altMobile"],
-      alternateExtension: ["alternateExtension", "altExt"],
-      companyName: ["companyName", "company", "organization"],
-      designation: ["designation", "jobTitle", "title", "position"],
-      companySize: ["companySize", "employees", "size"],
+      alternateNumber: ["alternateNumber", "altPhone"],
+      alternateExtension: ["alternateExtension", "altExtension"],
+      companyName: ["companyName", "company", "org"],
+      designation: ["designation", "jobTitle", "position"],
+      companySize: ["companySize", "employees"],
       industryType: ["industryType", "industry"],
       status: ["status", "leadStatus"],
       source: ["source", "leadSource", "origin"],
       score: ["score", "leadScore"],
       scoreTrend: ["scoreTrend", "trend"],
       preferredChannel: ["preferredChannel", "contactMethod"],
-      lastActivityDate: ["lastActivityDate", "lastContacted"],
-      description: ["description", "notes", "message", "comments"],
+      description: ["description", "message", "comments", "notes"],
       linkedinUrl: ["linkedinUrl", "linkedin"],
-      twitterUrl: ["twitterUrl", "twitter", "xProfile"],
+      twitterUrl: ["twitterUrl", "twitter"],
       annualRevenue: ["annualRevenue", "revenue"],
-      nextStage: ["nextStage", "pipelineStage"]
-    };
+    },
+    // Default values for required fields
+    defaultValues: {
+      status: "New",
+      source: "Website",
+      createdDate: () => new Date().toISOString(),
+    },
+    buttonClass: "crm-capture-btn",
+    debug: false,
+  };
 
-    if (!config.apiEndpoint || !config.apiKey) {
-      console.error('[Lead Capture] "data-endpoint" or "data-api-key" attribute is missing on the script tag.');
-      return;
+  // Main class
+  class CRMLeadCapture {
+    constructor(options) {
+      this.config = { ...defaults, ...options };
+      this.initialize();
     }
 
-    const log = (message, data = '', level = 'log') => {
-      if (config.debug || level === 'error') {
-        const style = level === 'error' ? 'color: red; font-weight: bold;' : 'color: blue; font-weight: bold;';
-        console[level](`%c[Lead Capture] ${message}`, style, data);
+    initialize() {
+      if (this.config.reactForms) {
+        this.setupReactListener();
+      } else {
+        this.bindEvents();
       }
-    };
-    
-    const sendDataToCRM = async (data) => {
-      const defaults = {
-        leadOwner: "adeshyearanty",
-        source: "Website",
-        status: "New",
-        createdDate: new Date().toISOString(),
-      };
-      const payload = { ...defaults, ...data };
-      log('Submitting payload:', payload);
+      this.log("Initialized for React/Next.js");
+    }
 
-      try {
-        const response = await fetch(config.apiEndpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': config.apiKey },
-          body: JSON.stringify(payload),
-          keepalive: true,
-        });
-        const responseBody = await response.json().catch(() => ({ message: "Could not parse API response." }));
-
-        if (!response.ok) {
-          console.group(`[Lead Capture] API Error: ${response.status} (${responseBody.error || 'Bad Request'})`);
-          log('Submission failed. See validation errors below.', '', 'error');
-          if (Array.isArray(responseBody.message)) {
-            responseBody.message.forEach(msg => console.error('->', msg));
-          } else {
-            console.error('->', responseBody.message);
-          }
-          console.groupEnd();
-        } else {
-          console.groupCollapsed(`[Lead Capture] Success: ${responseBody.message || 'Lead created!'}`);
-          log('API returned data:', responseBody.data);
-          console.groupEnd();
+    setupReactListener() {
+      // Listen for clicks anywhere in document
+      document.addEventListener("click", (e) => {
+        const btn = e.target.closest(".crm-capture-btn");
+        if (btn) {
+          e.preventDefault();
+          const form = btn.closest("form");
+          if (form) this.handleReactForm(form);
         }
-      } catch (error) {
-        log('A critical network or script error occurred.', error, 'error');
-      }
-    };
+      });
 
-    document.addEventListener('submit', (event) => {
-      if (!event.target.hasAttribute('data-capture-lead')) return;
-      
-      const form = event.target;
-      const leadData = {};
-      
-      // 1. Prioritize explicit `data-crm-field` attributes
-      for (const element of form.elements) {
-        if (element.dataset.crmField) {
-           const value = element.value.trim();
-           if (value) leadData[element.dataset.crmField] = value;
-        }
-      }
-
-      // 2. Fallback to searching by name/id using `fieldMappings`
-      for (const [crmField, possibleNames] of Object.entries(fieldMappings)) {
-        if (!leadData.hasOwnProperty(crmField)) {
-          for (const name of possibleNames) {
-            const element = form.querySelector(`[name="${name}"], #${name}`);
-            if (element && element.value) {
-              const value = element.value.trim();
-              if (value) {
-                 leadData[crmField] = value;
-                 break; // Found it, move to the next crmField
+      // Alternative mutation observer for dynamic forms
+      if (typeof MutationObserver !== "undefined") {
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (node.nodeType === 1) {
+                // Element node
+                const forms = node.querySelectorAll ? node.querySelectorAll("form") : [];
+                forms.forEach((form) => {
+                  if (form.querySelector(".crm-capture-btn")) {
+                    form.addEventListener("submit", (e) => {
+                      e.preventDefault();
+                      this.handleReactForm(form);
+                    });
+                  }
+                });
               }
+            });
+          });
+        });
+
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
+      }
+    }
+
+    handleReactForm(form) {
+      // Special handling for React forms
+      const formData = new FormData(form);
+      const data = {};
+
+      formData.forEach((value, key) => {
+        data[key] = value;
+      });
+
+      const leadData = this.prepareLeadData(data);
+      if (this.validateLeadData(leadData)) {
+        this.submitLead(leadData).then(() => {
+          // Trigger React's state update if needed
+          if (form._reactRootContainer) {
+            const event = new Event("crmLeadSuccess");
+            form.dispatchEvent(event);
+          }
+        });
+      }
+    }
+
+    bindEvents() {
+      // Handle form submissions
+      document.addEventListener("submit", (e) => {
+        const form = e.target;
+        if (
+          form.classList.contains("crm-capture-form") ||
+          form.querySelector(".crm-capture-btn")
+        ) {
+          e.preventDefault();
+          this.handleFormSubmit(form);
+        }
+      });
+
+      // Handle button clicks
+      document.addEventListener("click", (e) => {
+        if (e.target.classList.contains(this.config.buttonClass)) {
+          const form = this.findParentForm(e.target);
+          if (form) {
+            e.preventDefault();
+            this.handleFormSubmit(form);
+          }
+        }
+      });
+    }
+
+    findParentForm(element) {
+      while (element && element.nodeName !== "FORM") {
+        element = element.parentElement;
+      }
+      return element;
+    }
+
+    handleFormSubmit(form) {
+      const formData = this.extractFormData(form);
+      const leadData = this.prepareLeadData(formData);
+
+      if (this.validateLeadData(leadData)) {
+        this.submitLead(leadData);
+      } else {
+        this.log("Validation failed", "error");
+      }
+    }
+
+    extractFormData(form) {
+      const formData = {};
+      const elements = form.elements;
+
+      // Check for data-crm-field attributes first
+      for (let element of elements) {
+        if (element.hasAttribute("data-crm-field")) {
+          const fieldName = element.getAttribute("data-crm-field");
+          formData[fieldName] = this.sanitizeInput(element.value);
+        }
+      }
+
+      // Fall back to default field mappings
+      for (const [field, selectors] of Object.entries(this.config.fieldMappings)) {
+        if (!formData[field]) {
+          for (const selector of selectors) {
+            const element = form.querySelector(`[name="${selector}"], #${selector}`);
+            if (element && element.value) {
+              formData[field] = this.sanitizeInput(element.value);
+              break;
             }
           }
         }
       }
 
-      if (Object.keys(leadData).length > 0) {
-        log('Captured form data:', leadData);
-        sendDataToCRM(leadData);
-      } else {
-        log('No mappable data found in the form.', '', 'error');
+      return formData;
+    }
+
+    sanitizeInput(value) {
+      if (!value) return value;
+      // Basic HTML stripping
+      return value
+        .toString()
+        .replace(/<script.*?>.*?<\/script>/gi, "")
+        .replace(/<\/?[^>]+(>|$)/g, "");
+    }
+
+    prepareLeadData(formData) {
+      const leadData = {
+        ...formData,
+      };
+
+      // Apply default values
+      for (const [field, defaultValue] of Object.entries(this.config.defaultValues)) {
+        if (!leadData[field]) {
+          leadData[field] =
+            typeof defaultValue === "function" ? defaultValue() : defaultValue;
+        }
       }
-    });
-    log('Script initialized.');
+
+      // Default leadOwner
+      if (!leadData.leadOwner) {
+        leadData.leadOwner = "adeshyearanty";
+      }
+
+      // Format phone numbers if we have components
+      if (!leadData.contactNumber && formData.phone) {
+        leadData.contactNumber = this.extractPhoneNumber(formData.phone);
+        leadData.contactCountryCode =
+          this.extractCountryCode(formData.phone) || "+91";
+      }
+
+      return leadData;
+    }
+
+    extractPhoneNumber(phone) {
+      // Extract just the digits
+      const digits = phone.replace(/\D/g, "");
+      // Return last 10 digits
+      return digits.slice(-10);
+    }
+
+    extractCountryCode(phone) {
+      // Match country code like +91 at start of string
+      const match = phone.match(/^(\+\d{1,3})/);
+      return match ? match[1] : null;
+    }
+
+    validateLeadData(leadData) {
+      // Required fields validation
+      if (!leadData.email) {
+        this.log("Email is required", "error");
+        return false;
+      }
+
+      if (!leadData.fullName) {
+        this.log("Full name is required", "error");
+        return false;
+      }
+
+      // Email format validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(leadData.email)) {
+        this.log("Invalid email format", "error");
+        return false;
+      }
+
+      // Phone number validation if provided
+      if (leadData.contactNumber && !/^\d{10}$/.test(leadData.contactNumber)) {
+        this.log("Contact number must be exactly 10 digits", "error");
+        return false;
+      }
+
+      return true;
+    }
+
+    submitLead(leadData) {
+      this.log("Submitting lead: ", leadData);
+
+      const { site_id, api_token, ...payload } = leadData;
+
+      fetch(this.config.endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key":
+            this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
+        },
+        body: JSON.stringify(payload),
+      })
+        .then((response) => {
+          if (!response.ok) {
+            return response.json().then((err) => {
+              throw new Error(err.message || "Failed to submit lead");
+            });
+          }
+          return response.json();
+        })
+        .then((data) => {
+          this.log("Lead submitted successfully:", data);
+          this.dispatchEvent("crmLeadSuccess", data);
+          if (this.config.onSuccess) this.config.onSuccess(data);
+        })
+        .catch((error) => {
+          this.log("Error submitting lead:", error, "error");
+          this.dispatchEvent("crmLeadError", error);
+          if (this.config.onError) this.config.onError(error);
+        });
+    }
+
+    dispatchEvent(eventName, detail) {
+      const event = new CustomEvent(eventName, { detail });
+      document.dispatchEvent(event);
+    }
+
+    log(message, data, level = "log") {
+      if (this.config.debug || level === "error") {
+        console[level](`[Gamyam CRM] ${message}`, data || "");
+      }
+    }
+  }
+
+  // Expose to global scope
+  window.CRMLeadCapture = CRMLeadCapture;
+
+  function isReactApp() {
+    const hasReactRoot = !!document.querySelector("#root, [data-reactroot]");
+    const hasReactInternal =
+      !!window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || !!window.React;
+    return hasReactRoot || hasReactInternal;
+  }
+
+  // Auto-initialize if options are provided in data attributes
+  document.addEventListener("DOMContentLoaded", () => {
+    const scriptEl = document.querySelector(
+      "script[data-crm-site-id], script[data-crm-api-token]"
+    );
+
+    const options = {
+      endpoint: scriptEl?.getAttribute("data-crm-endpoint") || defaults.endpoint,
+      debug: scriptEl?.hasAttribute("data-crm-debug"),
+      onSuccess:
+        typeof window.crmCaptureConfig?.onSuccess === "function"
+          ? window.crmCaptureConfig.onSuccess
+          : null,
+      onError:
+        typeof window.crmCaptureConfig?.onError === "function"
+          ? window.crmCaptureConfig.onError
+          : null,
+      reactForms: scriptEl?.hasAttribute("data-crm-react") || isReactApp(), // React only if detected or forced
+    };
+
+    new CRMLeadCapture(options);
   });
 })();
+
+if (typeof window !== "undefined") {
+  window.CRMLeadCapture = CRMLeadCapture;
+}
+
+// ✅ Add export for test
+if (typeof module !== "undefined") {
+  module.exports = CRMLeadCapture;
+}

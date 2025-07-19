@@ -2,6 +2,7 @@
  * Gamyam.ai CRM Lead Capture Snippet
  * Version 2.0 - API Compliant
  */
+
 (function () {
   "use strict";
 
@@ -81,7 +82,9 @@
             mutation.addedNodes.forEach((node) => {
               if (node.nodeType === 1) {
                 // Element node
-                const forms = node.querySelectorAll ? node.querySelectorAll("form") : [];
+                const forms = node.querySelectorAll
+                  ? node.querySelectorAll("form")
+                  : [];
                 forms.forEach((form) => {
                   if (form.querySelector(".crm-capture-btn")) {
                     form.addEventListener("submit", (e) => {
@@ -179,10 +182,14 @@
       }
 
       // Fall back to default field mappings
-      for (const [field, selectors] of Object.entries(this.config.fieldMappings)) {
+      for (const [field, selectors] of Object.entries(
+        this.config.fieldMappings
+      )) {
         if (!formData[field]) {
           for (const selector of selectors) {
-            const element = form.querySelector(`[name="${selector}"], #${selector}`);
+            const element = form.querySelector(
+              `[name="${selector}"], #${selector}`
+            );
             if (element && element.value) {
               formData[field] = this.sanitizeInput(element.value);
               break;
@@ -209,7 +216,9 @@
       };
 
       // Apply default values
-      for (const [field, defaultValue] of Object.entries(this.config.defaultValues)) {
+      for (const [field, defaultValue] of Object.entries(
+        this.config.defaultValues
+      )) {
         if (!leadData[field]) {
           leadData[field] =
             typeof defaultValue === "function" ? defaultValue() : defaultValue;
@@ -321,34 +330,29 @@
   // Expose to global scope
   window.CRMLeadCapture = CRMLeadCapture;
 
-  function isReactApp() {
-    const hasReactRoot = !!document.querySelector("#root, [data-reactroot]");
-    const hasReactInternal =
-      !!window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || !!window.React;
-    return hasReactRoot || hasReactInternal;
-  }
-
   // Auto-initialize if options are provided in data attributes
   document.addEventListener("DOMContentLoaded", () => {
     const scriptEl = document.querySelector(
       "script[data-crm-site-id], script[data-crm-api-token]"
     );
-
-    const options = {
-      endpoint: scriptEl?.getAttribute("data-crm-endpoint") || defaults.endpoint,
-      debug: scriptEl?.hasAttribute("data-crm-debug"),
-      onSuccess:
-        typeof window.crmCaptureConfig?.onSuccess === "function"
-          ? window.crmCaptureConfig.onSuccess
-          : null,
-      onError:
-        typeof window.crmCaptureConfig?.onError === "function"
-          ? window.crmCaptureConfig.onError
-          : null,
-      reactForms: scriptEl?.hasAttribute("data-crm-react") || isReactApp(), // React only if detected or forced
-    };
-
-    new CRMLeadCapture(options);
+    if (scriptEl) {
+      const options = {
+        // siteId: scriptEl.getAttribute("data-crm-site-id"),
+        // apiToken: scriptEl.getAttribute("data-crm-api-token"),
+        endpoint:
+          scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
+        debug: scriptEl.hasAttribute("data-crm-debug"),
+        onSuccess:
+          typeof window.crmCaptureConfig?.onSuccess === "function"
+            ? window.crmCaptureConfig.onSuccess
+            : null,
+        onError:
+          typeof window.crmCaptureConfig?.onError === "function"
+            ? window.crmCaptureConfig.onError
+            : null,
+      };
+      new CRMLeadCapture(options);
+    }
   });
 })();
 

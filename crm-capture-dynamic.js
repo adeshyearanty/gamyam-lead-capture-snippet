@@ -1,16 +1,17 @@
 /**
  * Gamyam.ai CRM Lead Capture Snippet
- * Version 2.1 - With Dynamic Field Detection
+ * Version 2.0 - API Compliant
  */
 
 (function () {
   "use strict";
 
-  // Configuration defaults (remains the same)
+  // Configuration defaults
   const defaults = {
     siteId: "",
     apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
     endpoint: "https://api.gamyam.ai/leads/v1/leads",
+    // Default field mappings to your DTO
     fieldMappings: {
       leadOwner: ["leadOwner", "owner"],
       fullName: ["fullName", "name", "full_name"],
@@ -37,6 +38,7 @@
       twitterUrl: ["twitterUrl", "twitter"],
       annualRevenue: ["annualRevenue", "revenue"],
     },
+    // Default values for required fields
     defaultValues: {
       status: "New",
       source: "Website",
@@ -49,15 +51,7 @@
   // Main class
   class CRMLeadCapture {
     constructor(options) {
-      this.config = { ...defaults, ...options, ...window.crmCaptureConfig };
-      // ✅ NEW: Field detection patterns
-      this.detectionPatterns = {
-        email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-        // Detects 10-15 digits, allowing for optional +, (), -, and spaces
-        contactNumber: /^(?:\+\d{1,3}[- ]?)?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4,9}$/,
-        // Simple check for text with a space, likely a full name
-        fullName: /^[a-zA-Z-'\s]{2,}\s[a-zA-Z-'\s]{2,}$/,
-      };
+      this.config = { ...defaults, ...options };
       this.initialize();
     }
 
@@ -165,88 +159,46 @@
     }
 
     handleFormSubmit(form) {
-      // The logic is now consolidated into extractFormData
-      const leadData = this.extractFormData(form);
-      const preparedData = this.prepareLeadData(leadData);
+      const formData = this.extractFormData(form);
+      const leadData = this.prepareLeadData(formData);
 
-      if (this.validateLeadData(preparedData)) {
-        this.submitLead(preparedData);
+      if (this.validateLeadData(leadData)) {
+        this.submitLead(leadData);
       } else {
         this.log("Validation failed", "error");
       }
     }
 
-    /**
-     * ✅ NEW: Detects field type based on value patterns.
-     * @param {string} value - The input value to analyze.
-     * @returns {string|null} The detected field name (e.g., 'email') or null.
-     */
-    detectFieldType(value) {
-      if (!value) return null;
-
-      if (this.detectionPatterns.email.test(value)) {
-        return "email";
-      }
-      if (this.detectionPatterns.contactNumber.test(value)) {
-        return "contactNumber";
-      }
-      // FullName is checked last as it's less specific
-      if (this.detectionPatterns.fullName.test(value)) {
-        return "fullName";
-      }
-      return null;
-    }
-
-    /**
-     * ✅ RE-ENGINEERED: Extracts data using value detection first.
-     * @param {HTMLFormElement} form
-     * @returns {object}
-     */
     extractFormData(form) {
-      const leadData = {};
-      const unmappedElements = [];
+      const formData = {};
       const elements = form.elements;
 
-      // --- Pass 1: Intelligent Value-Based Detection & Explicit `data-crm-field` ---
+      // Check for data-crm-field attributes first
       for (let element of elements) {
-        if (element.name && element.value) {
-          const value = this.sanitizeInput(element.value);
-          let detectedField = this.detectFieldType(value);
-
-          // An explicit data-crm-field attribute overrides detection
-          const explicitField = element.getAttribute("data-crm-field");
-          if (explicitField) {
-            detectedField = explicitField;
-          }
-
-          if (detectedField && !leadData[detectedField]) {
-            leadData[detectedField] = value;
-          } else {
-            // If no type was detected, or the slot is already filled, save for later
-            unmappedElements.push(element);
-          }
+        if (element.hasAttribute("data-crm-field")) {
+          const fieldName = element.getAttribute("data-crm-field");
+          formData[fieldName] = this.sanitizeInput(element.value);
         }
       }
 
-      // --- Pass 2: Fallback to name/id mapping for remaining fields ---
+      // Fall back to default field mappings
       for (const [field, selectors] of Object.entries(
         this.config.fieldMappings
       )) {
-        if (!leadData[field]) {
-          // Only if the field is not already mapped
-          for (const element of unmappedElements) {
-            const elementName = element.name || element.id;
-            if (selectors.includes(elementName)) {
-              leadData[field] = this.sanitizeInput(element.value);
-              // Remove the element once mapped to avoid re-mapping
-              unmappedElements.splice(unmappedElements.indexOf(element), 1);
-              break; // Move to the next field in fieldMappings
+        if (!formData[field]) {
+          for (const selector of selectors) {
+            const element = form.querySelector(
+              `[name="${selector}"], #${selector}`
+            );
+            if (element && element.value) {
+              formData[field] = this.sanitizeInput(element.value);
+              break;
             }
           }
         }
       }
 
-      return leadData;
+      return formData;
     }
 
     sanitizeInput(value) {
@@ -259,7 +211,9 @@
     }
 
     prepareLeadData(formData) {
-      const leadData = { ...formData };
+      const leadData = {
+        ...formData,
+      };
 
       // Apply default values
       for (const [field, defaultValue] of Object.entries(
@@ -276,12 +230,11 @@
         leadData.leadOwner = "adeshyearanty";
       }
 
-      // ✅ NEW: Standardize phone number after detection
-      if (leadData.contactNumber) {
-        const rawPhone = leadData.contactNumber;
+      // Format phone numbers if we have components
+      if (!leadData.contactNumber && formData.phone) {
+        leadData.contactNumber = this.extractPhoneNumber(formData.phone);
         leadData.contactCountryCode =
-          this.extractCountryCode(rawPhone) || "+91"; // Default to +91 if not found
-        leadData.contactNumber = this.extractPhoneNumber(rawPhone);
+          this.extractCountryCode(formData.phone) || "+91";
       }
 
       return leadData;
@@ -379,24 +332,31 @@
 
   // Auto-initialize if options are provided in data attributes
   document.addEventListener("DOMContentLoaded", () => {
-    const scriptEl = document.querySelector(
-      "script[data-crm-site-id], script[data-crm-api-token]"
-    );
+    const scriptEl = document.querySelector("script[data-crm-api-token]");
     if (scriptEl) {
+      // ✅ MODIFICATION: Read and parse the new mappings attribute
+      const mappingsJSON = scriptEl.getAttribute("data-crm-field-mappings");
+      let customMappings = {};
+      if (mappingsJSON) {
+        try {
+          customMappings = JSON.parse(mappingsJSON);
+        } catch (e) {
+          console.error(
+            "[Gamyam CRM] Failed to parse 'data-crm-field-mappings'. Please check if it is valid JSON.",
+            e
+          );
+        }
+      }
+
       const options = {
-        // siteId: scriptEl.getAttribute("data-crm-site-id"),
-        // apiToken: scriptEl.getAttribute("data-crm-api-token"),
+        apiToken: scriptEl.getAttribute("data-crm-api-token"),
         endpoint:
           scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
         debug: scriptEl.hasAttribute("data-crm-debug"),
-        onSuccess:
-          typeof window.crmCaptureConfig?.onSuccess === "function"
-            ? window.crmCaptureConfig.onSuccess
-            : null,
-        onError:
-          typeof window.crmCaptureConfig?.onError === "function"
-            ? window.crmCaptureConfig.onError
-            : null,
+        reactForms: scriptEl.hasAttribute("data-crm-react"),
+        fieldMappings: customMappings, // Pass the parsed mappings to the constructor
+        onSuccess: window.crmCaptureConfig?.onSuccess || null,
+        onError: window.crmCaptureConfig?.onError || null,
       };
       new CRMLeadCapture(options);
     }

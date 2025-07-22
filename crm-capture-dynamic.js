@@ -131,7 +131,7 @@
       document.addEventListener("submit", (e) => {
         const form = e.target;
         if (
-          form.classList.contains("crm-capture-form") ||
+          form.classList.contains(this.config.formClass) ||
           form.querySelector(".crm-capture-btn")
         ) {
           e.preventDefault();
@@ -347,30 +347,36 @@
   document.addEventListener("DOMContentLoaded", () => {
     const scriptEl = document.querySelector("script[data-crm-api-token]");
     if (scriptEl) {
-      // ✅ MODIFICATION: Read and parse the new mappings attribute
-      const mappingsJSON = scriptEl.getAttribute("data-crm-field-mappings");
-      let customMappings = {};
-      if (mappingsJSON) {
+      const options = {
+        endpoint:
+          scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
+        apiToken:
+          scriptEl.getAttribute("data-crm-api-token") || defaults.apiToken,
+        debug: scriptEl.hasAttribute("data-crm-debug"),
+        buttonClass:
+          scriptEl.getAttribute("data-crm-button-class") ||
+          defaults.buttonClass,
+        formClass:
+          scriptEl.getAttribute("data-crm-form-class") || "crm-capture-form", // fallback
+        onSuccess:
+          typeof window.crmCaptureConfig?.onSuccess === "function"
+            ? window.crmCaptureConfig.onSuccess
+            : null,
+        onError:
+          typeof window.crmCaptureConfig?.onError === "function"
+            ? window.crmCaptureConfig.onError
+            : null,
+      };
+
+      const rawMappings = scriptEl.getAttribute("data-crm-field-mappings");
+      if (rawMappings) {
         try {
-          customMappings = JSON.parse(mappingsJSON);
+          options.fieldMappings = JSON.parse(rawMappings);
         } catch (e) {
-          console.error(
-            "[Gamyam CRM] Failed to parse 'data-crm-field-mappings'. Please check if it is valid JSON.",
-            e
-          );
+          console.error("[Gamyam CRM] Invalid JSON in data-crm-field-mappings");
         }
       }
 
-      const options = {
-        apiToken: scriptEl.getAttribute("data-crm-api-token"),
-        endpoint:
-          scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
-        debug: scriptEl.hasAttribute("data-crm-debug"),
-        reactForms: scriptEl.hasAttribute("data-crm-react"),
-        fieldMappings: customMappings, // Pass the parsed mappings to the constructor
-        onSuccess: window.crmCaptureConfig?.onSuccess || null,
-        onError: window.crmCaptureConfig?.onError || null,
-      };
       new CRMLeadCapture(options);
     }
   });

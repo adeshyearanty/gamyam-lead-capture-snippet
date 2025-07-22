@@ -182,17 +182,30 @@
       }
 
       // Fall back to default field mappings
-      for (const [field, selectors] of Object.entries(
+      for (const [field, mapping] of Object.entries(
         this.config.fieldMappings
       )) {
         if (!formData[field]) {
-          for (const selector of selectors) {
-            const element = form.querySelector(
-              `[name="${selector}"], #${selector}`
-            );
-            if (element && element.value) {
-              formData[field] = this.sanitizeInput(element.value);
-              break;
+          if (typeof mapping === "object" && mapping.combine) {
+            const parts = mapping.combine.map((fieldName) => {
+              const el = form.querySelector(
+                `[name="${fieldName}"], #${fieldName}`
+              );
+              return el?.value?.trim() || "";
+            });
+            formData[field] = parts
+              .filter(Boolean)
+              .join(mapping.separator || " ");
+          } else {
+            const selectors = Array.isArray(mapping) ? mapping : [mapping];
+            for (const selector of selectors) {
+              const element = form.querySelector(
+                `[name="${selector}"], #${selector}`
+              );
+              if (element && element.value) {
+                formData[field] = this.sanitizeInput(element.value);
+                break;
+              }
             }
           }
         }

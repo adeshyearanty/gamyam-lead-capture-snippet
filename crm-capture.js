@@ -10,7 +10,7 @@
   const defaults = {
     siteId: "",
     apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
-    endpoint: "https://api.gamyam.ai/leads/v1/leads",
+    endpoint: "https://dev-api.salesastra.ai/leads/v1/leads",
     // Default field mappings to your DTO
     fieldMappings: {
       leadOwner: ["leadOwner", "owner"],

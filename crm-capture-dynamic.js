@@ -61,7 +61,7 @@
       } else {
         this.bindEvents();
       }
-      this.log("Initialized for React/Next.js");
+      this.log("Initialized for Lead Capturing");
     }
 
     setupReactListener() {

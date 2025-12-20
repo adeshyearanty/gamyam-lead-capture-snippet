@@ -1,5 +1,5 @@
 (function () {
-  // --- 1. CONFIGURATION & DEFAULTS ---
+  // --- 1. CONFIGURATION ---
   if (!window.UniBoxSettings || !window.UniBoxSettings.tenantId) {
     console.error("UniBox: Settings or Tenant ID missing.");
     return;
@@ -10,16 +10,12 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  // DYNAMIC API BASE URL
+  // Base URL
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/messages/v1/chat";
-
-  if (!userConfig.apiBaseUrl) {
-    console.warn("UniBox: apiBaseUrl not set. Using default:", API_BASE);
-  }
 
   const defaults = {
     tenantId: "",
-    apiKey: "", // This comes from your embed code
+    apiKey: "",
     apiBaseUrl: "",
     appearance: {
       primaryColor: "#2563EB",
@@ -55,9 +51,10 @@
 
   const settings = deepMerge(defaults, userConfig);
 
-  // --- 2. STATE MANAGEMENT ---
+  // --- 2. STATE ---
   let conversationId = null;
-  let eventSource = null;
+  let isStreamActive = false;
+  let streamController = null; // To abort/restart stream
   let userId = localStorage.getItem(STORAGE_KEY_USER);
 
   if (!userId) {
@@ -65,8 +62,8 @@
     localStorage.setItem(STORAGE_KEY_USER, userId);
   }
 
-  // --- 3. HELPER: GET HEADERS ---
-  // Centralized place to get headers for all requests
+  // --- 3. HELPER: HEADERS ---
+  // STRICTLY use headers for everything. No query params.
   function getHeaders() {
     return {
       "Content-Type": "application/json",
@@ -75,11 +72,7 @@
     };
   }
 
-  // --- 4. DATA NORMALIZATION ---
-  const headerTitle = settings.appearance.header?.title || settings.appearance.headerName || "Support";
-  const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage || "Hi there!";
-  
-  // --- 5. INITIALIZATION ---
+  // --- 4. INITIALIZATION ---
   if (document.readyState === "complete") {
     init();
   } else {
@@ -96,7 +89,7 @@
     }
   }
 
-  // --- 6. API LOGIC ---
+  // --- 5. API LOGIC (REST + STREAM) ---
 
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
@@ -104,7 +97,7 @@
     try {
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
-        headers: getHeaders(), // Uses x-tenant-id & x-api-key
+        headers: getHeaders(), 
         body: JSON.stringify({
           userId: userId,
           userName: userDetails.name || "Guest User",
@@ -118,37 +111,78 @@
       conversationId = data.conversationId;
       console.log("UniBox: Conversation Started:", conversationId);
       
-      connectSSE();
+      // Start the Custom Stream
+      connectToStream();
       
     } catch (error) {
       console.error("UniBox: Init Error", error);
     }
   }
 
-  function connectSSE() {
-    if (eventSource || !conversationId) return;
-
-    // SSE cannot use headers, so we pass Auth info as Query Params
-    const sseUrl = `${API_BASE}/stream/${conversationId}?x-tenant-id=${settings.tenantId}&x-api-key=${settings.apiKey}`;
+  // --- CUSTOM FETCH STREAM IMPLEMENTATION ---
+  // Replaces EventSource to allow Custom Headers
+  async function connectToStream() {
+    if (isStreamActive || !conversationId) return;
     
-    eventSource = new EventSource(sseUrl);
+    // AbortController allows us to close the connection cleanly
+    streamController = new AbortController();
+    isStreamActive = true;
 
-    eventSource.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.sender === 'agent') {
-          appendMessageToUI(msg.text, 'agent');
+    try {
+      const response = await fetch(`${API_BASE}/stream/${conversationId}`, {
+        method: "GET",
+        headers: getHeaders(), // Headers are sent here!
+        signal: streamController.signal
+      });
+
+      if (!response.body) throw new Error("ReadableStream not supported");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        // Decode chunk and add to buffer
+        buffer += decoder.decode(value, { stream: true });
+        
+        // SSE messages are separated by double newline
+        const lines = buffer.split("\n\n");
+        // Keep the last incomplete chunk in the buffer
+        buffer = lines.pop(); 
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const jsonStr = line.slice(6); // Remove "data: " prefix
+            try {
+              const msg = JSON.parse(jsonStr);
+              handleIncomingMessage(msg);
+            } catch (e) {
+              console.error("UniBox: Stream Parse Error", e);
+            }
+          }
         }
-      } catch (e) {
-        console.error("UniBox: SSE Parse Error", e);
       }
-    };
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.warn("UniBox: Stream disconnected. Reconnecting in 5s...", err);
+      }
+    } finally {
+      isStreamActive = false;
+      // Reconnect logic
+      if (!streamController.signal.aborted) {
+         setTimeout(connectToStream, 5000);
+      }
+    }
+  }
 
-    eventSource.onerror = () => {
-      eventSource.close();
-      eventSource = null;
-      setTimeout(connectSSE, 5000);
-    };
+  function handleIncomingMessage(msg) {
+    // Only show AGENT messages (User messages are optimistic)
+    if (msg.sender === 'agent') {
+      appendMessageToUI(msg.text, 'agent');
+    }
   }
 
   async function sendMessageToApi(text) {
@@ -160,7 +194,7 @@
     try {
       await fetch(`${API_BASE}/message/user`, {
         method: "POST",
-        headers: getHeaders(), // Uses x-tenant-id & x-api-key
+        headers: getHeaders(),
         body: JSON.stringify({
           conversationId: conversationId,
           text: text,
@@ -200,14 +234,18 @@
   }
 
 
-  // --- 7. CORE RENDERING ---
+  // --- 6. UI RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
     host.id = "unibox-root";
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // --- STYLING LOGIC ---
+    // Header & Welcome normalization
+    const headerTitle = settings.appearance.header?.title || settings.appearance.headerName || "Support";
+    const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage || "Hi there!";
+
+    // Color & Style
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
@@ -322,7 +360,7 @@
     shadow.appendChild(styleTag);
     shadow.appendChild(container);
 
-    // --- 8. VIEW LOGIC ---
+    // --- 7. VIEW LOGIC ---
     const isFormEnabled = settings.preChatForm.enabled;
     const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     let currentView = (isFormEnabled && !hasSubmittedForm) ? 'form' : 'chat';
@@ -403,7 +441,7 @@
 
     renderView();
 
-    // --- 9. EVENTS ---
+    // --- 8. EVENTS ---
     const launcher = shadow.getElementById("launcherBtn");
     const windowEl = shadow.getElementById("chatWindow");
     const closeBtn = shadow.getElementById("closeBtn");
@@ -429,6 +467,7 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
+        // Optimistic UI
         const userMsg = document.createElement('div');
         userMsg.textContent = text;
         userMsg.style.cssText = `

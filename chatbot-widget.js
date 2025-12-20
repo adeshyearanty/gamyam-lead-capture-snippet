@@ -87,11 +87,46 @@
     }
   }
 
-  // --- 5. API LOGIC ---
+  // --- 5. API LOGIC (RESTORE + STREAM) ---
 
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
+    // 1. TRY TO RESTORE EXISTING THREAD
+    try {
+      console.log("UniBox: Attempting to restore thread for", userId);
+      const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
+        method: "GET",
+        headers: getHeaders()
+      });
+
+      if (restoreRes.ok) {
+        const data = await restoreRes.json();
+        
+        if (data.conversation) {
+          conversationId = data.conversation.id;
+          console.log("UniBox: Restored Conversation:", conversationId);
+
+          // RENDER HISTORY
+          if (data.messages && Array.isArray(data.messages)) {
+             data.messages.forEach(msg => {
+               // Map API 'sender' to UI 'type'
+               // API: sender="user" | "agent"
+               // UI: type="user" | "agent"
+               appendMessageToUI(msg.text, msg.sender);
+             });
+          }
+
+          // Connect to Stream
+          connectToStream();
+          return; // Exit, we are done
+        }
+      }
+    } catch (e) {
+      console.warn("UniBox: Could not restore thread, creating new one.", e);
+    }
+
+    // 2. IF RESTORE FAILS, CREATE NEW CONVERSATION
     try {
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
@@ -107,9 +142,8 @@
       
       const data = await res.json();
       conversationId = data.conversationId;
-      console.log("UniBox: Conversation Active:", conversationId);
+      console.log("UniBox: New Conversation Started:", conversationId);
       
-      // Start Stream
       connectToStream();
       
     } catch (error) {
@@ -117,24 +151,20 @@
     }
   }
 
-  // --- IMPROVED STREAM PARSER ---
   async function connectToStream() {
     if (isStreamActive || !conversationId) return;
     
     streamController = new AbortController();
     isStreamActive = true;
-    console.log("UniBox: Connecting to Event Stream...");
 
     try {
       const response = await fetch(`${API_BASE}/stream/${conversationId}`, {
         method: "GET",
-        headers: getHeaders(), // Headers sent correctly here
+        headers: getHeaders(),
         signal: streamController.signal
       });
 
-      if (!response.ok) {
-        throw new Error(`Stream connection failed: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Stream failed: ${response.status}`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
@@ -145,46 +175,31 @@
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        
-        // 1. Split by double newline (Standard SSE block separator)
         const blocks = buffer.split("\n\n");
-        // 2. Keep the last incomplete block in the buffer
         buffer = blocks.pop(); 
 
         for (const block of blocks) {
-          // 3. Process each line in the block to find "data:"
           const lines = block.split("\n");
           for (const line of lines) {
             if (line.trim().startsWith("data:")) {
               const jsonStr = line.replace("data:", "").trim();
               if (!jsonStr) continue;
-
               try {
                 const msg = JSON.parse(jsonStr);
-                console.log("UniBox: Event Received:", msg); // Debug log to confirm receipt
-                handleIncomingMessage(msg);
-              } catch (e) {
-                console.error("UniBox: JSON Parse Error", e);
-              }
+                // Only handle AGENT messages here (User msgs are optimistic)
+                if (msg.sender === 'agent') {
+                  appendMessageToUI(msg.text, 'agent');
+                }
+              } catch (e) { console.error(e); }
             }
           }
         }
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.warn("UniBox: Stream disconnected.", err);
-      }
+      if (err.name !== 'AbortError') console.warn("UniBox: Stream disconnected", err);
     } finally {
       isStreamActive = false;
-      if (!streamController.signal.aborted) {
-         setTimeout(connectToStream, 5000); // Retry logic
-      }
-    }
-  }
-
-  function handleIncomingMessage(msg) {
-    if (msg.sender === 'agent') {
-      appendMessageToUI(msg.text, 'agent');
+      if (!streamController.signal.aborted) setTimeout(connectToStream, 5000);
     }
   }
 
@@ -224,16 +239,20 @@
       msgDiv.textContent = text;
     } else {
       msgDiv.textContent = text;
+      // User Message Style
       msgDiv.style.cssText = `
         background: var(--primary); color: white; padding: 12px 16px; 
         border-radius: 12px; border-bottom-right-radius: 2px;
         font-size: 14px; line-height: 1.5; max-width: 85%; 
-        margin-bottom: 15px; align-self: flex-end; margin-left: auto;
+        margin-bottom: 15px; align-self: flex-end; margin-left: auto; word-break: break-word;
       `;
     }
     
     body.appendChild(msgDiv);
-    body.scrollTop = body.scrollHeight;
+    // Scroll to bottom
+    requestAnimationFrame(() => {
+        body.scrollTop = body.scrollHeight;
+    });
   }
 
 
@@ -244,7 +263,7 @@
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // Styles & Logic (Same as before)
+    // Styles & Logic
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
@@ -422,18 +441,23 @@
       } else {
         footer.classList.remove('hidden');
         
+        // On View load, we don't clear body here if we are restoring history.
+        // But if history is empty, we show welcome message
         const msgDiv = document.createElement('div');
         msgDiv.className = 'bot-msg';
         
-        if(settings.behavior.typingIndicator) {
-            msgDiv.textContent = "...";
-            body.appendChild(msgDiv);
-            setTimeout(() => {
+        // Only show welcome if body is empty (no restored messages)
+        if(body.children.length === 0) {
+            if(settings.behavior.typingIndicator) {
+                msgDiv.textContent = "...";
+                body.appendChild(msgDiv);
+                setTimeout(() => {
+                    msgDiv.textContent = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
+                }, settings.behavior.botDelayMs);
+            } else {
                 msgDiv.textContent = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-            }, settings.behavior.botDelayMs);
-        } else {
-            msgDiv.textContent = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-            body.appendChild(msgDiv);
+                body.appendChild(msgDiv);
+            }
         }
       }
     };
@@ -466,13 +490,14 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
+        // Optimistic UI
         const userMsg = document.createElement('div');
         userMsg.textContent = text;
         userMsg.style.cssText = `
             background: var(--primary); color: white; padding: 12px 16px; 
             border-radius: 12px; border-bottom-right-radius: 2px;
             font-size: 14px; line-height: 1.5; max-width: 85%; 
-            margin-bottom: 15px; align-self: flex-end; margin-left: auto;
+            margin-bottom: 15px; align-self: flex-end; margin-left: auto; word-break: break-word;
         `;
         shadow.getElementById('chatBody').appendChild(userMsg);
         shadow.getElementById('chatBody').scrollTop = shadow.getElementById('chatBody').scrollHeight;

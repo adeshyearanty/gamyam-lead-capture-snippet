@@ -10,19 +10,17 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  // DYNAMIC API BASE URL LOGIC
-  // 1. Look for URL in settings
-  // 2. Fallback to a hardcoded production URL (Optional safety net)
-  const API_BASE = userConfig.apiBaseUrl || "https://api.your-production-domain.com/messages/v1/chat";
+  // DYNAMIC API BASE URL
+  const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/messages/v1/chat";
 
   if (!userConfig.apiBaseUrl) {
-    console.warn("UniBox: apiBaseUrl not set in settings. Using default:", API_BASE);
+    console.warn("UniBox: apiBaseUrl not set. Using default:", API_BASE);
   }
 
   const defaults = {
     tenantId: "",
-    apiKey: "",
-    apiBaseUrl: "", // Added to defaults
+    apiKey: "", // This comes from your embed code
+    apiBaseUrl: "",
     appearance: {
       primaryColor: "#2563EB",
       secondaryColor: "#1D4ED8",
@@ -67,11 +65,21 @@
     localStorage.setItem(STORAGE_KEY_USER, userId);
   }
 
-  // --- 3. DATA NORMALIZATION ---
+  // --- 3. HELPER: GET HEADERS ---
+  // Centralized place to get headers for all requests
+  function getHeaders() {
+    return {
+      "Content-Type": "application/json",
+      "x-tenant-id": settings.tenantId,
+      "x-api-key": settings.apiKey
+    };
+  }
+
+  // --- 4. DATA NORMALIZATION ---
   const headerTitle = settings.appearance.header?.title || settings.appearance.headerName || "Support";
   const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage || "Hi there!";
   
-  // --- 4. INITIALIZATION ---
+  // --- 5. INITIALIZATION ---
   if (document.readyState === "complete") {
     init();
   } else {
@@ -88,19 +96,15 @@
     }
   }
 
-  // --- 5. API LOGIC (Updated to use dynamic API_BASE) ---
+  // --- 6. API LOGIC ---
 
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
     try {
-      // Uses the dynamic API_BASE variable defined at the top
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-tenant-id": settings.tenantId
-        },
+        headers: getHeaders(), // Uses x-tenant-id & x-api-key
         body: JSON.stringify({
           userId: userId,
           userName: userDetails.name || "Guest User",
@@ -124,8 +128,8 @@
   function connectSSE() {
     if (eventSource || !conversationId) return;
 
-    // Uses dynamic API_BASE
-    const sseUrl = `${API_BASE}/stream/${conversationId}?x-tenant-id=${settings.tenantId}`;
+    // SSE cannot use headers, so we pass Auth info as Query Params
+    const sseUrl = `${API_BASE}/stream/${conversationId}?x-tenant-id=${settings.tenantId}&x-api-key=${settings.apiKey}`;
     
     eventSource = new EventSource(sseUrl);
 
@@ -154,13 +158,9 @@
     }
 
     try {
-      // Uses dynamic API_BASE
       await fetch(`${API_BASE}/message/user`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-tenant-id": settings.tenantId
-        },
+        headers: getHeaders(), // Uses x-tenant-id & x-api-key
         body: JSON.stringify({
           conversationId: conversationId,
           text: text,
@@ -199,13 +199,15 @@
     body.scrollTop = body.scrollHeight;
   }
 
-  // --- 6. CORE RENDERING ---
+
+  // --- 7. CORE RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
     host.id = "unibox-root";
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
+    // --- STYLING LOGIC ---
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
@@ -320,7 +322,7 @@
     shadow.appendChild(styleTag);
     shadow.appendChild(container);
 
-    // --- 7. VIEW LOGIC ---
+    // --- 8. VIEW LOGIC ---
     const isFormEnabled = settings.preChatForm.enabled;
     const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     let currentView = (isFormEnabled && !hasSubmittedForm) ? 'form' : 'chat';
@@ -401,7 +403,7 @@
 
     renderView();
 
-    // --- 8. EVENTS ---
+    // --- 9. EVENTS ---
     const launcher = shadow.getElementById("launcherBtn");
     const windowEl = shadow.getElementById("chatWindow");
     const closeBtn = shadow.getElementById("closeBtn");

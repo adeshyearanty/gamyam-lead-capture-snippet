@@ -1,399 +1,247 @@
 (function () {
-  // --- 1. CONFIGURATION & DEFAULTS ---
-  if (!window.UniBoxSettings || !window.UniBoxSettings.tenantId) {
-    console.error("UniBox: Settings or Tenant ID missing.");
-    return;
-  }
+  window.UniBoxWidget = (function () {
+    // Internal State
+    let config = {};
+    let conversationId = null;
+    let userId = null;
+    let eventSource = null;
+    let isChatOpen = false;
 
-  const userConfig = window.UniBoxSettings;
-  const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
-  const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
-
-  const defaults = {
-    tenantId: "",
-    apiKey: "",
-    appearance: {
-      primaryColor: "#2563EB",
-      secondaryColor: "#1D4ED8",
-      backgroundColor: "#FFFFFF",
-      fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont",
-      iconStyle: "rounded",
-      logoUrl: "",
-      header: {
-        title: "Support",
-        welcomeMessage: "Hi there! How can we help?",
-        offlineMessage: "We are currently offline."
-      },
-      headerName: "Support", 
-      welcomeMessage: "Hi there! How can we help?",
-      chatToggleIcon: {
-        backgroundColor: "#2563EB", 
-        style: "rounded"
+    // --- 1. Initialization ---
+    function init(userConfig) {
+      config = userConfig;
+      
+      if (!config.tenantId) {
+        console.error("UniBox: Tenant ID is required.");
+        return;
       }
-    },
-    behavior: {
-      botDelayMs: 600,
-      typingIndicator: true,
-      autoOpen: false,
-      autoOpenDelay: 2000,
-      stickyPlacement: "bottom-right"
-    },
-    preChatForm: {
-      enabled: false,
-      fields: []
+
+      // 1. Load or Generate Guest User ID
+      userId = localStorage.getItem('unibox_guest_id');
+      if (!userId) {
+        userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        localStorage.setItem('unibox_guest_id', userId);
+      }
+
+      // 2. Render UI
+      injectStyles();
+      createWidgetUI();
+
+      // 3. Check for existing active conversation
+      initializeConversation();
     }
-  };
 
-  const settings = deepMerge(defaults, userConfig);
-
-  // --- 2. DATA NORMALIZATION ---
-  const headerTitle = settings.appearance.header?.title || settings.appearance.headerName || "Support";
-  const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage || "Hi there!";
-  
-  // --- 3. INITIALIZATION ---
-  if (document.readyState === "complete") {
-    init();
-  } else {
-    window.addEventListener("load", init);
-  }
-
-  function init() {
-    loadGoogleFont(settings.appearance.fontFamily);
-    renderWidget();
-  }
-
-  // --- 4. CORE RENDERING ---
-  function renderWidget() {
-    const host = document.createElement("div");
-    host.id = "unibox-root";
-    document.body.appendChild(host);
-    const shadow = host.attachShadow({ mode: "open" });
-
-    // --- COLOR LOGIC ---
-    const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
-    const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
-      ? settings.appearance.primaryColor 
-      : '#FFFFFF';
-
-    // --- POSITIONING LOGIC ---
-    const placement = settings.behavior.stickyPlacement || "bottom-right";
-    const isTop = placement.includes("top");
-    const isRight = placement.includes("right");
-
-    const horizontalCss = isRight ? "right: 20px;" : "left: 20px;";
-    const verticalLauncherCss = isTop ? "top: 20px;" : "bottom: 20px;";
-    const verticalWindowCss = isTop ? "top: 90px;" : "bottom: 90px;";
-    const hiddenTransform = isTop ? "translateY(-20px)" : "translateY(20px)";
-
-    // --- SHAPE LOGIC ---
-    const getRadius = (style) => {
-        if (style === "rounded") return "12px";
-        if (style === "square") return "0px";
-        return "50%";
-    };
-    const launcherRadius = getRadius(settings.appearance.chatToggleIcon.style);
+    // --- 2. API Interactions ---
     
-    // --- STYLES ---
-    const styleTag = document.createElement("style");
-    styleTag.textContent = `
-      :host {
-        --primary: ${settings.appearance.primaryColor};
-        --secondary: ${settings.appearance.secondaryColor};
-        --bg: ${settings.appearance.backgroundColor};
-        --launcher-bg: ${launcherBg};
-        --launcher-color: ${launcherIconColor};
-        --font: '${settings.appearance.fontFamily}', sans-serif;
-        --radius: 12px;
-        
-        position: fixed; z-index: 2147483647; 
-        top: auto; bottom: auto; left: auto; right: auto;
-        font-family: var(--font);
-      }
-      * { box-sizing: border-box; }
-      
-      /* LAUNCHER */
-      .launcher {
-        position: fixed; 
-        ${verticalLauncherCss} ${horizontalCss}
-        width: 60px; height: 60px; 
-        background: var(--launcher-bg); 
-        color: var(--launcher-color);
-        border-radius: ${launcherRadius};
-        box-shadow: 0 4px 14px rgba(0,0,0,0.15); cursor: pointer;
-        display: flex; align-items: center; justify-content: center; 
-        transition: transform 0.2s, box-shadow 0.2s;
-        overflow: hidden; /* Ensures image stays inside shape */
-      }
-      .launcher:hover { transform: scale(1.05); box-shadow: 0 6px 20px rgba(0,0,0,0.2); }
-      
-      .launcher-img {
-        width: 100%; height: 100%; 
-        object-fit: cover; 
-      }
-
-      /* CHAT WINDOW */
-      .chat-window {
-        position: fixed; 
-        ${verticalWindowCss} ${horizontalCss}
-        width: 380px; height: 600px; max-width: 90vw; max-height: 80vh;
-        background: #ffffff; 
-        border-radius: var(--radius);
-        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
-        display: flex; flex-direction: column; overflow: hidden;
-        opacity: 0; pointer-events: none; 
-        transform: ${hiddenTransform} scale(0.95);
-        transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-        border: 1px solid rgba(0,0,0,0.05);
-      }
-      .chat-window.open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
-
-      /* HEADER */
-      .header { 
-        background: var(--primary); 
-        padding: 16px; 
-        color: #fff; 
-        display: flex; align-items: center; gap: 12px; flex-shrink: 0; 
-      }
-      .header-logo {
-        width: 32px; height: 32px; 
-        border-radius: 50%; 
-        background: #fff; 
-        padding: 2px; 
-        object-fit: cover;
-      }
-      .header-title { font-weight: 600; font-size: 16px; letter-spacing: 0.3px; }
-
-      /* BODY */
-      .body { flex: 1; padding: 20px; overflow-y: auto; background-color: #f9f9f9; position: relative; }
-      
-      /* BUBBLES */
-      .bot-msg { 
-        background: #fff; padding: 12px 16px; 
-        border-radius: 12px; border-bottom-left-radius: 2px; 
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05); color: #333; 
-        font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; 
-      }
-
-      /* FORM STYLES */
-      .form-container { 
-        display: flex; flex-direction: column; gap: 15px; 
-        background: #fff; padding: 24px; border-radius: 8px; 
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
-      }
-      .form-group { display: flex; flex-direction: column; gap: 6px; }
-      .form-label { font-size: 13px; font-weight: 500; color: #374151; }
-      .form-input { 
-        width: 100%; padding: 10px; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 14px; 
-        transition: border-color 0.2s; font-family: inherit;
-      }
-      .form-input:focus { outline: none; border-color: var(--primary); }
-      textarea.form-input { min-height: 80px; resize: vertical; }
-      
-      .form-btn { 
-        width: 100%; padding: 12px; background: var(--primary); color: white; 
-        border: none; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 5px; 
-      }
-      .form-btn:hover { opacity: 0.9; }
-
-      /* FOOTER */
-      .footer { padding: 12px; background: #fff; border-top: 1px solid #eee; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-      .footer.hidden { display: none; }
-      .input-wrapper { flex: 1; display: flex; align-items: center; background: #f3f4f6; border-radius: 20px; padding: 8px 12px; }
-      .msg-input { flex: 1; border: none; background: transparent; outline: none; font-size: 14px; color: #1f2937; }
-      .send-btn { 
-        background: var(--primary); color: white; border: none; 
-        width: 36px; height: 36px; border-radius: 50%; 
-        cursor: pointer; display: flex; align-items: center; justify-content: center; 
-      }
-    `;
-
-    // SVG Icons
-    const sendIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
-    const chatIcon = `<svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>`;
-
-    // --- HTML STRUCTURE ---
-    const container = document.createElement("div");
-
-    // HEADER LOGO: shown inside the chat window header
-    const headerLogoImg = settings.appearance.logoUrl 
-        ? `<img src="${settings.appearance.logoUrl}" class="header-logo" alt="Logo" />` 
-        : '';
-
-    // LAUNCHER CONTENT: If logoUrl exists, show it; otherwise show SVG icon
-    const launcherContent = settings.appearance.logoUrl 
-        ? `<img src="${settings.appearance.logoUrl}" class="launcher-img" alt="Chat" />`
-        : chatIcon;
-
-    container.innerHTML = `
-      <div class="launcher" id="launcherBtn">${launcherContent}</div>
-      
-      <div class="chat-window" id="chatWindow">
-        <div class="header">
-           ${headerLogoImg}
-           <div class="header-title">${headerTitle}</div>
-           <div id="closeBtn" style="margin-left:auto; cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
-        </div>
-        
-        <div class="body" id="chatBody"></div>
-
-        <div class="footer hidden" id="chatFooter">
-           <div class="input-wrapper">
-             <input type="text" class="msg-input" id="msgInput" placeholder="Type a message..." />
-           </div>
-           <button class="send-btn" id="sendBtn">${sendIcon}</button>
-        </div>
-      </div>
-    `;
-
-    shadow.appendChild(styleTag);
-    shadow.appendChild(container);
-
-    // --- 5. VIEW LOGIC (Form vs Chat) ---
-    const isFormEnabled = settings.preChatForm.enabled;
-    const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
-    let currentView = (isFormEnabled && !hasSubmittedForm) ? 'form' : 'chat';
-
-    const renderView = () => {
-      const body = shadow.getElementById("chatBody");
-      const footer = shadow.getElementById("chatFooter");
-      body.innerHTML = ''; 
-
-      if (currentView === 'form') {
-        footer.classList.add('hidden');
-        
-        const fieldsHtml = settings.preChatForm.fields.map(f => {
-          let inputHtml = '';
-          const isRequired = f.required ? 'required' : '';
-          
-          if (f.type === 'textarea') {
-            inputHtml = `<textarea class="form-input" name="${f.id}" ${isRequired} placeholder="${f.label}"></textarea>`;
-          } else {
-            const inputType = f.type === 'phone' ? 'tel' : f.type;
-            inputHtml = `<input class="form-input" type="${inputType}" name="${f.id}" ${isRequired} placeholder="${f.label}">`;
-          }
-
-          return `
-            <div class="form-group">
-              <label class="form-label">${f.label}${f.required ? ' <span style="color:red">*</span>' : ''}</label>
-              ${inputHtml}
-            </div>
-          `;
-        }).join('');
-
-        const formContainer = document.createElement('div');
-        formContainer.className = 'form-container';
-        formContainer.innerHTML = `
-          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:16px; color:#111;">Welcome</div>
-          <div style="text-align:center; margin-bottom:20px; font-size:14px; color:#666;">Please fill in your details to continue.</div>
-          <form id="preChatForm">
-            ${fieldsHtml}
-            <button type="submit" class="form-btn">Start Chat</button>
-          </form>
-        `;
-        body.appendChild(formContainer);
-        
-        const formEl = formContainer.querySelector('#preChatForm');
-        formEl.addEventListener('submit', (e) => {
-          e.preventDefault();
-          const formData = new FormData(formEl);
-          const data = Object.fromEntries(formData.entries());
-          
-          console.log("UniBox: Pre-chat Info:", data);
-          sessionStorage.setItem(SESSION_KEY_FORM, "true");
-          currentView = 'chat';
-          renderView();
+    async function initializeConversation() {
+      try {
+        // Endpoint: POST /messages/v1/chat/conversation
+        const res = await fetch(`${config.apiBaseUrl}/conversation`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-tenant-id": config.tenantId
+          },
+          body: JSON.stringify({
+            userId: userId,
+            userName: "Guest User", // You could allow passing this in init()
+            userEmail: ""           // Optional
+          })
         });
 
+        if (!res.ok) throw new Error("Failed to init conversation");
+
+        const data = await res.json();
+        conversationId = data.conversationId;
+        
+        console.log("UniBox: Conversation Active", conversationId);
+        
+        // Start Listening for Agent Replies
+        connectSSE();
+
+      } catch (err) {
+        console.error("UniBox: API Error", err);
+      }
+    }
+
+    function connectSSE() {
+      if (eventSource) return; // Already connected
+
+      // Endpoint: GET /messages/v1/chat/stream/:conversationId
+      // NOTE: EventSource does not support headers. We pass tenantId as query param.
+      // Ensure your NestJS backend checks Query Params if Header is missing for SSE.
+      const sseUrl = `${config.apiBaseUrl}/stream/${conversationId}?x-tenant-id=${config.tenantId}`;
+      
+      eventSource = new EventSource(sseUrl);
+
+      eventSource.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        // Only display if it comes from the agent (User messages are optimistic)
+        if (msg.sender === 'agent') {
+          appendMessage(msg.text, 'agent');
+        }
+      };
+
+      eventSource.onerror = (err) => {
+        console.warn("UniBox: SSE Disconnected. Reconnecting in 5s...", err);
+        eventSource.close();
+        eventSource = null;
+        setTimeout(connectSSE, 5000);
+      };
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById("unibox-input");
+      const text = input.value.trim();
+      if (!text) return;
+
+      // 1. Optimistic UI Update (Show immediately)
+      appendMessage(text, 'user');
+      input.value = "";
+
+      try {
+        // Endpoint: POST /messages/v1/chat/message/user
+        await fetch(`${config.apiBaseUrl}/message/user`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-tenant-id": config.tenantId
+          },
+          body: JSON.stringify({
+            conversationId: conversationId,
+            text: text,
+            userId: userId
+          })
+        });
+      } catch (err) {
+        console.error("UniBox: Send Failed", err);
+        appendMessage("Failed to send message. Please retry.", 'system');
+      }
+    }
+
+    // --- 3. UI Logic (Vanilla JS) ---
+
+    function toggleChat() {
+      isChatOpen = !isChatOpen;
+      const windowEl = document.getElementById("unibox-window");
+      const launcherEl = document.getElementById("unibox-launcher");
+      
+      if (isChatOpen) {
+        windowEl.style.display = "flex";
+        setTimeout(() => windowEl.style.opacity = "1", 10); // Fade in
+        launcherEl.innerHTML = "&times;"; // Change icon to X
+        scrollToBottom();
       } else {
-        footer.classList.remove('hidden');
-        
-        const msgDiv = document.createElement('div');
-        msgDiv.className = 'bot-msg';
-        
-        if(settings.behavior.typingIndicator) {
-            msgDiv.textContent = "...";
-            body.appendChild(msgDiv);
-            setTimeout(() => {
-                msgDiv.textContent = welcomeText;
-            }, settings.behavior.botDelayMs);
-        } else {
-            msgDiv.textContent = welcomeText;
-            body.appendChild(msgDiv);
-        }
-      }
-    };
-
-    renderView();
-
-    // --- 6. EVENT HANDLERS ---
-    const launcher = shadow.getElementById("launcherBtn");
-    const windowEl = shadow.getElementById("chatWindow");
-    const closeBtn = shadow.getElementById("closeBtn");
-    const sendBtn = shadow.getElementById("sendBtn");
-    const msgInput = shadow.getElementById("msgInput");
-
-    const toggle = (forceState) => {
-      const isOpen = windowEl.classList.contains("open");
-      const nextState = forceState !== undefined ? forceState : !isOpen;
-      
-      if (nextState) windowEl.classList.add("open");
-      else windowEl.classList.remove("open");
-      
-      if (settings.behavior.stickyPlacement) {
-        localStorage.setItem(STORAGE_KEY_OPEN, nextState);
-      }
-    };
-
-    launcher.addEventListener("click", () => toggle());
-    closeBtn.addEventListener("click", () => toggle(false));
-
-    const handleSend = () => {
-        const text = msgInput.value.trim();
-        if(!text) return;
-        
-        const userMsg = document.createElement('div');
-        userMsg.textContent = text;
-        userMsg.style.cssText = `
-            background: var(--primary); color: white; padding: 12px 16px; 
-            border-radius: 12px; border-bottom-right-radius: 2px;
-            font-size: 14px; line-height: 1.5; max-width: 85%; 
-            margin-bottom: 15px; align-self: flex-end; margin-left: auto;
-        `;
-        shadow.getElementById('chatBody').appendChild(userMsg);
-        shadow.getElementById('chatBody').scrollTop = shadow.getElementById('chatBody').scrollHeight;
-        msgInput.value = "";
-    };
-
-    sendBtn.addEventListener("click", handleSend);
-    msgInput.addEventListener("keypress", (e) => { if(e.key === 'Enter') handleSend(); });
-
-    // --- 7. AUTO OPEN ---
-    if (settings.behavior.autoOpen) {
-        const hasHistory = localStorage.getItem(STORAGE_KEY_OPEN);
-        if (hasHistory === null || hasHistory === "true") {
-           const delay = settings.behavior.autoOpenDelay || 2000;
-           setTimeout(() => toggle(true), delay);
-        }
-    }
-  }
-
-  function deepMerge(target, source) {
-    for (const key in source) {
-      if (source[key] instanceof Object && key in target) {
-        Object.assign(source[key], deepMerge(target[key], source[key]));
+        windowEl.style.opacity = "0";
+        setTimeout(() => windowEl.style.display = "none", 200); // Fade out
+        launcherEl.innerHTML = `<svg viewBox="0 0 24 24" width="24" height="24" fill="white"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>`;
       }
     }
-    Object.assign(target || {}, source);
-    return target;
-  }
-  
-  function loadGoogleFont(font) {
-    if (!font) return;
-    const family = font.split(',')[0].replace(/['"]/g, '').trim();
-    if (['sans-serif', 'serif', 'system-ui'].includes(family.toLowerCase())) return;
-    const link = document.createElement('link');
-    link.href = `https://fonts.googleapis.com/css2?family=${family.replace(/ /g, '+')}:wght@400;500;600&display=swap`;
-    link.rel = 'stylesheet';
-    document.head.appendChild(link);
-  }
+
+    function appendMessage(text, sender) {
+      const body = document.getElementById("unibox-body");
+      const msgDiv = document.createElement("div");
+      
+      msgDiv.className = `unibox-msg ${sender}`;
+      msgDiv.textContent = text;
+      
+      body.appendChild(msgDiv);
+      scrollToBottom();
+    }
+
+    function scrollToBottom() {
+      const body = document.getElementById("unibox-body");
+      body.scrollTop = body.scrollHeight;
+    }
+
+    function createWidgetUI() {
+      // Container
+      const container = document.createElement("div");
+      container.id = "unibox-root";
+      
+      // Chat Window
+      const chatWindow = document.createElement("div");
+      chatWindow.id = "unibox-window";
+      chatWindow.innerHTML = `
+        <div class="unibox-header">Support Chat</div>
+        <div class="unibox-body" id="unibox-body">
+          <div class="unibox-msg system">Welcome! How can we help?</div>
+        </div>
+        <div class="unibox-footer">
+          <input type="text" id="unibox-input" placeholder="Type a message..." />
+          <button id="unibox-send">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="white"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
+      `;
+
+      // Launcher Button
+      const launcher = document.createElement("div");
+      launcher.id = "unibox-launcher";
+      launcher.innerHTML = `<svg viewBox="0 0 24 24" width="24" height="24" fill="white"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>`;
+      
+      container.appendChild(chatWindow);
+      container.appendChild(launcher);
+      document.body.appendChild(container);
+
+      // Event Listeners
+      launcher.addEventListener("click", toggleChat);
+      
+      const sendBtn = document.getElementById("unibox-send");
+      const inputEl = document.getElementById("unibox-input");
+
+      sendBtn.addEventListener("click", sendMessage);
+      inputEl.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") sendMessage();
+      });
+    }
+
+    function injectStyles() {
+      const color = config.primaryColor || "#007BFF";
+      const style = document.createElement("style");
+      style.textContent = `
+        #unibox-root { position: fixed; bottom: 20px; right: 20px; z-index: 9999; font-family: sans-serif; }
+        
+        /* Launcher */
+        #unibox-launcher {
+          width: 60px; height: 60px; background: ${color}; border-radius: 50%;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15); cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          transition: transform 0.2s;
+          color: white; font-size: 24px;
+        }
+        #unibox-launcher:hover { transform: scale(1.05); }
+
+        /* Window */
+        #unibox-window {
+          position: absolute; bottom: 80px; right: 0;
+          width: 350px; height: 500px; background: white;
+          border-radius: 12px; box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+          display: none; flex-direction: column; opacity: 0; transition: opacity 0.2s;
+          overflow: hidden;
+        }
+
+        /* Header */
+        .unibox-header { background: ${color}; color: white; padding: 16px; font-weight: bold; }
+
+        /* Body */
+        .unibox-body { flex: 1; padding: 15px; overflow-y: auto; background: #f9f9f9; display: flex; flex-direction: column; gap: 10px; }
+        
+        /* Messages */
+        .unibox-msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
+        .unibox-msg.user { align-self: flex-end; background: ${color}; color: white; border-bottom-right-radius: 2px; }
+        .unibox-msg.agent { align-self: flex-start; background: #E5E7EB; color: black; border-bottom-left-radius: 2px; }
+        .unibox-msg.system { align-self: center; background: transparent; color: #888; font-size: 12px; text-align: center; }
+
+        /* Footer */
+        .unibox-footer { padding: 10px; border-top: 1px solid #eee; display: flex; gap: 10px; background: white; }
+        #unibox-input { flex: 1; border: 1px solid #ddd; border-radius: 20px; padding: 10px 15px; outline: none; }
+        #unibox-send { background: ${color}; border: none; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        #unibox-send:hover { opacity: 0.9; }
+      `;
+      document.head.appendChild(style);
+    }
+
+    return { init };
+  })();
 })();

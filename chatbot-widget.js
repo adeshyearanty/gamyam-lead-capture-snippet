@@ -9,7 +9,6 @@
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
 
-  // Default configuration structure
   const defaults = {
     tenantId: "",
     apiKey: "",
@@ -20,16 +19,13 @@
       fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont",
       iconStyle: "rounded",
       logoUrl: "",
-      // New Nested Header Structure
       header: {
         title: "Support",
         welcomeMessage: "Hi there! How can we help?",
         offlineMessage: "We are currently offline."
       },
-      // Fallbacks if user uses flat structure
       headerName: "Support", 
       welcomeMessage: "Hi there! How can we help?",
-      
       chatToggleIcon: {
         backgroundColor: "#2563EB", 
         style: "rounded"
@@ -51,7 +47,6 @@
   const settings = deepMerge(defaults, userConfig);
 
   // --- 2. DATA NORMALIZATION ---
-  // Ensure we get the title/message from the right place (nested object vs flat)
   const headerTitle = settings.appearance.header?.title || settings.appearance.headerName || "Support";
   const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage || "Hi there!";
   
@@ -76,7 +71,6 @@
 
     // --- COLOR LOGIC ---
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
-    // Contrast check: if background is white, icon is primary color. Else icon is white.
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
       : '#FFFFFF';
@@ -128,8 +122,14 @@
         box-shadow: 0 4px 14px rgba(0,0,0,0.15); cursor: pointer;
         display: flex; align-items: center; justify-content: center; 
         transition: transform 0.2s, box-shadow 0.2s;
+        overflow: hidden; /* Ensures image stays inside shape */
       }
       .launcher:hover { transform: scale(1.05); box-shadow: 0 6px 20px rgba(0,0,0,0.2); }
+      
+      .launcher-img {
+        width: 100%; height: 100%; 
+        object-fit: cover; 
+      }
 
       /* CHAT WINDOW */
       .chat-window {
@@ -214,17 +214,22 @@
     // --- HTML STRUCTURE ---
     const container = document.createElement("div");
 
-    // HEADER LOGO LOGIC: Use provided URL or fallback to empty string
-    const logoImg = settings.appearance.logoUrl 
+    // HEADER LOGO: shown inside the chat window header
+    const headerLogoImg = settings.appearance.logoUrl 
         ? `<img src="${settings.appearance.logoUrl}" class="header-logo" alt="Logo" />` 
         : '';
 
+    // LAUNCHER CONTENT: If logoUrl exists, show it; otherwise show SVG icon
+    const launcherContent = settings.appearance.logoUrl 
+        ? `<img src="${settings.appearance.logoUrl}" class="launcher-img" alt="Chat" />`
+        : chatIcon;
+
     container.innerHTML = `
-      <div class="launcher" id="launcherBtn">${chatIcon}</div>
+      <div class="launcher" id="launcherBtn">${launcherContent}</div>
       
       <div class="chat-window" id="chatWindow">
         <div class="header">
-           ${logoImg}
+           ${headerLogoImg}
            <div class="header-title">${headerTitle}</div>
            <div id="closeBtn" style="margin-left:auto; cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
         </div>
@@ -292,8 +297,8 @@
           e.preventDefault();
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
-          console.log("UniBox: Pre-chat Info:", data);
           
+          console.log("UniBox: Pre-chat Info:", data);
           sessionStorage.setItem(SESSION_KEY_FORM, "true");
           currentView = 'chat';
           renderView();
@@ -305,7 +310,6 @@
         const msgDiv = document.createElement('div');
         msgDiv.className = 'bot-msg';
         
-        // Typing Indicator Simulation
         if(settings.behavior.typingIndicator) {
             msgDiv.textContent = "...";
             body.appendChild(msgDiv);
@@ -373,7 +377,6 @@
     }
   }
 
-  // Utilities
   function deepMerge(target, source) {
     for (const key in source) {
       if (source[key] instanceof Object && key in target) {

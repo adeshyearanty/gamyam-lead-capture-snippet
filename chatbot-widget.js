@@ -10,12 +10,19 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  // UPDATE THIS TO YOUR ACTUAL NESTJS BACKEND URL
-  const API_BASE = "https://api.yourdomain.com/messages/v1/chat"; 
+  // DYNAMIC API BASE URL LOGIC
+  // 1. Look for URL in settings
+  // 2. Fallback to a hardcoded production URL (Optional safety net)
+  const API_BASE = userConfig.apiBaseUrl || "https://api.your-production-domain.com/messages/v1/chat";
+
+  if (!userConfig.apiBaseUrl) {
+    console.warn("UniBox: apiBaseUrl not set in settings. Using default:", API_BASE);
+  }
 
   const defaults = {
     tenantId: "",
     apiKey: "",
+    apiBaseUrl: "", // Added to defaults
     appearance: {
       primaryColor: "#2563EB",
       secondaryColor: "#1D4ED8",
@@ -55,7 +62,6 @@
   let eventSource = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
 
-  // Generate Guest ID if missing
   if (!userId) {
     userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     localStorage.setItem(STORAGE_KEY_USER, userId);
@@ -76,20 +82,19 @@
     loadGoogleFont(settings.appearance.fontFamily);
     renderWidget();
 
-    // If Pre-Chat Form is DISABLED, start conversation immediately
-    // If ENABLED, we wait for the form submit to start it (so we capture name/email)
     const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     if (!settings.preChatForm.enabled || hasSubmittedForm) {
       initializeConversation();
     }
   }
 
-  // --- 5. API LOGIC ---
+  // --- 5. API LOGIC (Updated to use dynamic API_BASE) ---
 
   async function initializeConversation(userDetails = {}) {
-    if (conversationId) return; // Already active
+    if (conversationId) return; 
 
     try {
+      // Uses the dynamic API_BASE variable defined at the top
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
         headers: {
@@ -109,7 +114,6 @@
       conversationId = data.conversationId;
       console.log("UniBox: Conversation Started:", conversationId);
       
-      // Once we have an ID, listen for replies
       connectSSE();
       
     } catch (error) {
@@ -120,7 +124,7 @@
   function connectSSE() {
     if (eventSource || !conversationId) return;
 
-    // Passing tenantId as query param because EventSource doesn't support custom headers
+    // Uses dynamic API_BASE
     const sseUrl = `${API_BASE}/stream/${conversationId}?x-tenant-id=${settings.tenantId}`;
     
     eventSource = new EventSource(sseUrl);
@@ -128,7 +132,6 @@
     eventSource.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        // Only show AGENT messages (we show user messages immediately/optimistically)
         if (msg.sender === 'agent') {
           appendMessageToUI(msg.text, 'agent');
         }
@@ -138,22 +141,20 @@
     };
 
     eventSource.onerror = () => {
-      // console.warn("UniBox: SSE Disconnected. Reconnecting...");
       eventSource.close();
       eventSource = null;
-      // Simple backoff
       setTimeout(connectSSE, 5000);
     };
   }
 
   async function sendMessageToApi(text) {
     if (!conversationId) {
-      console.warn("UniBox: No conversation ID. Attempting to init...");
       await initializeConversation(); 
-      if (!conversationId) return; // Abort if still failed
+      if (!conversationId) return;
     }
 
     try {
+      // Uses dynamic API_BASE
       await fetch(`${API_BASE}/message/user`, {
         method: "POST",
         headers: {
@@ -168,11 +169,10 @@
       });
     } catch (error) {
       console.error("UniBox: Send Error", error);
-      appendMessageToUI("⚠️ Failed to send message. Please check your connection.", 'bot-msg'); // Fallback style
+      appendMessageToUI("⚠️ Failed to send message.", 'bot-msg');
     }
   }
 
-  // Helper to append incoming SSE messages to Shadow DOM
   function appendMessageToUI(text, type) {
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
@@ -186,7 +186,6 @@
       msgDiv.className = 'bot-msg';
       msgDiv.textContent = text;
     } else {
-      // This style matches the handleSend logic below
       msgDiv.textContent = text;
       msgDiv.style.cssText = `
         background: var(--primary); color: white; padding: 12px 16px; 
@@ -200,7 +199,6 @@
     body.scrollTop = body.scrollHeight;
   }
 
-
   // --- 6. CORE RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
@@ -208,7 +206,6 @@
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // --- COLOR & STYLE LOGIC ---
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
@@ -373,15 +370,11 @@
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
           
-          console.log("UniBox: Form Submitted, initializing chat...");
-          
-          // 1. Initialize Conversation with Form Data
           initializeConversation({
-            name: data.name || data["field-1766210497404"], // Handle standard 'name' or dynamic ID
+            name: data.name || data["field-1766210497404"],
             email: data.email
           });
 
-          // 2. Save State & Switch View
           sessionStorage.setItem(SESSION_KEY_FORM, "true");
           currentView = 'chat';
           renderView();
@@ -390,7 +383,6 @@
       } else {
         footer.classList.remove('hidden');
         
-        // Show previous messages logic could go here if you had history API
         const msgDiv = document.createElement('div');
         msgDiv.className = 'bot-msg';
         
@@ -435,7 +427,6 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
-        // 1. Optimistic UI Update
         const userMsg = document.createElement('div');
         userMsg.textContent = text;
         userMsg.style.cssText = `
@@ -448,7 +439,6 @@
         shadow.getElementById('chatBody').scrollTop = shadow.getElementById('chatBody').scrollHeight;
         msgInput.value = "";
 
-        // 2. Send to API
         sendMessageToApi(text);
     };
 

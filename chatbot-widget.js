@@ -10,7 +10,6 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  // Base URL
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/messages/v1/chat";
 
   const defaults = {
@@ -54,7 +53,7 @@
   // --- 2. STATE ---
   let conversationId = null;
   let isStreamActive = false;
-  let streamController = null; // To abort/restart stream
+  let streamController = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
 
   if (!userId) {
@@ -63,7 +62,6 @@
   }
 
   // --- 3. HELPER: HEADERS ---
-  // STRICTLY use headers for everything. No query params.
   function getHeaders() {
     return {
       "Content-Type": "application/json",
@@ -89,7 +87,7 @@
     }
   }
 
-  // --- 5. API LOGIC (REST + STREAM) ---
+  // --- 5. API LOGIC ---
 
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
@@ -109,9 +107,9 @@
       
       const data = await res.json();
       conversationId = data.conversationId;
-      console.log("UniBox: Conversation Started:", conversationId);
+      console.log("UniBox: Conversation Active:", conversationId);
       
-      // Start the Custom Stream
+      // Start Stream
       connectToStream();
       
     } catch (error) {
@@ -119,23 +117,24 @@
     }
   }
 
-  // --- CUSTOM FETCH STREAM IMPLEMENTATION ---
-  // Replaces EventSource to allow Custom Headers
+  // --- IMPROVED STREAM PARSER ---
   async function connectToStream() {
     if (isStreamActive || !conversationId) return;
     
-    // AbortController allows us to close the connection cleanly
     streamController = new AbortController();
     isStreamActive = true;
+    console.log("UniBox: Connecting to Event Stream...");
 
     try {
       const response = await fetch(`${API_BASE}/stream/${conversationId}`, {
         method: "GET",
-        headers: getHeaders(), // Headers are sent here!
+        headers: getHeaders(), // Headers sent correctly here
         signal: streamController.signal
       });
 
-      if (!response.body) throw new Error("ReadableStream not supported");
+      if (!response.ok) {
+        throw new Error(`Stream connection failed: ${response.status}`);
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
@@ -145,41 +144,45 @@
         const { value, done } = await reader.read();
         if (done) break;
 
-        // Decode chunk and add to buffer
         buffer += decoder.decode(value, { stream: true });
         
-        // SSE messages are separated by double newline
-        const lines = buffer.split("\n\n");
-        // Keep the last incomplete chunk in the buffer
-        buffer = lines.pop(); 
+        // 1. Split by double newline (Standard SSE block separator)
+        const blocks = buffer.split("\n\n");
+        // 2. Keep the last incomplete block in the buffer
+        buffer = blocks.pop(); 
 
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const jsonStr = line.slice(6); // Remove "data: " prefix
-            try {
-              const msg = JSON.parse(jsonStr);
-              handleIncomingMessage(msg);
-            } catch (e) {
-              console.error("UniBox: Stream Parse Error", e);
+        for (const block of blocks) {
+          // 3. Process each line in the block to find "data:"
+          const lines = block.split("\n");
+          for (const line of lines) {
+            if (line.trim().startsWith("data:")) {
+              const jsonStr = line.replace("data:", "").trim();
+              if (!jsonStr) continue;
+
+              try {
+                const msg = JSON.parse(jsonStr);
+                console.log("UniBox: Event Received:", msg); // Debug log to confirm receipt
+                handleIncomingMessage(msg);
+              } catch (e) {
+                console.error("UniBox: JSON Parse Error", e);
+              }
             }
           }
         }
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
-        console.warn("UniBox: Stream disconnected. Reconnecting in 5s...", err);
+        console.warn("UniBox: Stream disconnected.", err);
       }
     } finally {
       isStreamActive = false;
-      // Reconnect logic
       if (!streamController.signal.aborted) {
-         setTimeout(connectToStream, 5000);
+         setTimeout(connectToStream, 5000); // Retry logic
       }
     }
   }
 
   function handleIncomingMessage(msg) {
-    // Only show AGENT messages (User messages are optimistic)
     if (msg.sender === 'agent') {
       appendMessageToUI(msg.text, 'agent');
     }
@@ -234,23 +237,19 @@
   }
 
 
-  // --- 6. UI RENDERING ---
+  // --- 6. CORE RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
     host.id = "unibox-root";
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // Header & Welcome normalization
-    const headerTitle = settings.appearance.header?.title || settings.appearance.headerName || "Support";
-    const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage || "Hi there!";
-
-    // Color & Style
+    // Styles & Logic (Same as before)
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
       : '#FFFFFF';
-
+    
     const placement = settings.behavior.stickyPlacement || "bottom-right";
     const isTop = placement.includes("top");
     const isRight = placement.includes("right");
@@ -344,7 +343,7 @@
       <div class="chat-window" id="chatWindow">
         <div class="header">
            ${headerLogoImg}
-           <div class="header-title">${headerTitle}</div>
+           <div class="header-title">${settings.appearance.header?.title || settings.appearance.headerName}</div>
            <div id="closeBtn" style="margin-left:auto; cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
         </div>
         <div class="body" id="chatBody"></div>
@@ -430,10 +429,10 @@
             msgDiv.textContent = "...";
             body.appendChild(msgDiv);
             setTimeout(() => {
-                msgDiv.textContent = welcomeText;
+                msgDiv.textContent = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
             }, settings.behavior.botDelayMs);
         } else {
-            msgDiv.textContent = welcomeText;
+            msgDiv.textContent = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
             body.appendChild(msgDiv);
         }
       }
@@ -467,7 +466,6 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
-        // Optimistic UI
         const userMsg = document.createElement('div');
         userMsg.textContent = text;
         userMsg.style.cssText = `

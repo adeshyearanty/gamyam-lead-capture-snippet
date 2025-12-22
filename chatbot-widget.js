@@ -10,7 +10,12 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
+  // Base URL (defaults to chat endpoint)
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/messages/v1/chat";
+  
+  // Construct S3 URL by replacing '/chat' with '/s3/generate-access-url'
+  // Assumption: API structure is .../messages/v1/chat and .../messages/v1/s3/...
+  const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
 
   const defaults = {
     tenantId: "",
@@ -22,7 +27,7 @@
       backgroundColor: "#FFFFFF",
       fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont",
       iconStyle: "rounded",
-      logoUrl: "",
+      logoUrl: "", // This now holds the FILENAME (e.g., "Profile.jpg")
       header: {
         title: "Support",
         welcomeMessage: "Hi there! How can we help?",
@@ -55,6 +60,7 @@
   let isStreamActive = false;
   let streamController = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
+  let resolvedLogoUrl = ""; // To store the signed S3 URL
 
   if (!userId) {
     userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -77,24 +83,67 @@
     window.addEventListener("load", init);
   }
 
-  function init() {
+  async function init() {
     loadGoogleFont(settings.appearance.fontFamily);
+    
+    // 1. Resolve Logo URL (Secure Fetch)
+    if (settings.appearance.logoUrl) {
+      try {
+        resolvedLogoUrl = await fetchSignedUrl(settings.appearance.logoUrl);
+      } catch (err) {
+        console.warn("UniBox: Failed to load logo", err);
+      }
+    }
+
+    // 2. Render Widget
     renderWidget();
 
+    // 3. Handle Conversation Start
     const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     if (!settings.preChatForm.enabled || hasSubmittedForm) {
       initializeConversation();
     }
   }
 
-  // --- 5. API LOGIC (RESTORE + STREAM) ---
+  // --- 5. S3 LOGIC (NEW) ---
+  async function fetchSignedUrl(fileName) {
+    // Optimization: If it looks like a full URL already, skip fetching
+    if (fileName.startsWith('http')) return fileName;
+
+    try {
+      const res = await fetch(API_S3_URL, {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({ fileName: fileName })
+      });
+
+      if (!res.ok) throw new Error("S3 Sign failed");
+      
+      // Assuming response is just the string URL or object { url: "..." }
+      // Adjust based on your exact API response structure. 
+      // If response is text:
+      const data = await res.text();
+      // If response is JSON { url: "..." }:
+      try {
+         const json = JSON.parse(data);
+         return json.url || json.signedUrl || data;
+      } catch(e) {
+         return data; // Return raw text if not JSON
+      }
+
+    } catch (error) {
+      console.error("UniBox: S3 Error", error);
+      return ""; // Fallback to no logo
+    }
+  }
+
+  // --- 6. API LOGIC (REST + STREAM) ---
 
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
-    // 1. TRY TO RESTORE EXISTING THREAD
+    // 1. Try Restore
     try {
-      console.log("UniBox: Attempting to restore thread for", userId);
       const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
         method: "GET",
         headers: getHeaders()
@@ -102,31 +151,20 @@
 
       if (restoreRes.ok) {
         const data = await restoreRes.json();
-        
         if (data.conversation) {
           conversationId = data.conversation.id;
-          console.log("UniBox: Restored Conversation:", conversationId);
-
-          // RENDER HISTORY
           if (data.messages && Array.isArray(data.messages)) {
-             data.messages.forEach(msg => {
-               // Map API 'sender' to UI 'type'
-               // API: sender="user" | "agent"
-               // UI: type="user" | "agent"
-               appendMessageToUI(msg.text, msg.sender);
-             });
+             data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
           }
-
-          // Connect to Stream
           connectToStream();
-          return; // Exit, we are done
+          return; 
         }
       }
     } catch (e) {
-      console.warn("UniBox: Could not restore thread, creating new one.", e);
+      console.warn("UniBox: Restore failed, creating new.");
     }
 
-    // 2. IF RESTORE FAILS, CREATE NEW CONVERSATION
+    // 2. Create New
     try {
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
@@ -142,8 +180,6 @@
       
       const data = await res.json();
       conversationId = data.conversationId;
-      console.log("UniBox: New Conversation Started:", conversationId);
-      
       connectToStream();
       
     } catch (error) {
@@ -186,11 +222,10 @@
               if (!jsonStr) continue;
               try {
                 const msg = JSON.parse(jsonStr);
-                // Only handle AGENT messages here (User msgs are optimistic)
                 if (msg.sender === 'agent') {
                   appendMessageToUI(msg.text, 'agent');
                 }
-              } catch (e) { console.error(e); }
+              } catch (e) {}
             }
           }
         }
@@ -239,7 +274,6 @@
       msgDiv.textContent = text;
     } else {
       msgDiv.textContent = text;
-      // User Message Style
       msgDiv.style.cssText = `
         background: var(--primary); color: white; padding: 12px 16px; 
         border-radius: 12px; border-bottom-right-radius: 2px;
@@ -249,30 +283,25 @@
     }
     
     body.appendChild(msgDiv);
-    // Scroll to bottom
-    requestAnimationFrame(() => {
-        body.scrollTop = body.scrollHeight;
-    });
+    requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
   }
 
 
-  // --- 6. CORE RENDERING ---
+  // --- 7. CORE RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
     host.id = "unibox-root";
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // Styles & Logic
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
       : '#FFFFFF';
-    
+
     const placement = settings.behavior.stickyPlacement || "bottom-right";
     const isTop = placement.includes("top");
     const isRight = placement.includes("right");
-
     const horizontalCss = isRight ? "right: 20px;" : "left: 20px;";
     const verticalLauncherCss = isTop ? "top: 20px;" : "bottom: 20px;";
     const verticalWindowCss = isTop ? "top: 90px;" : "bottom: 90px;";
@@ -349,12 +378,14 @@
 
     const container = document.createElement("div");
 
-    const headerLogoImg = settings.appearance.logoUrl 
-        ? `<img src="${settings.appearance.logoUrl}" class="header-logo" alt="Logo" />` 
+    // HEADER LOGO (Uses resolvedLogoUrl)
+    const headerLogoImg = resolvedLogoUrl 
+        ? `<img src="${resolvedLogoUrl}" class="header-logo" alt="Logo" />` 
         : '';
 
-    const launcherContent = settings.appearance.logoUrl 
-        ? `<img src="${settings.appearance.logoUrl}" class="launcher-img" alt="Chat" />`
+    // LAUNCHER CONTENT (Uses resolvedLogoUrl)
+    const launcherContent = resolvedLogoUrl 
+        ? `<img src="${resolvedLogoUrl}" class="launcher-img" alt="Chat" />`
         : chatIcon;
 
     container.innerHTML = `
@@ -378,7 +409,7 @@
     shadow.appendChild(styleTag);
     shadow.appendChild(container);
 
-    // --- 7. VIEW LOGIC ---
+    // --- 8. VIEW LOGIC ---
     const isFormEnabled = settings.preChatForm.enabled;
     const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     let currentView = (isFormEnabled && !hasSubmittedForm) ? 'form' : 'chat';
@@ -441,12 +472,9 @@
       } else {
         footer.classList.remove('hidden');
         
-        // On View load, we don't clear body here if we are restoring history.
-        // But if history is empty, we show welcome message
         const msgDiv = document.createElement('div');
         msgDiv.className = 'bot-msg';
         
-        // Only show welcome if body is empty (no restored messages)
         if(body.children.length === 0) {
             if(settings.behavior.typingIndicator) {
                 msgDiv.textContent = "...";
@@ -464,7 +492,7 @@
 
     renderView();
 
-    // --- 8. EVENTS ---
+    // --- 9. EVENTS ---
     const launcher = shadow.getElementById("launcherBtn");
     const windowEl = shadow.getElementById("chatWindow");
     const closeBtn = shadow.getElementById("closeBtn");
@@ -490,7 +518,6 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
-        // Optimistic UI
         const userMsg = document.createElement('div');
         userMsg.textContent = text;
         userMsg.style.cssText = `
@@ -509,7 +536,6 @@
     sendBtn.addEventListener("click", handleSend);
     msgInput.addEventListener("keypress", (e) => { if(e.key === 'Enter') handleSend(); });
 
-    // Auto Open
     if (settings.behavior.autoOpen) {
         const hasHistory = localStorage.getItem(STORAGE_KEY_OPEN);
         if (hasHistory === null || hasHistory === "true") {

@@ -10,11 +10,7 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  // Base URL (defaults to chat endpoint)
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/messages/v1/chat";
-  
-  // Construct S3 URL by replacing '/chat' with '/s3/generate-access-url'
-  // Assumption: API structure is .../messages/v1/chat and .../messages/v1/s3/...
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
 
   const defaults = {
@@ -27,7 +23,7 @@
       backgroundColor: "#FFFFFF",
       fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont",
       iconStyle: "rounded",
-      logoUrl: "", // This now holds the FILENAME (e.g., "Profile.jpg")
+      logoUrl: "", 
       header: {
         title: "Support",
         welcomeMessage: "Hi there! How can we help?",
@@ -60,7 +56,7 @@
   let isStreamActive = false;
   let streamController = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
-  let resolvedLogoUrl = ""; // To store the signed S3 URL
+  let resolvedLogoUrl = ""; 
 
   if (!userId) {
     userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -86,7 +82,7 @@
   async function init() {
     loadGoogleFont(settings.appearance.fontFamily);
     
-    // 1. Resolve Logo URL (Secure Fetch)
+    // 1. Resolve Logo URL
     if (settings.appearance.logoUrl) {
       try {
         resolvedLogoUrl = await fetchSignedUrl(settings.appearance.logoUrl);
@@ -105,9 +101,8 @@
     }
   }
 
-  // --- 5. S3 LOGIC (NEW) ---
+  // --- 5. S3 LOGIC ---
   async function fetchSignedUrl(fileName) {
-    // Optimization: If it looks like a full URL already, skip fetching
     if (fileName.startsWith('http')) return fileName;
 
     try {
@@ -119,25 +114,19 @@
 
       if (!res.ok) throw new Error("S3 Sign failed");
       
-      // Assuming response is just the string URL or object { url: "..." }
-      // Adjust based on your exact API response structure. 
-      // If response is text:
       const data = await res.text();
-      // If response is JSON { url: "..." }:
       try {
          const json = JSON.parse(data);
          return json.url || json.signedUrl || data;
       } catch(e) {
-         return data; // Return raw text if not JSON
+         return data; 
       }
-
     } catch (error) {
-      console.error("UniBox: S3 Error", error);
-      return ""; // Fallback to no logo
+      return ""; 
     }
   }
 
-  // --- 6. API LOGIC (REST + STREAM) ---
+  // --- 6. API LOGIC ---
 
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
@@ -378,12 +367,10 @@
 
     const container = document.createElement("div");
 
-    // HEADER LOGO (Uses resolvedLogoUrl)
     const headerLogoImg = resolvedLogoUrl 
         ? `<img src="${resolvedLogoUrl}" class="header-logo" alt="Logo" />` 
         : '';
 
-    // LAUNCHER CONTENT (Uses resolvedLogoUrl)
     const launcherContent = resolvedLogoUrl 
         ? `<img src="${resolvedLogoUrl}" class="launcher-img" alt="Chat" />`
         : chatIcon;
@@ -459,9 +446,34 @@
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
           
+          // --- NEW EXTRACTION LOGIC ---
+          let capturedName = "";
+          let capturedEmail = "";
+
+          // Iterate to find correct fields regardless of random IDs
+          settings.preChatForm.fields.forEach(field => {
+            const val = data[field.id];
+            if(!val) return;
+
+            // Check for Name
+            if (field.type === 'text' && 
+               (field.label.toLowerCase().includes('name') || field.id.toLowerCase().includes('name'))) {
+                capturedName = val;
+            }
+            // Check for Email
+            if (field.type === 'email' || field.id.toLowerCase().includes('email')) {
+                capturedEmail = val;
+            }
+          });
+
+          // Fallback: If Name is missing but Email exists -> Name = Email
+          if (!capturedName && capturedEmail) {
+            capturedName = capturedEmail;
+          }
+
           initializeConversation({
-            name: data.name || data["field-1766210497404"],
-            email: data.email
+            name: capturedName, 
+            email: capturedEmail
           });
 
           sessionStorage.setItem(SESSION_KEY_FORM, "true");

@@ -10,7 +10,7 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/messages/v1/chat";
+  const API_BASE = userConfig.apiBaseUrl || "https://dev-api.salesastra.ai/pulse/v1/chat";
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
 
   const defaults = {

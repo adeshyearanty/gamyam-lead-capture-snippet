@@ -10,8 +10,23 @@
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
+  // Default to the Pulse API path
   const API_BASE = userConfig.apiBaseUrl || "https://dev-api.salesastra.ai/pulse/v1/chat";
+  
+  // Derive S3 URL (assuming /pulse/v1/s3 structure based on chat path)
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
+  
+  // Derive Socket URL: Take the origin (domain) + /events namespace
+  // Example: https://api.yourdomain.com/pulse/v1/chat -> https://api.yourdomain.com/events
+  const getSocketUrl = (apiUrl) => {
+    try {
+      const url = new URL(apiUrl);
+      return `${url.protocol}//${url.host}/events`;
+    } catch (e) {
+      return "http://localhost:3011/events";
+    }
+  };
+  const SOCKET_URL = getSocketUrl(API_BASE);
 
   const defaults = {
     tenantId: "",
@@ -53,8 +68,7 @@
 
   // --- 2. STATE ---
   let conversationId = null;
-  let isStreamActive = false;
-  let streamController = null;
+  let socket = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
   let resolvedLogoUrl = ""; 
 
@@ -67,12 +81,23 @@
   function getHeaders() {
     return {
       "Content-Type": "application/json",
-      "x-tenant-id": settings.tenantId,
-      "x-api-key": settings.apiKey
+      "x-tenant-id": settings.tenantId
     };
   }
 
-  // --- 4. INITIALIZATION ---
+  // --- 4. DEPENDENCY LOADER (Socket.IO) ---
+  function loadSocketScript(callback) {
+    if (window.io) {
+      callback();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = "https://cdn.socket.io/4.7.4/socket.io.min.js";
+    script.onload = callback;
+    document.head.appendChild(script);
+  }
+
+  // --- 5. INITIALIZATION ---
   if (document.readyState === "complete") {
     init();
   } else {
@@ -94,21 +119,26 @@
     // 2. Render Widget
     renderWidget();
 
-    // 3. Handle Conversation Start
-    const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
-    if (!settings.preChatForm.enabled || hasSubmittedForm) {
-      initializeConversation();
-    }
+    // 3. Load Socket Library then Initialize Chat
+    loadSocketScript(() => {
+        const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
+        if (!settings.preChatForm.enabled || hasSubmittedForm) {
+          initializeConversation();
+        }
+    });
   }
 
-  // --- 5. S3 LOGIC ---
+  // --- 6. S3 LOGIC ---
   async function fetchSignedUrl(fileName) {
     if (fileName.startsWith('http')) return fileName;
 
     try {
       const res = await fetch(API_S3_URL, {
         method: "POST",
-        headers: getHeaders(),
+        headers: {
+            ...getHeaders(),
+            "x-api-key": settings.apiKey // Only S3 might need API Key based on prev context
+        }, 
         body: JSON.stringify({ fileName: fileName })
       });
 
@@ -126,12 +156,12 @@
     }
   }
 
-  // --- 6. API LOGIC ---
+  // --- 7. API & SOCKET LOGIC ---
 
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
-    // 1. Try Restore
+    // 1. Try Restore Thread (GET /thread/:userId)
     try {
       const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
         method: "GET",
@@ -140,20 +170,26 @@
 
       if (restoreRes.ok) {
         const data = await restoreRes.json();
+        
+        // Check if conversation exists in the response
         if (data.conversation) {
           conversationId = data.conversation.id;
+          
+          // Render History
           if (data.messages && Array.isArray(data.messages)) {
              data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
           }
-          connectToStream();
+          
+          // Connect Socket
+          connectSocket();
           return; 
         }
       }
     } catch (e) {
-      console.warn("UniBox: Restore failed, creating new.");
+      console.warn("UniBox: Restore failed/empty, creating new.");
     }
 
-    // 2. Create New
+    // 2. Create New Conversation (POST /conversation)
     try {
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
@@ -169,62 +205,48 @@
       
       const data = await res.json();
       conversationId = data.conversationId;
-      connectToStream();
+      
+      // Connect Socket
+      connectSocket();
       
     } catch (error) {
       console.error("UniBox: Init Error", error);
     }
   }
 
-  async function connectToStream() {
-    if (isStreamActive || !conversationId) return;
-    
-    streamController = new AbortController();
-    isStreamActive = true;
+  function connectSocket() {
+    if (socket || !conversationId || !window.io) return;
 
-    try {
-      const response = await fetch(`${API_BASE}/stream/${conversationId}`, {
-        method: "GET",
-        headers: getHeaders(),
-        signal: streamController.signal
+    // Initialize Socket.IO
+    socket = window.io(SOCKET_URL, {
+      auth: {
+        tenantId: settings.tenantId
+      },
+      transports: ['websocket', 'polling'],
+      reconnection: true
+    });
+
+    socket.on('connect', () => {
+      console.log("UniBox: Socket Connected");
+      
+      // Join Room
+      socket.emit('join', {
+        type: 'chat',
+        conversationId: conversationId
       });
+    });
 
-      if (!response.ok) throw new Error(`Stream failed: ${response.status}`);
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split("\n\n");
-        buffer = blocks.pop(); 
-
-        for (const block of blocks) {
-          const lines = block.split("\n");
-          for (const line of lines) {
-            if (line.trim().startsWith("data:")) {
-              const jsonStr = line.replace("data:", "").trim();
-              if (!jsonStr) continue;
-              try {
-                const msg = JSON.parse(jsonStr);
-                if (msg.sender === 'agent') {
-                  appendMessageToUI(msg.text, 'agent');
-                }
-              } catch (e) {}
-            }
-          }
-        }
+    socket.on('message', (message) => {
+      // Only display messages from 'agent' 
+      // (User messages are displayed optimistically)
+      if (message.sender === 'agent') {
+        appendMessageToUI(message.text, 'agent');
       }
-    } catch (err) {
-      if (err.name !== 'AbortError') console.warn("UniBox: Stream disconnected", err);
-    } finally {
-      isStreamActive = false;
-      if (!streamController.signal.aborted) setTimeout(connectToStream, 5000);
-    }
+    });
+
+    socket.on('disconnect', () => {
+      console.log("UniBox: Socket Disconnected");
+    });
   }
 
   async function sendMessageToApi(text) {
@@ -243,6 +265,8 @@
           userId: userId
         })
       });
+      // Note: We don't need to do anything on success, 
+      // the message is already in UI (optimistic)
     } catch (error) {
       console.error("UniBox: Send Error", error);
       appendMessageToUI("⚠️ Failed to send message.", 'bot-msg');
@@ -276,7 +300,7 @@
   }
 
 
-  // --- 7. CORE RENDERING ---
+  // --- 8. UI RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
     host.id = "unibox-root";
@@ -396,7 +420,7 @@
     shadow.appendChild(styleTag);
     shadow.appendChild(container);
 
-    // --- 8. VIEW LOGIC ---
+    // --- 9. VIEW LOGIC ---
     const isFormEnabled = settings.preChatForm.enabled;
     const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     let currentView = (isFormEnabled && !hasSubmittedForm) ? 'form' : 'chat';
@@ -446,34 +470,34 @@
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
           
-          // --- NEW EXTRACTION LOGIC ---
+          // --- FORM DATA EXTRACTION LOGIC ---
           let capturedName = "";
           let capturedEmail = "";
 
-          // Iterate to find correct fields regardless of random IDs
           settings.preChatForm.fields.forEach(field => {
             const val = data[field.id];
             if(!val) return;
 
-            // Check for Name
             if (field.type === 'text' && 
                (field.label.toLowerCase().includes('name') || field.id.toLowerCase().includes('name'))) {
                 capturedName = val;
             }
-            // Check for Email
             if (field.type === 'email' || field.id.toLowerCase().includes('email')) {
                 capturedEmail = val;
             }
           });
 
-          // Fallback: If Name is missing but Email exists -> Name = Email
+          // Fallback: If Name missing but Email exists -> Name = Email
           if (!capturedName && capturedEmail) {
             capturedName = capturedEmail;
           }
 
-          initializeConversation({
-            name: capturedName, 
-            email: capturedEmail
+          // Initialize with extracted data
+          loadSocketScript(() => {
+              initializeConversation({
+                name: capturedName, 
+                email: capturedEmail
+              });
           });
 
           sessionStorage.setItem(SESSION_KEY_FORM, "true");
@@ -504,7 +528,7 @@
 
     renderView();
 
-    // --- 9. EVENTS ---
+    // --- 10. EVENTS ---
     const launcher = shadow.getElementById("launcherBtn");
     const windowEl = shadow.getElementById("chatWindow");
     const closeBtn = shadow.getElementById("closeBtn");

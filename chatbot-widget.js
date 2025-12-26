@@ -9,17 +9,32 @@
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  // 1. API Base URL (HTTP)
-  // Example: https://api.yourdomain.com/pulse/v1/chat
+  // 1. Base API URL (e.g., http://localhost:3011/pulse/v1/chat)
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/pulse/v1/chat";
   
-  // 2. S3 URL
-  // Example: https://api.yourdomain.com/pulse/v1/s3/generate-access-url
+  // 2. S3 URL (e.g., .../pulse/v1/s3/generate-access-url)
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
+
+  // 3. SOCKET CONFIGURATION HELPER
+  function getSocketConfig(apiBase) {
+    try {
+      const urlObj = new URL(apiBase);
+      // Remove '/chat' from the end to get the base '.../pulse/v1'
+      const basePath = urlObj.pathname.replace(/\/chat\/?$/, ""); 
+      
+      return {
+        // Namespace: http://localhost:3011/pulse/v1/events
+        namespaceUrl: `${urlObj.protocol}//${urlObj.host}${basePath}/events`,
+        // Engine Path: /pulse/v1/socket.io/
+        path: `${basePath}/socket.io/`
+      };
+    } catch (e) {
+      console.error("UniBox: Invalid API URL", e);
+      return { namespaceUrl: "", path: "" };
+    }
+  }
   
-  // 3. Socket URL (WebSocket Namespace)
-  // Example: https://api.yourdomain.com/pulse/v1/events
-  const SOCKET_URL = API_BASE.replace(/\/chat\/?$/, "/events");
+  const SOCKET_CONFIG = getSocketConfig(API_BASE);
 
   const defaults = {
     tenantId: "",
@@ -84,7 +99,6 @@
       return;
     }
     const script = document.createElement('script');
-    // Using a reliable CDN for Socket.IO client
     script.src = "https://cdn.socket.io/4.7.4/socket.io.min.js";
     script.onload = callback;
     document.head.appendChild(script);
@@ -154,7 +168,7 @@
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
-    // 1. Try Restore Thread (GET /thread/:userId)
+    // 1. Try Restore Thread
     try {
       const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
         method: "GET",
@@ -163,7 +177,6 @@
 
       if (restoreRes.ok) {
         const data = await restoreRes.json();
-        
         if (data.conversation) {
           conversationId = data.conversation.id;
           
@@ -177,10 +190,10 @@
         }
       }
     } catch (e) {
-      // console.warn("UniBox: Restore failed, creating new.");
+      // console.warn("UniBox: Restore failed/empty, creating new.");
     }
 
-    // 2. Create New Conversation (POST /conversation)
+    // 2. Create New Conversation
     try {
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
@@ -207,8 +220,10 @@
   function connectSocket() {
     if (socket || !conversationId || !window.io) return;
 
-    // Initialize Socket.IO with correct Namespace
-    socket = window.io(SOCKET_URL, {
+    // --- SOCKET CONNECTION FIX ---
+    // We must pass the 'path' option so it hits /pulse/v1/socket.io/ instead of root
+    socket = window.io(SOCKET_CONFIG.namespaceUrl, {
+      path: SOCKET_CONFIG.path,  // <--- THIS IS THE CRITICAL FIX
       auth: {
         tenantId: settings.tenantId
       },
@@ -217,22 +232,24 @@
     });
 
     socket.on('connect', () => {
-      console.log("UniBox: Connected to Realtime Events");
+      console.log("UniBox: Socket Connected to", SOCKET_CONFIG.namespaceUrl);
       
-      // Join Conversation Room
-      // Event: 'join', Payload: { type: 'chat', conversationId }
+      // Join Room
       socket.emit('join', {
         type: 'chat',
         conversationId: conversationId
       });
     });
 
-    // Listen for 'message' events
     socket.on('message', (message) => {
       // Only display messages from 'agent'
       if (message.sender === 'agent') {
         appendMessageToUI(message.text, 'agent');
       }
+    });
+    
+    socket.on('connect_error', (err) => {
+        console.error("UniBox: Socket Connection Error", err.message);
     });
 
     socket.on('disconnect', () => {
@@ -256,7 +273,6 @@
           userId: userId
         })
       });
-      // Message sent successfully
     } catch (error) {
       console.error("UniBox: Send Error", error);
       appendMessageToUI("⚠️ Failed to send message.", 'bot-msg');
@@ -543,7 +559,6 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
-        // Optimistic UI
         const userMsg = document.createElement('div');
         userMsg.textContent = text;
         userMsg.style.cssText = `

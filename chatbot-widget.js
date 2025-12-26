@@ -6,26 +6,22 @@
   }
 
   const userConfig = window.UniBoxSettings;
+  
+  // --- FIX: Define all storage keys ---
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
+  const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`; // <--- This was missing
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
-  // 1. Base API URL (e.g., http://localhost:3011/pulse/v1/chat)
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/pulse/v1/chat";
-  
-  // 2. S3 URL (e.g., .../pulse/v1/s3/generate-access-url)
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
-
-  // 3. SOCKET CONFIGURATION HELPER
+  
+  // Socket URL Configuration
   function getSocketConfig(apiBase) {
     try {
       const urlObj = new URL(apiBase);
-      // Remove '/chat' from the end to get the base '.../pulse/v1'
       const basePath = urlObj.pathname.replace(/\/chat\/?$/, ""); 
-      
       return {
-        // Namespace: http://localhost:3011/pulse/v1/events
         namespaceUrl: `${urlObj.protocol}//${urlObj.host}${basePath}/events`,
-        // Engine Path: /pulse/v1/socket.io/
         path: `${basePath}/socket.io/`
       };
     } catch (e) {
@@ -92,7 +88,7 @@
     };
   }
 
-  // --- 4. DEPENDENCY LOADER (Socket.IO) ---
+  // --- 4. DEPENDENCY LOADER ---
   function loadSocketScript(callback) {
     if (window.io) {
       callback();
@@ -114,7 +110,6 @@
   async function init() {
     loadGoogleFont(settings.appearance.fontFamily);
     
-    // 1. Resolve Logo URL
     if (settings.appearance.logoUrl) {
       try {
         resolvedLogoUrl = await fetchSignedUrl(settings.appearance.logoUrl);
@@ -123,10 +118,8 @@
       }
     }
 
-    // 2. Render Widget
     renderWidget();
 
-    // 3. Load Socket Library then Initialize Chat
     loadSocketScript(() => {
         const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
         if (!settings.preChatForm.enabled || hasSubmittedForm) {
@@ -180,7 +173,6 @@
         if (data.conversation) {
           conversationId = data.conversation.id;
           
-          // Render History
           if (data.messages && Array.isArray(data.messages)) {
              data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
           }
@@ -189,9 +181,7 @@
           return; 
         }
       }
-    } catch (e) {
-      // console.warn("UniBox: Restore failed/empty, creating new.");
-    }
+    } catch (e) {}
 
     // 2. Create New Conversation
     try {
@@ -220,10 +210,8 @@
   function connectSocket() {
     if (socket || !conversationId || !window.io) return;
 
-    // --- SOCKET CONNECTION FIX ---
-    // We must pass the 'path' option so it hits /pulse/v1/socket.io/ instead of root
     socket = window.io(SOCKET_CONFIG.namespaceUrl, {
-      path: SOCKET_CONFIG.path,  // <--- THIS IS THE CRITICAL FIX
+      path: SOCKET_CONFIG.path,
       auth: {
         tenantId: settings.tenantId
       },
@@ -232,9 +220,7 @@
     });
 
     socket.on('connect', () => {
-      console.log("UniBox: Socket Connected to", SOCKET_CONFIG.namespaceUrl);
-      
-      // Join Room
+      console.log("UniBox: Socket Connected");
       socket.emit('join', {
         type: 'chat',
         conversationId: conversationId
@@ -242,14 +228,9 @@
     });
 
     socket.on('message', (message) => {
-      // Only display messages from 'agent'
       if (message.sender === 'agent') {
         appendMessageToUI(message.text, 'agent');
       }
-    });
-    
-    socket.on('connect_error', (err) => {
-        console.error("UniBox: Socket Connection Error", err.message);
     });
 
     socket.on('disconnect', () => {

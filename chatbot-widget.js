@@ -16,13 +16,20 @@
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/pulse/v1/chat";
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
 
-  // Socket Config Helper
-  function getSocketConfig(apiBase) {
+  // --- SOCKET CONFIGURATION HELPER (UPDATED) ---
+  function getSocketConfig(apiChatUrl) {
     try {
-      const urlObj = new URL(apiBase);
-      const basePath = urlObj.pathname.replace(/\/chat\/?$/, ""); 
+      // 1. Strip '/chat' to get the base API root (e.g., http://localhost:3011/pulse/v1)
+      const baseApiUrl = apiChatUrl.replace(/\/chat\/?$/, "");
+      
+      const url = new URL(baseApiUrl);
+      const serverUrl = `${url.protocol}//${url.host}`;
+      const basePath = url.pathname.replace(/\/$/, ""); // Remove trailing slash if any
+      
       return {
-        namespaceUrl: `${urlObj.protocol}//${urlObj.host}${basePath}/events`,
+        // Namespace URL: http://localhost:3011/pulse/v1/events
+        namespaceUrl: `${serverUrl}${basePath}/events`,
+        // Socket.IO Engine Path: /pulse/v1/socket.io/
         path: `${basePath}/socket.io/`
       };
     } catch (e) {
@@ -35,7 +42,7 @@
 
   const defaults = {
     tenantId: "",
-    apiKey: "", // Filled from window.UniBoxSettings
+    apiKey: "",
     testMode: false,
     appearance: {
       primaryColor: "#2563EB",
@@ -82,12 +89,12 @@
     localStorage.setItem(STORAGE_KEY_USER, userId);
   }
 
-  // --- 3. HELPER: HEADERS (FIXED) ---
+  // --- 3. HELPER: HEADERS ---
   function getHeaders() {
     return {
       "Content-Type": "application/json",
       "x-tenant-id": settings.tenantId,
-      "x-api-key": settings.apiKey // <--- ADDED THIS
+      "x-api-key": settings.apiKey
     };
   }
 
@@ -141,7 +148,7 @@
     try {
       const res = await fetch(API_S3_URL, {
         method: "POST",
-        headers: getHeaders(), // Now includes x-api-key automatically
+        headers: getHeaders(), 
         body: JSON.stringify({ fileName: fileName })
       });
       if (!res.ok) throw new Error("S3 Sign failed");
@@ -165,6 +172,7 @@
             const data = await restoreRes.json();
             if (data.conversation) {
               conversationId = data.conversation.id;
+              // RENDER HISTORY (Includes the welcome message if stored in DB)
               if (data.messages && Array.isArray(data.messages)) {
                  data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
               }
@@ -192,6 +200,11 @@
       const data = await res.json();
       conversationId = data.conversationId;
       
+      // We do NOT explicitly append a welcome message here anymore.
+      // We rely on the backend to either:
+      // a) Save the welcome message to the DB (which we see on refresh/restore)
+      // b) Emit the welcome message via WebSocket immediately after connection
+      
       if (!settings.testMode) connectSocket();
       
     } catch (error) {
@@ -202,19 +215,35 @@
   function connectSocket() {
     if (socket || !conversationId || !window.io) return;
 
+    // Connect using the EXACT logic provided
+    // Namespace: .../pulse/v1/events
+    // Path: /pulse/v1/socket.io/
     socket = window.io(SOCKET_CONFIG.namespaceUrl, {
       path: SOCKET_CONFIG.path,
-      auth: { tenantId: settings.tenantId },
+      auth: {
+        tenantId: settings.tenantId
+      },
       transports: ['websocket', 'polling'],
       reconnection: true
     });
 
     socket.on('connect', () => {
-      socket.emit('join', { type: 'chat', conversationId: conversationId });
+      // Join Room
+      socket.emit('join', {
+        type: 'chat',
+        conversationId: conversationId
+      });
     });
 
     socket.on('message', (message) => {
-      if (message.sender === 'agent') appendMessageToUI(message.text, 'agent');
+      // Only display messages from 'agent'
+      if (message.sender === 'agent') {
+        appendMessageToUI(message.text, 'agent');
+      }
+    });
+    
+    socket.on('connect_error', (err) => {
+        console.error("UniBox: Socket Connection Error", err.message);
     });
   }
 
@@ -289,7 +318,6 @@
     const styleTag = document.createElement("style");
     styleTag.textContent = `
       :host {
-        /* Colors */
         --primary: ${settings.appearance.primaryColor};
         --secondary: ${settings.appearance.secondaryColor};
         --bg: ${settings.appearance.backgroundColor};
@@ -297,14 +325,12 @@
         --launcher-color: ${launcherIconColor};
         --font: '${settings.appearance.fontFamily}', sans-serif;
         --radius: 12px;
-        
         position: fixed; z-index: 2147483647; 
         top: auto; bottom: auto; left: auto; right: auto;
         font-family: var(--font);
       }
       * { box-sizing: border-box; }
       
-      /* Launcher */
       .launcher {
         position: fixed; ${verticalLauncherCss} ${horizontalCss}
         width: 60px; height: 60px; 
@@ -318,7 +344,6 @@
       .launcher:hover { transform: scale(1.05); }
       .launcher-img { width: 100%; height: 100%; object-fit: cover; }
 
-      /* Window */
       .chat-window {
         position: fixed; ${verticalWindowCss} ${horizontalCss}
         width: 380px; height: 600px; max-width: 90vw; max-height: 80vh;
@@ -332,7 +357,6 @@
       }
       .chat-window.open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
 
-      /* Header */
       .header { 
         background: var(--primary); 
         padding: 16px; color: #fff; 
@@ -341,14 +365,12 @@
       .header-logo { width: 32px; height: 32px; border-radius: 50%; background: #fff; padding: 2px; object-fit: cover; }
       .header-title { font-weight: 600; font-size: 16px; }
 
-      /* Body */
       .body { 
         flex: 1; padding: 20px; overflow-y: auto; 
         background-color: var(--bg);
         position: relative; 
       }
 
-      /* Messages */
       .bot-msg { 
         background: var(--secondary); 
         color: #333; 
@@ -366,13 +388,11 @@
         align-self: flex-end; margin-left: auto; word-break: break-word;
       }
 
-      /* Form */
       .form-container { display: flex; flex-direction: column; gap: 15px; background: var(--bg); padding: 24px; border-radius: 8px; }
       .form-input { width: 100%; padding: 10px; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 14px; }
       .form-input:focus { outline: none; border-color: var(--primary); }
       .form-btn { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; }
 
-      /* Footer */
       .footer { 
         padding: 12px; background: var(--bg); border-top: 1px solid #eee; 
         display: flex; align-items: center; gap: 8px; flex-shrink: 0; 
@@ -494,22 +514,8 @@
 
       } else {
         footer.classList.remove('hidden');
-        
-        const msgDiv = document.createElement('div');
-        msgDiv.className = 'bot-msg'; // Secondary Color
-        
-        if(body.children.length === 0) {
-            const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-            
-            if(settings.behavior.typingIndicator) {
-                msgDiv.textContent = "...";
-                body.appendChild(msgDiv);
-                setTimeout(() => { msgDiv.textContent = welcomeText; }, settings.behavior.botDelayMs);
-            } else {
-                msgDiv.textContent = welcomeText;
-                body.appendChild(msgDiv);
-            }
-        }
+        // NOTE: We do NOT explicitly show a welcome message here anymore.
+        // We rely on the backend response or socket event to populate the chat.
       }
     };
 

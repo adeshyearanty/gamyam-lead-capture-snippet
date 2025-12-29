@@ -13,23 +13,24 @@
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
   // API URLs
-  const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/pulse/v1/chat";
+  const API_BASE = userConfig.apiBaseUrl || "https://dev-api.salesastra.ai/pulse/v1/chat";
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
 
-  // --- SOCKET CONFIGURATION HELPER (UPDATED) ---
+  // --- SOCKET CONFIGURATION HELPER ---
+  // Logic matches your Agent App exactly
   function getSocketConfig(apiChatUrl) {
     try {
-      // 1. Strip '/chat' to get the base API root (e.g., http://localhost:3011/pulse/v1)
-      const baseApiUrl = apiChatUrl.replace(/\/chat\/?$/, "");
+      // 1. Get the Core URL (remove /chat) -> http://localhost:3011/pulse/v1
+      const coreUrl = apiChatUrl.replace(/\/chat\/?$/, "");
       
-      const url = new URL(baseApiUrl);
+      const url = new URL(coreUrl);
       const serverUrl = `${url.protocol}//${url.host}`;
-      const basePath = url.pathname.replace(/\/$/, ""); // Remove trailing slash if any
+      const basePath = url.pathname.replace(/\/$/, ""); // /pulse/v1
       
       return {
-        // Namespace URL: http://localhost:3011/pulse/v1/events
+        // Namespace: http://localhost:3011/pulse/v1/events
         namespaceUrl: `${serverUrl}${basePath}/events`,
-        // Socket.IO Engine Path: /pulse/v1/socket.io/
+        // Path: /pulse/v1/socket.io/
         path: `${basePath}/socket.io/`
       };
     } catch (e) {
@@ -172,10 +173,12 @@
             const data = await restoreRes.json();
             if (data.conversation) {
               conversationId = data.conversation.id;
-              // RENDER HISTORY (Includes the welcome message if stored in DB)
+              
+              // RENDER HISTORY
               if (data.messages && Array.isArray(data.messages)) {
                  data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
               }
+              
               connectSocket();
               return; 
             }
@@ -200,11 +203,6 @@
       const data = await res.json();
       conversationId = data.conversationId;
       
-      // We do NOT explicitly append a welcome message here anymore.
-      // We rely on the backend to either:
-      // a) Save the welcome message to the DB (which we see on refresh/restore)
-      // b) Emit the welcome message via WebSocket immediately after connection
-      
       if (!settings.testMode) connectSocket();
       
     } catch (error) {
@@ -215,20 +213,34 @@
   function connectSocket() {
     if (socket || !conversationId || !window.io) return;
 
-    // Connect using the EXACT logic provided
-    // Namespace: .../pulse/v1/events
-    // Path: /pulse/v1/socket.io/
-    socket = window.io(SOCKET_CONFIG.namespaceUrl, {
+    console.log("UniBox: Connecting Socket...", SOCKET_CONFIG.namespaceUrl);
+
+    // --- CRITICAL CONFIGURATION MATCHING AGENT APP ---
+    const options = {
       path: SOCKET_CONFIG.path,
       auth: {
-        tenantId: settings.tenantId
+        tenantId: settings.tenantId,
+        "x-api-key": settings.apiKey // Auth Header
       },
-      transports: ['websocket', 'polling'],
+      query: {
+        "x-api-key": settings.apiKey // Query Param
+      },
+      // IMPORTANT: 'polling' first ensures handshake works across CORS/Proxies
+      transports: ['polling', 'websocket'], 
+      transportOptions: {
+        polling: {
+          extraHeaders: {
+            "x-api-key": settings.apiKey // HTTP Header for polling request
+          }
+        }
+      },
       reconnection: true
-    });
+    };
+
+    socket = window.io(SOCKET_CONFIG.namespaceUrl, options);
 
     socket.on('connect', () => {
-      // Join Room
+      console.log("UniBox: Socket Connected!");
       socket.emit('join', {
         type: 'chat',
         conversationId: conversationId
@@ -318,6 +330,7 @@
     const styleTag = document.createElement("style");
     styleTag.textContent = `
       :host {
+        /* Colors */
         --primary: ${settings.appearance.primaryColor};
         --secondary: ${settings.appearance.secondaryColor};
         --bg: ${settings.appearance.backgroundColor};
@@ -325,12 +338,14 @@
         --launcher-color: ${launcherIconColor};
         --font: '${settings.appearance.fontFamily}', sans-serif;
         --radius: 12px;
+        
         position: fixed; z-index: 2147483647; 
         top: auto; bottom: auto; left: auto; right: auto;
         font-family: var(--font);
       }
       * { box-sizing: border-box; }
       
+      /* Launcher */
       .launcher {
         position: fixed; ${verticalLauncherCss} ${horizontalCss}
         width: 60px; height: 60px; 
@@ -344,6 +359,7 @@
       .launcher:hover { transform: scale(1.05); }
       .launcher-img { width: 100%; height: 100%; object-fit: cover; }
 
+      /* Window */
       .chat-window {
         position: fixed; ${verticalWindowCss} ${horizontalCss}
         width: 380px; height: 600px; max-width: 90vw; max-height: 80vh;
@@ -357,6 +373,7 @@
       }
       .chat-window.open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
 
+      /* Header */
       .header { 
         background: var(--primary); 
         padding: 16px; color: #fff; 
@@ -365,12 +382,14 @@
       .header-logo { width: 32px; height: 32px; border-radius: 50%; background: #fff; padding: 2px; object-fit: cover; }
       .header-title { font-weight: 600; font-size: 16px; }
 
+      /* Body */
       .body { 
         flex: 1; padding: 20px; overflow-y: auto; 
         background-color: var(--bg);
         position: relative; 
       }
 
+      /* Messages */
       .bot-msg { 
         background: var(--secondary); 
         color: #333; 
@@ -388,11 +407,13 @@
         align-self: flex-end; margin-left: auto; word-break: break-word;
       }
 
+      /* Form */
       .form-container { display: flex; flex-direction: column; gap: 15px; background: var(--bg); padding: 24px; border-radius: 8px; }
       .form-input { width: 100%; padding: 10px; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 14px; }
       .form-input:focus { outline: none; border-color: var(--primary); }
       .form-btn { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; }
 
+      /* Footer */
       .footer { 
         padding: 12px; background: var(--bg); border-top: 1px solid #eee; 
         display: flex; align-items: center; gap: 8px; flex-shrink: 0; 
@@ -514,8 +535,7 @@
 
       } else {
         footer.classList.remove('hidden');
-        // NOTE: We do NOT explicitly show a welcome message here anymore.
-        // We rely on the backend response or socket event to populate the chat.
+        // No auto-welcome message here. Only history or socket events populate the chat.
       }
     };
 

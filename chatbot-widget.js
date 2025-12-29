@@ -6,16 +6,12 @@
   }
 
   const userConfig = window.UniBoxSettings;
-  
-  // --- FIX: Define all storage keys ---
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
-  const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`; // <--- This was missing
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/pulse/v1/chat";
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
-  
-  // Socket URL Configuration
+
   function getSocketConfig(apiBase) {
     try {
       const urlObj = new URL(apiBase);
@@ -35,6 +31,7 @@
   const defaults = {
     tenantId: "",
     apiKey: "",
+    testMode: false, // Default to false (Production)
     appearance: {
       primaryColor: "#2563EB",
       secondaryColor: "#1D4ED8",
@@ -120,6 +117,11 @@
 
     renderWidget();
 
+    // If Test Mode is ON, warn the user in console
+    if (settings.testMode) {
+        console.warn("UniBox: Running in TEST MODE. No data will be saved.");
+    }
+
     loadSocketScript(() => {
         const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
         if (!settings.preChatForm.enabled || hasSubmittedForm) {
@@ -161,27 +163,30 @@
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
-    // 1. Try Restore Thread
-    try {
-      const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
-        method: "GET",
-        headers: getHeaders()
-      });
+    // 1. Try Restore Thread (Only if NOT in test mode)
+    // Test mode doesn't save data, so restoring won't work anyway
+    if (!settings.testMode) {
+        try {
+          const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
+            method: "GET",
+            headers: getHeaders()
+          });
 
-      if (restoreRes.ok) {
-        const data = await restoreRes.json();
-        if (data.conversation) {
-          conversationId = data.conversation.id;
-          
-          if (data.messages && Array.isArray(data.messages)) {
-             data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
+          if (restoreRes.ok) {
+            const data = await restoreRes.json();
+            if (data.conversation) {
+              conversationId = data.conversation.id;
+              
+              if (data.messages && Array.isArray(data.messages)) {
+                 data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
+              }
+              
+              connectSocket();
+              return; 
+            }
           }
-          
-          connectSocket();
-          return; 
-        }
-      }
-    } catch (e) {}
+        } catch (e) {}
+    }
 
     // 2. Create New Conversation
     try {
@@ -191,7 +196,8 @@
         body: JSON.stringify({
           userId: userId,
           userName: userDetails.name || "Guest User",
-          userEmail: userDetails.email || ""
+          userEmail: userDetails.email || "",
+          testMode: settings.testMode // <--- Pass Test Mode Flag
         })
       });
 
@@ -200,7 +206,10 @@
       const data = await res.json();
       conversationId = data.conversationId;
       
-      connectSocket();
+      // Don't connect socket in test mode (events aren't emitted anyway)
+      if (!settings.testMode) {
+          connectSocket();
+      }
       
     } catch (error) {
       console.error("UniBox: Init Error", error);
@@ -251,9 +260,14 @@
         body: JSON.stringify({
           conversationId: conversationId,
           text: text,
-          userId: userId
+          userId: userId,
+          testMode: settings.testMode // <--- Pass Test Mode Flag
         })
       });
+      
+      // In test mode, we might want to simulate a bot reply for visual feedback
+      // since the socket won't trigger. (Optional, removed to keep strict to API)
+      
     } catch (error) {
       console.error("UniBox: Send Error", error);
       appendMessageToUI("⚠️ Failed to send message.", 'bot-msg');
@@ -478,7 +492,6 @@
             capturedName = capturedEmail;
           }
 
-          // Initialize with extracted data
           loadSocketScript(() => {
               initializeConversation({
                 name: capturedName, 
@@ -540,6 +553,7 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
+        // Optimistic UI
         const userMsg = document.createElement('div');
         userMsg.textContent = text;
         userMsg.style.cssText = `

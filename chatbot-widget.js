@@ -6,12 +6,17 @@
   }
 
   const userConfig = window.UniBoxSettings;
+  
+  // Storage Keys
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
+  const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   
+  // API URLs
   const API_BASE = userConfig.apiBaseUrl || "https://api.yourdomain.com/pulse/v1/chat";
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
 
+  // Socket Config Helper
   function getSocketConfig(apiBase) {
     try {
       const urlObj = new URL(apiBase);
@@ -31,12 +36,12 @@
   const defaults = {
     tenantId: "",
     apiKey: "",
-    testMode: false, // Default to false (Production)
+    testMode: false,
     appearance: {
       primaryColor: "#2563EB",
-      secondaryColor: "#1D4ED8",
+      secondaryColor: "#F3F4F6", // Default light gray for bot bubbles
       backgroundColor: "#FFFFFF",
-      fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont",
+      fontFamily: "Inter, sans-serif",
       iconStyle: "rounded",
       logoUrl: "", 
       header: {
@@ -117,9 +122,8 @@
 
     renderWidget();
 
-    // If Test Mode is ON, warn the user in console
     if (settings.testMode) {
-        console.warn("UniBox: Running in TEST MODE. No data will be saved.");
+        console.warn("UniBox: Running in TEST MODE.");
     }
 
     loadSocketScript(() => {
@@ -133,54 +137,35 @@
   // --- 6. S3 LOGIC ---
   async function fetchSignedUrl(fileName) {
     if (fileName.startsWith('http')) return fileName;
-
     try {
       const res = await fetch(API_S3_URL, {
         method: "POST",
-        headers: {
-            ...getHeaders(),
-            "x-api-key": settings.apiKey 
-        }, 
+        headers: { ...getHeaders(), "x-api-key": settings.apiKey }, 
         body: JSON.stringify({ fileName: fileName })
       });
-
       if (!res.ok) throw new Error("S3 Sign failed");
-      
       const data = await res.text();
-      try {
-         const json = JSON.parse(data);
-         return json.url || json.signedUrl || data;
-      } catch(e) {
-         return data; 
-      }
-    } catch (error) {
-      return ""; 
-    }
+      try { return JSON.parse(data).url || JSON.parse(data).signedUrl || data; } catch(e) { return data; }
+    } catch (error) { return ""; }
   }
 
   // --- 7. API & SOCKET LOGIC ---
-
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
-    // 1. Try Restore Thread (Only if NOT in test mode)
-    // Test mode doesn't save data, so restoring won't work anyway
     if (!settings.testMode) {
         try {
           const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
             method: "GET",
             headers: getHeaders()
           });
-
           if (restoreRes.ok) {
             const data = await restoreRes.json();
             if (data.conversation) {
               conversationId = data.conversation.id;
-              
               if (data.messages && Array.isArray(data.messages)) {
                  data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
               }
-              
               connectSocket();
               return; 
             }
@@ -188,7 +173,6 @@
         } catch (e) {}
     }
 
-    // 2. Create New Conversation
     try {
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
@@ -197,19 +181,15 @@
           userId: userId,
           userName: userDetails.name || "Guest User",
           userEmail: userDetails.email || "",
-          testMode: settings.testMode // <--- Pass Test Mode Flag
+          testMode: settings.testMode
         })
       });
 
       if (!res.ok) throw new Error("Failed to start conversation");
-      
       const data = await res.json();
       conversationId = data.conversationId;
       
-      // Don't connect socket in test mode (events aren't emitted anyway)
-      if (!settings.testMode) {
-          connectSocket();
-      }
+      if (!settings.testMode) connectSocket();
       
     } catch (error) {
       console.error("UniBox: Init Error", error);
@@ -221,29 +201,17 @@
 
     socket = window.io(SOCKET_CONFIG.namespaceUrl, {
       path: SOCKET_CONFIG.path,
-      auth: {
-        tenantId: settings.tenantId
-      },
+      auth: { tenantId: settings.tenantId },
       transports: ['websocket', 'polling'],
       reconnection: true
     });
 
     socket.on('connect', () => {
-      console.log("UniBox: Socket Connected");
-      socket.emit('join', {
-        type: 'chat',
-        conversationId: conversationId
-      });
+      socket.emit('join', { type: 'chat', conversationId: conversationId });
     });
 
     socket.on('message', (message) => {
-      if (message.sender === 'agent') {
-        appendMessageToUI(message.text, 'agent');
-      }
-    });
-
-    socket.on('disconnect', () => {
-      console.log("UniBox: Socket Disconnected");
+      if (message.sender === 'agent') appendMessageToUI(message.text, 'agent');
     });
   }
 
@@ -261,54 +229,44 @@
           conversationId: conversationId,
           text: text,
           userId: userId,
-          testMode: settings.testMode // <--- Pass Test Mode Flag
+          testMode: settings.testMode
         })
       });
-      
-      // In test mode, we might want to simulate a bot reply for visual feedback
-      // since the socket won't trigger. (Optional, removed to keep strict to API)
-      
     } catch (error) {
       console.error("UniBox: Send Error", error);
-      appendMessageToUI("⚠️ Failed to send message.", 'bot-msg');
+      // We append an error message system-style
+      const errDiv = document.createElement("div");
+      errDiv.style.textAlign = "center"; errDiv.style.fontSize = "12px"; errDiv.style.color = "red"; errDiv.innerText = "Failed to deliver message";
+      document.getElementById("unibox-root").shadowRoot.getElementById("chatBody").appendChild(errDiv);
     }
   }
 
   function appendMessageToUI(text, type) {
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    
     const body = host.shadowRoot.getElementById("chatBody");
     if (!body) return;
 
     const msgDiv = document.createElement('div');
-    
-    if (type === 'agent') {
-      msgDiv.className = 'bot-msg';
-      msgDiv.textContent = text;
-    } else {
-      msgDiv.textContent = text;
-      msgDiv.style.cssText = `
-        background: var(--primary); color: white; padding: 12px 16px; 
-        border-radius: 12px; border-bottom-right-radius: 2px;
-        font-size: 14px; line-height: 1.5; max-width: 85%; 
-        margin-bottom: 15px; align-self: flex-end; margin-left: auto; word-break: break-word;
-      `;
-    }
+    // We now use CSS classes instead of inline styles for better consistency
+    msgDiv.className = type === 'agent' ? 'bot-msg' : 'user-msg';
+    msgDiv.textContent = text;
     
     body.appendChild(msgDiv);
     requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
   }
 
 
-  // --- 8. UI RENDERING ---
+  // --- 8. UI RENDERING (CSS FIXES HERE) ---
   function renderWidget() {
     const host = document.createElement("div");
     host.id = "unibox-root";
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
+    // Styles
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
+    // Determine icon color based on background brightness (simple check)
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
       : '#FFFFFF';
@@ -331,6 +289,7 @@
     const styleTag = document.createElement("style");
     styleTag.textContent = `
       :host {
+        /* Define Colors from Settings */
         --primary: ${settings.appearance.primaryColor};
         --secondary: ${settings.appearance.secondaryColor};
         --bg: ${settings.appearance.backgroundColor};
@@ -338,53 +297,96 @@
         --launcher-color: ${launcherIconColor};
         --font: '${settings.appearance.fontFamily}', sans-serif;
         --radius: 12px;
+        
         position: fixed; z-index: 2147483647; 
         top: auto; bottom: auto; left: auto; right: auto;
         font-family: var(--font);
       }
       * { box-sizing: border-box; }
       
+      /* Launcher */
       .launcher {
         position: fixed; ${verticalLauncherCss} ${horizontalCss}
-        width: 60px; height: 60px; background: var(--launcher-bg); color: var(--launcher-color);
-        border-radius: ${launcherRadius}; box-shadow: 0 4px 14px rgba(0,0,0,0.15); 
+        width: 60px; height: 60px; 
+        background: var(--launcher-bg); 
+        color: var(--launcher-color);
+        border-radius: ${launcherRadius}; 
+        box-shadow: 0 4px 14px rgba(0,0,0,0.15); 
         cursor: pointer; display: flex; align-items: center; justify-content: center; 
-        transition: transform 0.2s, box-shadow 0.2s; overflow: hidden;
+        transition: transform 0.2s; overflow: hidden;
       }
-      .launcher:hover { transform: scale(1.05); box-shadow: 0 6px 20px rgba(0,0,0,0.2); }
+      .launcher:hover { transform: scale(1.05); }
       .launcher-img { width: 100%; height: 100%; object-fit: cover; }
 
+      /* Window */
       .chat-window {
         position: fixed; ${verticalWindowCss} ${horizontalCss}
         width: 380px; height: 600px; max-width: 90vw; max-height: 80vh;
-        background: #ffffff; border-radius: var(--radius);
-        box-shadow: 0 8px 30px rgba(0,0,0,0.12); display: flex; flex-direction: column; overflow: hidden;
+        background: var(--bg); /* Uses backgroundColor */
+        border-radius: var(--radius);
+        box-shadow: 0 8px 30px rgba(0,0,0,0.12); 
+        display: flex; flex-direction: column; overflow: hidden;
         opacity: 0; pointer-events: none; transform: ${hiddenTransform} scale(0.95);
-        transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1); border: 1px solid rgba(0,0,0,0.05);
+        transition: all 0.25s ease; 
+        border: 1px solid rgba(0,0,0,0.05);
       }
       .chat-window.open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
 
-      .header { background: var(--primary); padding: 16px; color: #fff; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+      /* Header */
+      .header { 
+        background: var(--primary); /* Uses primaryColor */
+        padding: 16px; color: #fff; 
+        display: flex; align-items: center; gap: 12px; flex-shrink: 0; 
+      }
       .header-logo { width: 32px; height: 32px; border-radius: 50%; background: #fff; padding: 2px; object-fit: cover; }
-      .header-title { font-weight: 600; font-size: 16px; letter-spacing: 0.3px; }
+      .header-title { font-weight: 600; font-size: 16px; }
 
-      .body { flex: 1; padding: 20px; overflow-y: auto; background-color: #f9f9f9; position: relative; }
-      .bot-msg { background: #fff; padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 2px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); color: #333; font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; }
+      /* Body */
+      .body { 
+        flex: 1; padding: 20px; overflow-y: auto; 
+        background-color: var(--bg); /* Uses backgroundColor */
+        position: relative; 
+      }
 
-      .form-container { display: flex; flex-direction: column; gap: 15px; background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-      .form-group { display: flex; flex-direction: column; gap: 6px; }
-      .form-label { font-size: 13px; font-weight: 500; color: #374151; }
-      .form-input { width: 100%; padding: 10px; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 14px; transition: border-color 0.2s; font-family: inherit; }
+      /* Messages */
+      /* Bot Message: Uses Secondary Color */
+      .bot-msg { 
+        background: var(--secondary); 
+        color: #333; /* Dark text for light secondary backgrounds */
+        padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 2px; 
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05); 
+        font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; align-self: flex-start;
+      }
+
+      /* User Message: Uses Primary Color */
+      .user-msg {
+        background: var(--primary);
+        color: #fff; /* White text for primary backgrounds */
+        padding: 12px 16px; border-radius: 12px; border-bottom-right-radius: 2px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; 
+        align-self: flex-end; margin-left: auto; word-break: break-word;
+      }
+
+      /* Form */
+      .form-container { display: flex; flex-direction: column; gap: 15px; background: var(--bg); padding: 24px; border-radius: 8px; }
+      .form-input { width: 100%; padding: 10px; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 14px; }
       .form-input:focus { outline: none; border-color: var(--primary); }
-      textarea.form-input { min-height: 80px; resize: vertical; }
-      .form-btn { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 5px; }
-      .form-btn:hover { opacity: 0.9; }
+      .form-btn { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; }
 
-      .footer { padding: 12px; background: #fff; border-top: 1px solid #eee; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+      /* Footer */
+      .footer { 
+        padding: 12px; background: var(--bg); border-top: 1px solid #eee; 
+        display: flex; align-items: center; gap: 8px; flex-shrink: 0; 
+      }
       .footer.hidden { display: none; }
       .input-wrapper { flex: 1; display: flex; align-items: center; background: #f3f4f6; border-radius: 20px; padding: 8px 12px; }
       .msg-input { flex: 1; border: none; background: transparent; outline: none; font-size: 14px; color: #1f2937; }
-      .send-btn { background: var(--primary); color: white; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+      .send-btn { 
+        background: var(--primary); color: white; border: none; 
+        width: 36px; height: 36px; border-radius: 50%; cursor: pointer; 
+        display: flex; align-items: center; justify-content: center; 
+      }
     `;
 
     const sendIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
@@ -471,32 +473,21 @@
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
           
-          // --- FORM DATA EXTRACTION ---
+          // Data Extraction Logic
           let capturedName = "";
           let capturedEmail = "";
 
           settings.preChatForm.fields.forEach(field => {
             const val = data[field.id];
             if(!val) return;
-
-            if (field.type === 'text' && 
-               (field.label.toLowerCase().includes('name') || field.id.toLowerCase().includes('name'))) {
-                capturedName = val;
-            }
-            if (field.type === 'email' || field.id.toLowerCase().includes('email')) {
-                capturedEmail = val;
-            }
+            if (field.type === 'text' && (field.label.toLowerCase().includes('name') || field.id.toLowerCase().includes('name'))) capturedName = val;
+            if (field.type === 'email' || field.id.toLowerCase().includes('email')) capturedEmail = val;
           });
 
-          if (!capturedName && capturedEmail) {
-            capturedName = capturedEmail;
-          }
+          if (!capturedName && capturedEmail) capturedName = capturedEmail;
 
           loadSocketScript(() => {
-              initializeConversation({
-                name: capturedName, 
-                email: capturedEmail
-              });
+              initializeConversation({ name: capturedName, email: capturedEmail });
           });
 
           sessionStorage.setItem(SESSION_KEY_FORM, "true");
@@ -508,17 +499,17 @@
         footer.classList.remove('hidden');
         
         const msgDiv = document.createElement('div');
-        msgDiv.className = 'bot-msg';
+        msgDiv.className = 'bot-msg'; // Uses secondary color
         
         if(body.children.length === 0) {
+            const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
+            
             if(settings.behavior.typingIndicator) {
                 msgDiv.textContent = "...";
                 body.appendChild(msgDiv);
-                setTimeout(() => {
-                    msgDiv.textContent = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-                }, settings.behavior.botDelayMs);
+                setTimeout(() => { msgDiv.textContent = welcomeText; }, settings.behavior.botDelayMs);
             } else {
-                msgDiv.textContent = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
+                msgDiv.textContent = welcomeText;
                 body.appendChild(msgDiv);
             }
         }
@@ -553,17 +544,8 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
-        // Optimistic UI
-        const userMsg = document.createElement('div');
-        userMsg.textContent = text;
-        userMsg.style.cssText = `
-            background: var(--primary); color: white; padding: 12px 16px; 
-            border-radius: 12px; border-bottom-right-radius: 2px;
-            font-size: 14px; line-height: 1.5; max-width: 85%; 
-            margin-bottom: 15px; align-self: flex-end; margin-left: auto; word-break: break-word;
-        `;
-        shadow.getElementById('chatBody').appendChild(userMsg);
-        shadow.getElementById('chatBody').scrollTop = shadow.getElementById('chatBody').scrollHeight;
+        // Optimistic UI - Uses .user-msg class (Primary Color)
+        appendMessageToUI(text, 'user');
         msgInput.value = "";
 
         sendMessageToApi(text);

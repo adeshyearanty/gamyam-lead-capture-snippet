@@ -35,11 +35,11 @@
 
   const defaults = {
     tenantId: "",
-    apiKey: "",
+    apiKey: "", // Filled from window.UniBoxSettings
     testMode: false,
     appearance: {
       primaryColor: "#2563EB",
-      secondaryColor: "#F3F4F6", // Default light gray for bot bubbles
+      secondaryColor: "#F3F4F6", 
       backgroundColor: "#FFFFFF",
       fontFamily: "Inter, sans-serif",
       iconStyle: "rounded",
@@ -82,11 +82,12 @@
     localStorage.setItem(STORAGE_KEY_USER, userId);
   }
 
-  // --- 3. HELPER: HEADERS ---
+  // --- 3. HELPER: HEADERS (FIXED) ---
   function getHeaders() {
     return {
       "Content-Type": "application/json",
-      "x-tenant-id": settings.tenantId
+      "x-tenant-id": settings.tenantId,
+      "x-api-key": settings.apiKey // <--- ADDED THIS
     };
   }
 
@@ -140,7 +141,7 @@
     try {
       const res = await fetch(API_S3_URL, {
         method: "POST",
-        headers: { ...getHeaders(), "x-api-key": settings.apiKey }, 
+        headers: getHeaders(), // Now includes x-api-key automatically
         body: JSON.stringify({ fileName: fileName })
       });
       if (!res.ok) throw new Error("S3 Sign failed");
@@ -153,6 +154,7 @@
   async function initializeConversation(userDetails = {}) {
     if (conversationId) return; 
 
+    // 1. Try Restore Thread
     if (!settings.testMode) {
         try {
           const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
@@ -173,6 +175,7 @@
         } catch (e) {}
     }
 
+    // 2. Create New Conversation
     try {
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
@@ -234,7 +237,6 @@
       });
     } catch (error) {
       console.error("UniBox: Send Error", error);
-      // We append an error message system-style
       const errDiv = document.createElement("div");
       errDiv.style.textAlign = "center"; errDiv.style.fontSize = "12px"; errDiv.style.color = "red"; errDiv.innerText = "Failed to deliver message";
       document.getElementById("unibox-root").shadowRoot.getElementById("chatBody").appendChild(errDiv);
@@ -248,7 +250,6 @@
     if (!body) return;
 
     const msgDiv = document.createElement('div');
-    // We now use CSS classes instead of inline styles for better consistency
     msgDiv.className = type === 'agent' ? 'bot-msg' : 'user-msg';
     msgDiv.textContent = text;
     
@@ -257,7 +258,7 @@
   }
 
 
-  // --- 8. UI RENDERING (CSS FIXES HERE) ---
+  // --- 8. UI RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
     host.id = "unibox-root";
@@ -266,7 +267,6 @@
 
     // Styles
     const launcherBg = settings.appearance.chatToggleIcon.backgroundColor || settings.appearance.primaryColor;
-    // Determine icon color based on background brightness (simple check)
     const launcherIconColor = (launcherBg.toLowerCase() === '#ffffff' || launcherBg.toLowerCase() === '#fff') 
       ? settings.appearance.primaryColor 
       : '#FFFFFF';
@@ -289,7 +289,7 @@
     const styleTag = document.createElement("style");
     styleTag.textContent = `
       :host {
-        /* Define Colors from Settings */
+        /* Colors */
         --primary: ${settings.appearance.primaryColor};
         --secondary: ${settings.appearance.secondaryColor};
         --bg: ${settings.appearance.backgroundColor};
@@ -322,7 +322,7 @@
       .chat-window {
         position: fixed; ${verticalWindowCss} ${horizontalCss}
         width: 380px; height: 600px; max-width: 90vw; max-height: 80vh;
-        background: var(--bg); /* Uses backgroundColor */
+        background: var(--bg);
         border-radius: var(--radius);
         box-shadow: 0 8px 30px rgba(0,0,0,0.12); 
         display: flex; flex-direction: column; overflow: hidden;
@@ -334,7 +334,7 @@
 
       /* Header */
       .header { 
-        background: var(--primary); /* Uses primaryColor */
+        background: var(--primary); 
         padding: 16px; color: #fff; 
         display: flex; align-items: center; gap: 12px; flex-shrink: 0; 
       }
@@ -344,24 +344,22 @@
       /* Body */
       .body { 
         flex: 1; padding: 20px; overflow-y: auto; 
-        background-color: var(--bg); /* Uses backgroundColor */
+        background-color: var(--bg);
         position: relative; 
       }
 
       /* Messages */
-      /* Bot Message: Uses Secondary Color */
       .bot-msg { 
         background: var(--secondary); 
-        color: #333; /* Dark text for light secondary backgrounds */
+        color: #333; 
         padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 2px; 
         box-shadow: 0 1px 2px rgba(0,0,0,0.05); 
         font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; align-self: flex-start;
       }
 
-      /* User Message: Uses Primary Color */
       .user-msg {
         background: var(--primary);
-        color: #fff; /* White text for primary backgrounds */
+        color: #fff; 
         padding: 12px 16px; border-radius: 12px; border-bottom-right-radius: 2px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; 
@@ -473,7 +471,6 @@
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
           
-          // Data Extraction Logic
           let capturedName = "";
           let capturedEmail = "";
 
@@ -499,7 +496,7 @@
         footer.classList.remove('hidden');
         
         const msgDiv = document.createElement('div');
-        msgDiv.className = 'bot-msg'; // Uses secondary color
+        msgDiv.className = 'bot-msg'; // Secondary Color
         
         if(body.children.length === 0) {
             const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
@@ -544,7 +541,6 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
-        // Optimistic UI - Uses .user-msg class (Primary Color)
         appendMessageToUI(text, 'user');
         msgInput.value = "";
 

@@ -19,6 +19,23 @@
     /\/chat\/?$/,
     '/s3/generate-access-url',
   );
+  
+  // Construct base URL for assets (SVG icons)
+  // Assets are typically served from the root domain, not the API path
+  function getAssetUrl(path) {
+    try {
+      const urlObj = new URL(API_BASE);
+      // For assets, use the root domain (remove /pulse/v1/chat)
+      // Assets are typically at root level like /pulse/read.svg
+      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, '');
+      // If basePath is empty, assets are at root
+      const assetPath = basePath ? `${basePath}${path}` : path;
+      return `${urlObj.protocol}//${urlObj.host}${assetPath}`;
+    } catch (e) {
+      // Fallback to relative path if URL parsing fails
+      return path;
+    }
+  }
 
   // Socket Config Helper
   function getSocketConfig(apiBase) {
@@ -493,13 +510,34 @@
       }, 500); // Wait 500ms after joining to ensure room is set up
     });
 
+    // Listen for read receipt events
+    socket.on('read_receipt', (receipt) => {
+      updateReadReceipt(receipt);
+    });
+
+    // Listen for typing indicator events
+    socket.on('typing', (data) => {
+      // Only show typing indicator if it's from an agent in this conversation
+      if (data.conversationId === conversationId) {
+        if (data.isAgent && data.isTyping) {
+          agentTyping = true;
+          showTypingIndicator(true);
+        } else if (data.isAgent && !data.isTyping) {
+          agentTyping = false;
+          showTypingIndicator(false);
+        }
+      }
+    });
+
     socket.on('message', (message) => {
+      // Handle read receipt events that come through message channel
       if (message.type === 'read_receipt') {
-        // Handle read receipt update
         updateReadReceipt(message);
-      } else {
-        // Handle new message
-        const isUserMessage = message.sender === 'user';
+        return;
+      }
+      
+      // Handle new message
+      const isUserMessage = message.sender === 'user';
         const isWelcomeMessage =
           message.sender === 'agent' &&
           (message.raw_payload?.is_welcome_message === true ||
@@ -615,7 +653,7 @@
         if (!isUserMessage) {
           markMessagesAsRead([message.messageId]);
         }
-      }
+      
     });
 
     socket.on('online_status', (data) => {
@@ -782,21 +820,19 @@
   }
 
   function getReadReceiptIcon(status, readAt, readByUs, readByUsAt, sender) {
+    // For live chat, we don't show read receipts for agent messages (user side)
+    // Only show read receipts for user messages (if agent read them)
     if (sender === 'user') {
       // For user messages, show if agent read them
       if (readByUs && readByUsAt) {
-        return '<span class="read-receipt read">✓✓</span>';
+        const readIconUrl = getAssetUrl('/pulse/read.svg');
+        return `<img src="${readIconUrl}" alt="Read" class="read-receipt-icon" style="width: 16px; height: 16px; opacity: 1;" />`;
       }
-      return '<span class="read-receipt sent">✓</span>';
-    } else {
-      // For agent messages, show if user read them
-      if (status === 'read' && readAt) {
-        return '<span class="read-receipt read">✓✓</span>';
-      } else if (status === 'delivered') {
-        return '<span class="read-receipt delivered">✓✓</span>';
-      }
-      return '<span class="read-receipt sent">✓</span>';
+      const sentIconUrl = getAssetUrl('/pulse/sent.svg');
+      return `<img src="${sentIconUrl}" alt="Sent" class="read-receipt-icon" style="width: 16px; height: 16px; opacity: 0.5;" />`;
     }
+    // Agent messages don't show read receipts in widget (user side)
+    return '';
   }
 
   function appendMessageToUI(
@@ -900,25 +936,27 @@
     const msgMeta = document.createElement('div');
     msgMeta.className = 'msg-meta';
 
-    // Add read receipt for user messages
+    // Add read receipt for user messages only
     if (type === 'user') {
       const receiptSpan = document.createElement('span');
       receiptSpan.className = 'read-receipt-container';
-      receiptSpan.innerHTML = getReadReceiptIcon(
+      const receiptIcon = getReadReceiptIcon(
         status,
         readAt,
         readByUs,
         readByUsAt,
         'user',
       );
-      msgMeta.appendChild(receiptSpan);
+      if (receiptIcon) {
+        receiptSpan.innerHTML = receiptIcon;
+        msgMeta.appendChild(receiptSpan);
+      }
     }
 
     const timeSpan = document.createElement('span');
     timeSpan.className = 'msg-time';
-    // Show timestamp in "00:00 AM" format for user messages (with read receipts)
-    const showTimeFormat = type === 'user';
-    timeSpan.textContent = formatTimestamp(timestamp, showTimeFormat);
+    // Show timestamp in "00:00 AM/PM" format
+    timeSpan.textContent = formatTimestamp(timestamp, true);
     msgMeta.appendChild(timeSpan);
 
     msgDiv.appendChild(msgMeta);
@@ -974,7 +1012,11 @@
   }
 
   function updateReadReceipt(receipt) {
-    const message = messages.get(receipt.messageId);
+    // Handle both direct read_receipt events and read_receipt messages
+    const messageId = receipt.messageId || receipt.id;
+    if (!messageId) return;
+    
+    const message = messages.get(messageId);
     if (!message || !message.element) return;
 
     const meta = message.element.querySelector('.msg-meta');
@@ -987,16 +1029,31 @@
       receipt.readByUs !== undefined ? receipt.readByUs : message.readByUs;
     message.readByUsAt = receipt.readByUsAt || message.readByUsAt;
 
-    // Update read receipt icon
-    const receiptContainer = meta.querySelector('.read-receipt-container');
-    if (receiptContainer) {
-      receiptContainer.innerHTML = getReadReceiptIcon(
+    // Update read receipt icon (only for user messages)
+    if (message.sender === 'user') {
+      let receiptContainer = meta.querySelector('.read-receipt-container');
+      if (!receiptContainer) {
+        // Create container if it doesn't exist
+        receiptContainer = document.createElement('span');
+        receiptContainer.className = 'read-receipt-container';
+        // Insert before timestamp
+        const timeSpan = meta.querySelector('.msg-time');
+        if (timeSpan) {
+          meta.insertBefore(receiptContainer, timeSpan);
+        } else {
+          meta.appendChild(receiptContainer);
+        }
+      }
+      const receiptIcon = getReadReceiptIcon(
         message.status,
         message.readAt,
         message.readByUs,
         message.readByUsAt,
         message.sender,
       );
+      if (receiptIcon) {
+        receiptContainer.innerHTML = receiptIcon;
+      }
     }
   }
 
@@ -1174,16 +1231,17 @@
       .header-logo { width: 32px; height: 32px; border-radius: 50%; background: #fff; padding: 2px; object-fit: cover; }
       .header-title { font-weight: 600; font-size: 16px; flex: 1; }
       .online-status {
-        font-size: 12px; opacity: 0.9; margin-left: 8px;
+        font-size: 12px; margin-left: 8px;
         display: flex; align-items: center; gap: 4px;
+        font-weight: 400;
       }
-      .online-status.online { color: #4ade80; }
-      .online-status.offline { color: #9ca3af; }
+      .online-status.online { color: #22C04C; }
+      .online-status.offline { color: #9DA2AB; }
 
       /* Body */
       .body { 
-        flex: 1; padding: 20px; overflow-y: auto; 
-        background-color: var(--bg);
+        flex: 1; padding: 24px; overflow-y: auto; 
+        background-color: #FAFBFC;
         position: relative; 
       }
 
@@ -1205,58 +1263,59 @@
 
       /* Messages */
       .bot-msg, .user-msg {
-        max-width: 85%; margin-bottom: 15px; 
+        max-width: 85%; margin-bottom: 12px; 
         display: flex; flex-direction: column;
       }
       .bot-msg { align-self: flex-start; }
       .user-msg { align-self: flex-end; margin-left: auto; }
       
       .msg-content {
-        padding: 12px 16px; border-radius: 12px;
-        font-size: 14px; line-height: 1.5; word-break: break-word;
+        padding: 14px 16px; border-radius: 10px;
+        font-size: 14px; line-height: 1.43; word-break: break-word;
+        font-weight: 400;
       }
       .bot-msg .msg-content {
-        background: var(--secondary); 
-        color: #333; 
-        border-bottom-left-radius: 2px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        background: #F5F7F9; 
+        color: #18181E; 
+        border-radius: 10px;
+        border-top-left-radius: 0;
+        box-shadow: none;
       }
       .user-msg .msg-content {
-        background: var(--primary);
-        color: #fff; 
-        border-bottom-right-radius: 2px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        background: #ECE1FF;
+        color: #18181E; 
+        border-radius: 10px;
+        border-bottom-right-radius: 0;
+        box-shadow: none;
       }
       
       .msg-meta {
-        display: flex; align-items: center; gap: 6px;
-        margin-top: 4px; font-size: 11px; opacity: 0.7;
+        display: flex; align-items: center; gap: 4px;
+        margin-top: 8px; font-size: 12px;
         justify-content: flex-end;
       }
       .user-msg .msg-meta { justify-content: flex-end; }
       .bot-msg .msg-meta { justify-content: flex-start; }
       
       .msg-time {
-        color: #666; font-size: 11px;
+        color: #18181E; font-size: 12px; font-weight: 400; line-height: 16px;
       }
-      .user-msg .msg-time { color: rgba(255,255,255,0.7); }
+      .user-msg .msg-time { color: #18181E; }
+      .bot-msg .msg-time { color: #18181E; }
       
       .read-receipt-container {
-        display: inline-flex; align-items: center;
+        display: inline-flex; align-items: center; margin-right: 4px;
       }
-      .read-receipt {
-        font-size: 14px; line-height: 1;
+      .read-receipt-icon {
+        display: inline-block;
       }
-      .read-receipt.sent { opacity: 0.5; }
-      .read-receipt.delivered { opacity: 0.7; }
-      .read-receipt.read { opacity: 1; }
-      .user-msg .read-receipt { color: rgba(255,255,255,0.8); }
       
       /* Typing Indicator */
       .typing-indicator {
-        display: flex; align-items: center; gap: 4px; padding: 12px 16px;
-        background: #f3f4f6; border-radius: 18px; margin: 8px 0;
-        max-width: 80px;
+        display: flex; align-items: center; gap: 4px; padding: 14px 16px;
+        background: #F5F7F9; border-radius: 10px; border-top-left-radius: 0;
+        margin: 8px 0; max-width: 80px;
+        align-self: flex-start;
       }
       .typing-indicator.hidden { display: none; }
       .typing-dot {

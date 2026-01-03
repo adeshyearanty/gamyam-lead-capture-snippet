@@ -417,6 +417,44 @@
         userId: userId,
         isAgent: false
       });
+      
+      // After joining, fetch any missed messages (like out of hours message)
+      // that might have been sent before socket connected
+      setTimeout(() => {
+        if (userId && conversationId) {
+          fetch(`${API_BASE}/thread/${userId}?limit=50`, {
+            method: "GET",
+            headers: getHeaders()
+          })
+          .then(res => res.ok ? res.json() : null)
+          .then(threadData => {
+            if (threadData && threadData.messages && Array.isArray(threadData.messages)) {
+              threadData.messages.forEach(msg => {
+                // Check if message already exists
+                const existingMsg = Array.from(messages.values()).find(m => 
+                  (m.messageId === (msg.id || msg.messageId)) || 
+                  (m.id === (msg.id || msg.messageId))
+                );
+                if (!existingMsg) {
+                  appendMessageToUI(
+                    msg.text || msg.text_body,
+                    msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
+                    msg.id || msg.messageId,
+                    msg.timestamp || msg.timestamp_meta,
+                    msg.status,
+                    msg.readAt,
+                    msg.readByUs,
+                    msg.readByUsAt
+                  );
+                }
+              });
+              sortMessagesByTimestamp();
+              markVisibleMessagesAsRead();
+            }
+          })
+          .catch(e => console.error("UniBox: Failed to fetch thread after socket connect", e));
+        }
+      }, 500); // Wait 500ms after joining to ensure room is set up
     });
 
     socket.on('message', (message) => {
@@ -429,6 +467,14 @@
         const isWelcomeMessage = message.sender === 'agent' && 
           (message.raw_payload?.is_welcome_message === true ||
            message.text === (settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage));
+        const isOutOfHoursMessage = message.sender === 'agent' && 
+          message.raw_payload?.is_auto_reply === true &&
+          message.raw_payload?.auto_reply_reason === 'outside_business_hours';
+        
+        // Debug logging for out of hours messages
+        if (isOutOfHoursMessage) {
+          console.log('UniBox: Received out of hours message:', message);
+        }
         
         // Check if message already exists (by messageId)
         const existingMessage = Array.from(messages.values()).find(msg => {
@@ -540,6 +586,14 @@
     }
 
     try {
+      // If we have a conversationId, ensure socket is connected BEFORE sending message
+      // This ensures we receive real-time messages (welcome, out of hours, etc.)
+      if (conversationId && !socket) {
+        connectSocket();
+        // Wait a bit for socket to connect
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
       // Send message - backend will create conversation if it doesn't exist
       // Use existing conversationId if available, otherwise use null/empty and let backend create it
       const response = await fetch(`${API_BASE}/message/user`, {
@@ -566,6 +620,43 @@
         conversationId = result.conversationId;
         // Connect socket now that we have conversationId
         connectSocket();
+        // Wait a bit for socket to connect, then fetch any missed messages
+        await new Promise(resolve => setTimeout(resolve, 500));
+        // Fetch thread to get any messages that were sent before socket connected
+        try {
+          const threadRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
+            method: "GET",
+            headers: getHeaders()
+          });
+          if (threadRes.ok) {
+            const threadData = await threadRes.json();
+            if (threadData.messages && Array.isArray(threadData.messages)) {
+              threadData.messages.forEach(msg => {
+                // Check if message already exists
+                const existingMsg = Array.from(messages.values()).find(m => 
+                  (m.messageId === (msg.id || msg.messageId)) || 
+                  (m.id === (msg.id || msg.messageId))
+                );
+                if (!existingMsg) {
+                  appendMessageToUI(
+                    msg.text || msg.text_body,
+                    msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
+                    msg.id || msg.messageId,
+                    msg.timestamp || msg.timestamp_meta,
+                    msg.status,
+                    msg.readAt,
+                    msg.readByUs,
+                    msg.readByUsAt
+                  );
+                }
+              });
+              sortMessagesByTimestamp();
+              markVisibleMessagesAsRead();
+            }
+          }
+        } catch (e) {
+          console.error("UniBox: Failed to fetch thread after message", e);
+        }
       }
       
       // Message sent successfully, socket will handle the response

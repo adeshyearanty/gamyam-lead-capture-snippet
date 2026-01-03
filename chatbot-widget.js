@@ -78,6 +78,7 @@
   let resolvedLogoUrl = "";
   let messages = new Map(); // Store messages with IDs for read receipt tracking
   let isAgentOnline = false;
+  let staticWelcomeShown = false; // Track if static welcome message was shown
 
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
@@ -196,6 +197,18 @@
           
           // RENDER HISTORY
           if (data.messages && Array.isArray(data.messages)) {
+            // Remove static welcome if restoring existing conversation
+            if (staticWelcomeShown) {
+              const staticWelcome = Array.from(messages.values()).find(msg => {
+                return msg.id && msg.id.startsWith('static_welcome_');
+              });
+              if (staticWelcome && staticWelcome.element) {
+                staticWelcome.element.remove();
+                messages.delete(staticWelcome.id);
+              }
+              staticWelcomeShown = false;
+            }
+            
             data.messages.forEach(msg => {
               appendMessageToUI(
                 msg.text || msg.text_body, 
@@ -325,6 +338,18 @@
               if (threadRes.ok) {
                   const threadData = await threadRes.json();
                   if (threadData.messages && Array.isArray(threadData.messages) && threadData.messages.length > 0) {
+                      // Remove static welcome if server messages exist
+                      if (staticWelcomeShown) {
+                        const staticWelcome = Array.from(messages.values()).find(msg => {
+                          return msg.id && msg.id.startsWith('static_welcome_');
+                        });
+                        if (staticWelcome && staticWelcome.element) {
+                          staticWelcome.element.remove();
+                          messages.delete(staticWelcome.id);
+                        }
+                        staticWelcomeShown = false;
+                      }
+                      
                       threadData.messages.forEach(msg => {
                         appendMessageToUI(
                           msg.text || msg.text_body,
@@ -339,33 +364,19 @@
                       });
                       // Mark messages as read after rendering
                       markVisibleMessagesAsRead();
-                  } else {
-                      // Fallback Welcome (if no messages yet - welcome message might come via socket)
-                      const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-                      if (welcomeText) appendMessageToUI(welcomeText, 'agent');
-                      // Mark messages as read after rendering
-                      markVisibleMessagesAsRead();
                   }
+                  // Don't show fallback welcome if static welcome was already shown
               } else {
                   setLoading(false);
-                  // Fallback Welcome on error
-                  const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-                  if (welcomeText) appendMessageToUI(welcomeText, 'agent');
               }
           } catch(e) { 
               setLoading(false);
-              // Fallback Welcome on error
-              const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-              if (welcomeText) appendMessageToUI(welcomeText, 'agent');
-              markVisibleMessagesAsRead();
+              // Don't show fallback welcome if static welcome was already shown
           }
       } else {
           // Test Mode
           setLoading(false);
-          const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
-          if (welcomeText) appendMessageToUI(welcomeText, 'agent');
-          // Mark messages as read after rendering
-          markVisibleMessagesAsRead();
+          // Static welcome already shown in renderView
       }
       
     } catch (error) {
@@ -409,13 +420,14 @@
     });
 
     socket.on('message', (message) => {
-      
       if (message.type === 'read_receipt') {
         // Handle read receipt update
         updateReadReceipt(message);
       } else {
         // Handle new message
         const isUserMessage = message.sender === 'user';
+        const isWelcomeMessage = message.sender === 'agent' && 
+          (message.text === (settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage));
         
         // Check if message already exists (by messageId)
         const existingMessage = Array.from(messages.values()).find(msg => {
@@ -431,10 +443,29 @@
           return; // Don't add duplicate
         }
         
+        // For welcome messages, check if static welcome was already shown
+        if (isWelcomeMessage && staticWelcomeShown) {
+          // Remove static welcome and replace with server welcome
+          const staticWelcome = Array.from(messages.values()).find(msg => {
+            return msg.id && msg.id.startsWith('static_welcome_');
+          });
+          if (staticWelcome && staticWelcome.element) {
+            staticWelcome.element.remove();
+            messages.delete(staticWelcome.id);
+          }
+          staticWelcomeShown = false; // Mark as replaced
+        }
+        
+        // Skip welcome message if static one is already shown and this is a duplicate
+        if (isWelcomeMessage && staticWelcomeShown) {
+          return; // Don't show duplicate welcome
+        }
+        
         // For user messages, check if we already added it optimistically (by text and time)
         if (isUserMessage) {
           const optimisticMessage = Array.from(messages.values()).find(msg => {
             if (!msg.element || msg.sender !== 'user') return false;
+            // Match by text and approximate time (within 10 seconds)
             return msg.text === message.text &&
                    Math.abs(new Date(msg.timestamp) - new Date(message.timestamp)) < 10000;
           });
@@ -457,21 +488,23 @@
           }
         }
         
-        // New message from server - display it
-        appendMessageToUI(
-          message.text,
-          message.sender,
-          message.messageId,
-          message.timestamp,
-          message.status,
-          message.readAt,
-          message.readByUs,
-          message.readByUsAt
-        );
-        
-        // Mark agent messages as read when received
-        if (!isUserMessage) {
-          markMessagesAsRead([message.messageId]);
+        // New message from server - display it (unless it's a duplicate welcome)
+        if (!(isWelcomeMessage && staticWelcomeShown)) {
+          appendMessageToUI(
+            message.text,
+            message.sender,
+            message.messageId,
+            message.timestamp,
+            message.status,
+            message.readAt,
+            message.readByUs,
+            message.readByUsAt
+          );
+          
+          // Mark agent messages as read when received
+          if (!isUserMessage) {
+            markMessagesAsRead([message.messageId]);
+          }
         }
       }
     });
@@ -493,7 +526,10 @@
   async function sendMessageToApi(text) {
     if (!conversationId) {
       await initializeConversation(); 
-      if (!conversationId) return;
+      if (!conversationId) {
+        console.error("UniBox: Failed to initialize conversation");
+        return;
+      }
     }
 
     // Get user details from pre-chat form if available
@@ -507,7 +543,7 @@
     }
 
     try {
-      await fetch(`${API_BASE}/message/user`, {
+      const response = await fetch(`${API_BASE}/message/user`, {
         method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({
@@ -519,11 +555,28 @@
           testMode: settings.testMode
         })
       });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      // Message sent successfully, socket will handle the response
+      return await response.json();
     } catch (error) {
       console.error("UniBox: Send Error", error);
-      const errDiv = document.createElement("div");
-      errDiv.style.textAlign = "center"; errDiv.style.fontSize = "12px"; errDiv.style.color = "red"; errDiv.innerText = "Failed to deliver message";
-      document.getElementById("unibox-root").shadowRoot.getElementById("chatBody").appendChild(errDiv);
+      const host = document.getElementById("unibox-root");
+      if (host && host.shadowRoot) {
+        const body = host.shadowRoot.getElementById("chatBody");
+        if (body) {
+          const errDiv = document.createElement("div");
+          errDiv.style.textAlign = "center"; 
+          errDiv.style.fontSize = "12px"; 
+          errDiv.style.color = "red"; 
+          errDiv.innerText = "Failed to deliver message";
+          body.appendChild(errDiv);
+        }
+      }
+      throw error;
     }
   }
 
@@ -1011,7 +1064,15 @@
 
       } else {
         footer.classList.remove('hidden');
-        // Initial state is now managed by initializeConversation, not here.
+        
+        // Show static welcome message immediately (from config)
+        if (!staticWelcomeShown && !userId) {
+          const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
+          if (welcomeText) {
+            appendMessageToUI(welcomeText, 'agent', `static_welcome_${Date.now()}`, new Date(), 'sent', null, false, null);
+            staticWelcomeShown = true;
+          }
+        }
       }
     };
 
@@ -1046,12 +1107,14 @@
         // Clear input immediately for better UX
         msgInput.value = "";
         
-        // Show message optimistically
+        // Show message optimistically (always show user messages immediately)
         const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         appendMessageToUI(text, 'user', messageId, new Date(), 'sent', null, false, null);
         
         // Send to API (server will emit back via socket with real messageId)
-        sendMessageToApi(text);
+        sendMessageToApi(text).catch(err => {
+          console.error("UniBox: Failed to send message", err);
+        });
     };
 
     sendBtn.addEventListener("click", handleSend);

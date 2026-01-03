@@ -75,7 +75,9 @@
   let conversationId = null;
   let socket = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
-  let resolvedLogoUrl = ""; 
+  let resolvedLogoUrl = "";
+  let messages = new Map(); // Store messages with IDs for read receipt tracking
+  let isAgentOnline = false; 
 
   if (!userId) {
     userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -195,7 +197,20 @@
 
                 // RENDER HISTORY
                 if (data.messages && Array.isArray(data.messages)) {
-                   data.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
+                   data.messages.forEach(msg => {
+                     appendMessageToUI(
+                       msg.text || msg.text_body, 
+                       msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
+                       msg.id || msg.messageId,
+                       msg.timestamp || msg.timestamp_meta,
+                       msg.status,
+                       msg.readAt,
+                       msg.readByUs,
+                       msg.readByUsAt
+                     );
+                   });
+                   // Mark messages as read after rendering
+                   markVisibleMessagesAsRead();
                 }
                 
                 connectSocket();
@@ -234,11 +249,26 @@
               if (threadRes.ok) {
                   const threadData = await threadRes.json();
                   if (threadData.messages && threadData.messages.length > 0) {
-                      threadData.messages.forEach(msg => appendMessageToUI(msg.text, msg.sender));
+                      threadData.messages.forEach(msg => {
+                        appendMessageToUI(
+                          msg.text || msg.text_body,
+                          msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
+                          msg.id || msg.messageId,
+                          msg.timestamp || msg.timestamp_meta,
+                          msg.status,
+                          msg.readAt,
+                          msg.readByUs,
+                          msg.readByUsAt
+                        );
+                      });
+                      // Mark messages as read after rendering
+                      markVisibleMessagesAsRead();
                   } else {
                       // Fallback Welcome
                       const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
                       if (welcomeText) appendMessageToUI(welcomeText, 'agent');
+                      // Mark messages as read after rendering
+                      markVisibleMessagesAsRead();
                   }
               }
           } catch(e) { 
@@ -247,12 +277,17 @@
               if (welcomeText) appendMessageToUI(welcomeText, 'agent');
           }
           
+          // Mark messages as read after rendering
+          markVisibleMessagesAsRead();
+          
           connectSocket();
       } else {
           // Test Mode
           setLoading(false);
           const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
           if (welcomeText) appendMessageToUI(welcomeText, 'agent');
+          // Mark messages as read after rendering
+          markVisibleMessagesAsRead();
       }
       
     } catch (error) {
@@ -289,14 +324,75 @@
     socket.on('connect', () => {
       socket.emit('join', {
         type: 'chat',
-        conversationId: conversationId
+        conversationId: conversationId,
+        userId: userId,
+        isAgent: false
       });
     });
 
     socket.on('message', (message) => {
-      if (message.sender === 'agent') {
-        appendMessageToUI(message.text, 'agent');
+      if (message.type === 'read_receipt') {
+        // Handle read receipt update
+        updateReadReceipt(message);
+      } else {
+        // Handle new message
+        const isUserMessage = message.sender === 'user';
+        
+        // For user messages, check if we already added it (optimistic UI)
+        if (isUserMessage && message.userId === userId) {
+          // Find the message by text and timestamp (within 5 seconds)
+          const existingMessage = Array.from(messages.values()).find(msg => {
+            return msg.sender === 'user' && 
+                   msg.text === message.text &&
+                   Math.abs(new Date(msg.timestamp) - new Date(message.timestamp)) < 5000;
+          });
+          
+          if (existingMessage && existingMessage.element) {
+            // Update existing message with server messageId
+            existingMessage.id = message.messageId;
+            existingMessage.messageId = message.messageId;
+            existingMessage.element.setAttribute('data-message-id', message.messageId);
+            messages.delete(existingMessage.id);
+            messages.set(message.messageId, existingMessage);
+          } else {
+            // New message from server
+            appendMessageToUI(
+              message.text,
+              message.sender,
+              message.messageId,
+              message.timestamp,
+              message.status,
+              message.readAt,
+              message.readByUs,
+              message.readByUsAt
+            );
+          }
+        } else if (!isUserMessage) {
+          // Agent message - always append
+          appendMessageToUI(
+            message.text,
+            message.sender,
+            message.messageId,
+            message.timestamp,
+            message.status,
+            message.readAt,
+            message.readByUs,
+            message.readByUsAt
+          );
+          
+          // Mark agent messages as read when received
+          markMessagesAsRead([message.messageId]);
+        }
       }
+    });
+    
+    socket.on('online_status', (data) => {
+      updateOnlineStatus(data.isOnline, data.isAgent);
+    });
+    
+    socket.on('agent_online_status', (data) => {
+      isAgentOnline = data.isOnline;
+      updateOnlineStatusIndicator();
     });
     
     socket.on('connect_error', (err) => {
@@ -329,7 +425,47 @@
     }
   }
 
-  function appendMessageToUI(text, type) {
+  function formatTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    
+    // Format as date
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    const day = date.getDate();
+    const month = date.toLocaleString('default', { month: 'short' });
+    return `${day} ${month}, ${hours}:${minutes}`;
+  }
+
+  function getReadReceiptIcon(status, readAt, readByUs, readByUsAt, sender) {
+    if (sender === 'user') {
+      // For user messages, show if agent read them
+      if (readByUs && readByUsAt) {
+        return '<span class="read-receipt read">✓✓</span>';
+      }
+      return '<span class="read-receipt sent">✓</span>';
+    } else {
+      // For agent messages, show if user read them
+      if (status === 'read' && readAt) {
+        return '<span class="read-receipt read">✓✓</span>';
+      } else if (status === 'delivered') {
+        return '<span class="read-receipt delivered">✓✓</span>';
+      }
+      return '<span class="read-receipt sent">✓</span>';
+    }
+  }
+
+  function appendMessageToUI(text, type, messageId, timestamp, status, readAt, readByUs, readByUsAt) {
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
     const body = host.shadowRoot.getElementById("chatBody");
@@ -337,10 +473,127 @@
 
     const msgDiv = document.createElement('div');
     msgDiv.className = type === 'agent' ? 'bot-msg' : 'user-msg';
-    msgDiv.textContent = text;
+    msgDiv.setAttribute('data-message-id', messageId || `msg_${Date.now()}`);
+    
+    const msgContent = document.createElement('div');
+    msgContent.className = 'msg-content';
+    msgContent.textContent = text;
+    msgDiv.appendChild(msgContent);
+    
+    const msgMeta = document.createElement('div');
+    msgMeta.className = 'msg-meta';
+    
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'msg-time';
+    timeSpan.textContent = formatTimestamp(timestamp);
+    msgMeta.appendChild(timeSpan);
+    
+    // Add read receipt for user messages
+    if (type === 'user') {
+      const receiptSpan = document.createElement('span');
+      receiptSpan.className = 'read-receipt-container';
+      receiptSpan.innerHTML = getReadReceiptIcon(status, readAt, readByUs, readByUsAt, 'user');
+      msgMeta.appendChild(receiptSpan);
+    }
+    
+    msgDiv.appendChild(msgMeta);
+    
+    // Store message data
+    if (messageId) {
+      messages.set(messageId, {
+        id: messageId,
+        text,
+        sender: type,
+        timestamp: timestamp || new Date(),
+        status: status || 'sent',
+        readAt,
+        readByUs: readByUs || false,
+        readByUsAt,
+        element: msgDiv
+      });
+    }
     
     body.appendChild(msgDiv);
     requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+  }
+
+  function updateReadReceipt(receipt) {
+    const message = messages.get(receipt.messageId);
+    if (!message || !message.element) return;
+    
+    const meta = message.element.querySelector('.msg-meta');
+    if (!meta) return;
+    
+    // Update message data
+    message.status = receipt.status || message.status;
+    message.readAt = receipt.readAt || message.readAt;
+    message.readByUs = receipt.readByUs !== undefined ? receipt.readByUs : message.readByUs;
+    message.readByUsAt = receipt.readByUsAt || message.readByUsAt;
+    
+    // Update read receipt icon
+    const receiptContainer = meta.querySelector('.read-receipt-container');
+    if (receiptContainer) {
+      receiptContainer.innerHTML = getReadReceiptIcon(
+        message.status,
+        message.readAt,
+        message.readByUs,
+        message.readByUsAt,
+        message.sender
+      );
+    }
+  }
+
+  async function markMessagesAsRead(messageIds) {
+    if (!conversationId || !userId || settings.testMode) return;
+    
+    try {
+      await fetch(`${API_BASE}/messages/read`, {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({
+          conversationId: conversationId,
+          userId: userId,
+          messageIds: messageIds
+        })
+      });
+    } catch (error) {
+      console.error("UniBox: Failed to mark messages as read", error);
+    }
+  }
+
+  function markVisibleMessagesAsRead() {
+    if (!conversationId || !userId || settings.testMode) return;
+    
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const body = host.shadowRoot.getElementById("chatBody");
+    if (!body) return;
+    
+    // Get all visible agent messages that haven't been read
+    const unreadAgentMessages = Array.from(messages.values())
+      .filter(msg => msg.sender === 'agent' && msg.status !== 'read')
+      .map(msg => msg.id);
+    
+    if (unreadAgentMessages.length > 0) {
+      markMessagesAsRead(unreadAgentMessages);
+    }
+  }
+
+  function updateOnlineStatus(isOnline, isAgent) {
+    if (isAgent) {
+      isAgentOnline = isOnline;
+      updateOnlineStatusIndicator();
+    }
+  }
+
+  function updateOnlineStatusIndicator() {
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const statusIndicator = host.shadowRoot.getElementById("onlineStatusIndicator");
+    if (statusIndicator) {
+      statusIndicator.textContent = isAgentOnline ? '● Online' : '○ Offline';
+      statusIndicator.className = isAgentOnline ? 'online' : 'offline';
+    }
   }
 
 
@@ -425,7 +678,13 @@
         display: flex; align-items: center; gap: 12px; flex-shrink: 0; 
       }
       .header-logo { width: 32px; height: 32px; border-radius: 50%; background: #fff; padding: 2px; object-fit: cover; }
-      .header-title { font-weight: 600; font-size: 16px; }
+      .header-title { font-weight: 600; font-size: 16px; flex: 1; }
+      .online-status {
+        font-size: 12px; opacity: 0.9; margin-left: 8px;
+        display: flex; align-items: center; gap: 4px;
+      }
+      .online-status.online { color: #4ade80; }
+      .online-status.offline { color: #9ca3af; }
 
       /* Body */
       .body { 
@@ -451,22 +710,53 @@
       }
 
       /* Messages */
-      .bot-msg { 
+      .bot-msg, .user-msg {
+        max-width: 85%; margin-bottom: 15px; 
+        display: flex; flex-direction: column;
+      }
+      .bot-msg { align-self: flex-start; }
+      .user-msg { align-self: flex-end; margin-left: auto; }
+      
+      .msg-content {
+        padding: 12px 16px; border-radius: 12px;
+        font-size: 14px; line-height: 1.5; word-break: break-word;
+      }
+      .bot-msg .msg-content {
         background: var(--secondary); 
         color: #333; 
-        padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 2px; 
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05); 
-        font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; align-self: flex-start;
+        border-bottom-left-radius: 2px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
       }
-
-      .user-msg {
+      .user-msg .msg-content {
         background: var(--primary);
         color: #fff; 
-        padding: 12px 16px; border-radius: 12px; border-bottom-right-radius: 2px;
+        border-bottom-right-radius: 2px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        font-size: 14px; line-height: 1.5; max-width: 85%; margin-bottom: 15px; 
-        align-self: flex-end; margin-left: auto; word-break: break-word;
       }
+      
+      .msg-meta {
+        display: flex; align-items: center; gap: 6px;
+        margin-top: 4px; font-size: 11px; opacity: 0.7;
+        justify-content: flex-end;
+      }
+      .user-msg .msg-meta { justify-content: flex-end; }
+      .bot-msg .msg-meta { justify-content: flex-start; }
+      
+      .msg-time {
+        color: #666; font-size: 11px;
+      }
+      .user-msg .msg-time { color: rgba(255,255,255,0.7); }
+      
+      .read-receipt-container {
+        display: inline-flex; align-items: center;
+      }
+      .read-receipt {
+        font-size: 14px; line-height: 1;
+      }
+      .read-receipt.sent { opacity: 0.5; }
+      .read-receipt.delivered { opacity: 0.7; }
+      .read-receipt.read { opacity: 1; }
+      .user-msg .read-receipt { color: rgba(255,255,255,0.8); }
 
       /* Form */
       .form-container { display: flex; flex-direction: column; gap: 15px; background: var(--bg); padding: 24px; border-radius: 8px; }
@@ -507,8 +797,11 @@
       <div class="chat-window" id="chatWindow">
         <div class="header">
            ${headerLogoImg}
-           <div class="header-title">${settings.appearance.header?.title || settings.appearance.headerName}</div>
-           <div id="closeBtn" style="margin-left:auto; cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
+           <div style="flex: 1;">
+             <div class="header-title">${settings.appearance.header?.title || settings.appearance.headerName}</div>
+             <div id="onlineStatusIndicator" class="online-status offline">○ Offline</div>
+           </div>
+           <div id="closeBtn" style="cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
         </div>
         <div class="body" id="chatBody"></div>
         <div class="footer hidden" id="chatFooter">
@@ -628,7 +921,8 @@
         const text = msgInput.value.trim();
         if(!text) return;
         
-        appendMessageToUI(text, 'user');
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        appendMessageToUI(text, 'user', messageId, new Date(), 'sent', null, false, null);
         msgInput.value = "";
 
         sendMessageToApi(text);
@@ -636,6 +930,28 @@
 
     sendBtn.addEventListener("click", handleSend);
     msgInput.addEventListener("keypress", (e) => { if(e.key === 'Enter') handleSend(); });
+    
+    // Mark messages as read when chat window is opened and scrolled
+    const chatWindow = shadow.getElementById("chatWindow");
+    const chatBody = shadow.getElementById("chatBody");
+    if (chatBody) {
+      // Mark messages as read when body is scrolled (user is viewing messages)
+      let scrollTimeout;
+      chatBody.addEventListener('scroll', () => {
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(() => {
+          markVisibleMessagesAsRead();
+        }, 500);
+      });
+      
+      // Mark messages as read when window is opened
+      const observer = new MutationObserver(() => {
+        if (chatWindow.classList.contains('open')) {
+          markVisibleMessagesAsRead();
+        }
+      });
+      observer.observe(chatWindow, { attributes: true, attributeFilter: ['class'] });
+    }
 
     if (settings.behavior.autoOpen) {
         const hasHistory = localStorage.getItem(STORAGE_KEY_OPEN);

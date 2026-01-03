@@ -306,14 +306,14 @@
       const data = await res.json();
       conversationId = data.conversationId;
       
-      // Connect socket first to receive welcome message
+      // Connect socket first to receive welcome message and real-time messages
       connectSocket();
       
       // C. FETCH THREAD AGAIN (To get welcome message and any existing messages)
       if (!settings.testMode) {
           try {
-              // Small delay to ensure welcome message is sent
-              await new Promise(resolve => setTimeout(resolve, 500));
+              // Wait a bit longer to ensure welcome message is sent and stored
+              await new Promise(resolve => setTimeout(resolve, 1000));
               
               const threadRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
                   method: "GET",
@@ -340,7 +340,7 @@
                       // Mark messages as read after rendering
                       markVisibleMessagesAsRead();
                   } else {
-                      // Fallback Welcome (if no messages yet)
+                      // Fallback Welcome (if no messages yet - welcome message might come via socket)
                       const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
                       if (welcomeText) appendMessageToUI(welcomeText, 'agent');
                       // Mark messages as read after rendering
@@ -348,6 +348,9 @@
                   }
               } else {
                   setLoading(false);
+                  // Fallback Welcome on error
+                  const welcomeText = settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage;
+                  if (welcomeText) appendMessageToUI(welcomeText, 'agent');
               }
           } catch(e) { 
               setLoading(false);
@@ -406,6 +409,7 @@
     });
 
     socket.on('message', (message) => {
+      
       if (message.type === 'read_receipt') {
         // Handle read receipt update
         updateReadReceipt(message);
@@ -413,62 +417,61 @@
         // Handle new message
         const isUserMessage = message.sender === 'user';
         
-        // For user messages, check if we already added it (optimistic UI)
-        if (isUserMessage && message.userId === userId) {
-          // Find the message by text and timestamp (within 10 seconds)
-          const existingMessage = Array.from(messages.values()).find(msg => {
-            if (!msg.element) return false;
-            return msg.sender === 'user' && 
-                   msg.text === message.text &&
+        // Check if message already exists (by messageId)
+        const existingMessage = Array.from(messages.values()).find(msg => {
+          return msg.messageId === message.messageId || msg.id === message.messageId;
+        });
+        
+        if (existingMessage && existingMessage.element) {
+          // Message already exists, just update it
+          existingMessage.status = message.status || existingMessage.status;
+          existingMessage.readAt = message.readAt || existingMessage.readAt;
+          existingMessage.readByUs = message.readByUs !== undefined ? message.readByUs : existingMessage.readByUs;
+          existingMessage.readByUsAt = message.readByUsAt || existingMessage.readByUsAt;
+          return; // Don't add duplicate
+        }
+        
+        // For user messages, check if we already added it optimistically (by text and time)
+        if (isUserMessage) {
+          const optimisticMessage = Array.from(messages.values()).find(msg => {
+            if (!msg.element || msg.sender !== 'user') return false;
+            return msg.text === message.text &&
                    Math.abs(new Date(msg.timestamp) - new Date(message.timestamp)) < 10000;
           });
           
-          if (existingMessage && existingMessage.element) {
-            // Update existing message with server messageId
-            const oldId = existingMessage.id || existingMessage.messageId;
-            existingMessage.id = message.messageId;
-            existingMessage.messageId = message.messageId;
-            existingMessage.status = message.status || existingMessage.status;
-            existingMessage.element.setAttribute('data-message-id', message.messageId);
+          if (optimisticMessage && optimisticMessage.element) {
+            // Update existing optimistic message with server messageId
+            const oldId = optimisticMessage.id || optimisticMessage.messageId;
+            optimisticMessage.id = message.messageId;
+            optimisticMessage.messageId = message.messageId;
+            optimisticMessage.status = message.status || optimisticMessage.status;
+            optimisticMessage.readAt = message.readAt || optimisticMessage.readAt;
+            optimisticMessage.readByUs = message.readByUs !== undefined ? message.readByUs : optimisticMessage.readByUs;
+            optimisticMessage.readByUsAt = message.readByUsAt || optimisticMessage.readByUsAt;
+            optimisticMessage.element.setAttribute('data-message-id', message.messageId);
             if (oldId && oldId !== message.messageId) {
               messages.delete(oldId);
             }
-            messages.set(message.messageId, existingMessage);
-          } else {
-            // New message from server (not found in optimistic UI)
-            appendMessageToUI(
-              message.text,
-              message.sender,
-              message.messageId,
-              message.timestamp,
-              message.status,
-              message.readAt,
-              message.readByUs,
-              message.readByUsAt
-            );
+            messages.set(message.messageId, optimisticMessage);
+            return; // Updated existing message
           }
-        } else if (!isUserMessage) {
-          // Agent message - always append (check for duplicates first)
-          const existingAgentMessage = Array.from(messages.values()).find(msg => {
-            return msg.sender === 'agent' && 
-                   msg.messageId === message.messageId;
-          });
-          
-          if (!existingAgentMessage) {
-            appendMessageToUI(
-              message.text,
-              message.sender,
-              message.messageId,
-              message.timestamp,
-              message.status,
-              message.readAt,
-              message.readByUs,
-              message.readByUsAt
-            );
-            
-            // Mark agent messages as read when received
-            markMessagesAsRead([message.messageId]);
-          }
+        }
+        
+        // New message from server - display it
+        appendMessageToUI(
+          message.text,
+          message.sender,
+          message.messageId,
+          message.timestamp,
+          message.status,
+          message.readAt,
+          message.readByUs,
+          message.readByUsAt
+        );
+        
+        // Mark agent messages as read when received
+        if (!isUserMessage) {
+          markMessagesAsRead([message.messageId]);
         }
       }
     });

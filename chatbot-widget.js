@@ -486,7 +486,6 @@
         }
         
         // New message from server - display it (welcome, out of hours, or user message)
-        // Sort messages by timestamp to ensure proper ordering
         appendMessageToUI(
           message.text,
           message.sender,
@@ -498,7 +497,8 @@
           message.readByUsAt
         );
         
-        // Sort messages by timestamp after adding new message
+        // Sort messages by timestamp after adding new message to ensure proper ordering
+        // Order should be: Welcome -> User message -> Out of hours
         sortMessagesByTimestamp();
         
         // Mark agent messages as read when received

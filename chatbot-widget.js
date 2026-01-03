@@ -255,7 +255,10 @@
                 msg.readByUsAt,
               );
             });
-            markVisibleMessagesAsRead();
+            // Mark all agent messages (including welcome) as read when conversation is restored
+            setTimeout(() => {
+              markVisibleMessagesAsRead();
+            }, 500);
           }
 
           connectSocket();
@@ -398,22 +401,24 @@
                 staticWelcomeShown = false;
               }
 
-              threadData.messages.forEach((msg) => {
-                // appendMessageToUI will check for duplicates internally
-                appendMessageToUI(
-                  msg.text || msg.text_body,
-                  msg.sender ||
-                    (msg.direction === 'inbound' ? 'user' : 'agent'),
-                  msg.id || msg.messageId,
-                  msg.timestamp || msg.timestamp_meta,
-                  msg.status,
-                  msg.readAt,
-                  msg.readByUs,
-                  msg.readByUsAt,
-                );
-              });
-              // Mark messages as read after rendering
-              markVisibleMessagesAsRead();
+                      threadData.messages.forEach((msg) => {
+                        // appendMessageToUI will check for duplicates internally
+                        appendMessageToUI(
+                          msg.text || msg.text_body,
+                          msg.sender ||
+                            (msg.direction === 'inbound' ? 'user' : 'agent'),
+                          msg.id || msg.messageId,
+                          msg.timestamp || msg.timestamp_meta,
+                          msg.status,
+                          msg.readAt,
+                          msg.readByUs,
+                          msg.readByUsAt,
+                        );
+                      });
+                      // Mark all agent messages (including welcome) as read after rendering
+                      setTimeout(() => {
+                        markVisibleMessagesAsRead();
+                      }, 500);
             }
             // Don't show fallback welcome if static welcome was already shown
           } else {
@@ -497,7 +502,10 @@
                   );
                 });
                 sortMessagesByTimestamp();
-                markVisibleMessagesAsRead();
+                // Mark all agent messages (including welcome) as read
+                setTimeout(() => {
+                  markVisibleMessagesAsRead();
+                }, 500);
               }
             })
             .catch((e) =>
@@ -649,15 +657,26 @@
         // Order should be: Welcome -> User message -> Out of hours
         sortMessagesByTimestamp();
 
-        // Mark agent messages as read when received
+        // Mark agent messages as read when received (including welcome message)
         if (!isUserMessage) {
-          markMessagesAsRead([message.messageId]);
+          // Mark this message and any other unread agent messages
+          markVisibleMessagesAsRead();
         }
       
     });
 
     socket.on('online_status', (data) => {
+      // Update online status for both agent and user
+      // data.userId is the user whose status changed
+      // data.isAgent indicates if it's an agent or user
       updateOnlineStatus(data.isOnline, data.isAgent);
+      
+      // If it's a user (not agent), we can track their online status
+      // This is mainly for agent dashboard, but we can log it here
+      if (!data.isAgent && data.userId !== userId) {
+        // Another user's status changed (for agent dashboard)
+        // Widget doesn't need to display other users' status
+      }
     });
 
     socket.on('agent_online_status', (data) => {
@@ -1083,10 +1102,16 @@
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
 
-    // Get all visible agent messages that haven't been read
+    // Get all agent messages (including welcome message) that haven't been read
+    // Mark all agent messages as read when conversation is opened or new messages arrive
     const unreadAgentMessages = Array.from(messages.values())
-      .filter((msg) => msg.sender === 'agent' && msg.status !== 'read')
-      .map((msg) => msg.id);
+      .filter((msg) => {
+        // Include all agent messages (welcome, out of hours, regular agent messages)
+        return msg.sender === 'agent' && 
+               (msg.status !== 'read' || !msg.readAt);
+      })
+      .map((msg) => msg.id || msg.messageId)
+      .filter(id => id); // Filter out undefined/null IDs
 
     if (unreadAgentMessages.length > 0) {
       markMessagesAsRead(unreadAgentMessages);
@@ -1605,9 +1630,10 @@
         }, 500);
       });
 
-      // Mark messages as read when window is opened
+      // Mark messages as read when window is opened (including welcome message)
       const observer = new MutationObserver(() => {
         if (chatWindow.classList.contains('open')) {
+          // Mark all agent messages as read when conversation opens
           markVisibleMessagesAsRead();
         }
       });
@@ -1615,6 +1641,13 @@
         attributes: true,
         attributeFilter: ['class'],
       });
+      
+      // Also mark messages as read immediately when window opens for the first time
+      if (chatWindow.classList.contains('open')) {
+        setTimeout(() => {
+          markVisibleMessagesAsRead();
+        }, 500);
+      }
     }
 
     if (settings.behavior.autoOpen) {

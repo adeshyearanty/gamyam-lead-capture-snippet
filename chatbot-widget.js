@@ -83,6 +83,9 @@
   let messages = new Map(); // Store messages with IDs for read receipt tracking
   let isAgentOnline = false;
   let staticWelcomeShown = false; // Track if static welcome message was shown
+  let typingTimeout = null; // For typing indicator debouncing
+  let isTyping = false; // Track if user is currently typing
+  let agentTyping = false; // Track if agent is currently typing
 
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
@@ -1052,6 +1055,38 @@
     }
   }
 
+  function showTypingIndicator(show) {
+    const host = document.getElementById('unibox-root');
+    if (!host || !host.shadowRoot) return;
+    const typingIndicator = host.shadowRoot.getElementById('typingIndicator');
+    if (typingIndicator) {
+      if (show) {
+        typingIndicator.classList.remove('hidden');
+        // Scroll to bottom when typing indicator appears
+        const body = host.shadowRoot.getElementById('chatBody');
+        if (body) {
+          requestAnimationFrame(() => {
+            body.scrollTop = body.scrollHeight;
+          });
+        }
+      } else {
+        typingIndicator.classList.add('hidden');
+      }
+    }
+  }
+
+  function emitTypingStatus(typing) {
+    if (!socket || !conversationId || !userId || !socket.connected) return;
+    
+    // Emit typing status
+    socket.emit('typing', {
+      conversationId: conversationId,
+      userId: userId,
+      isTyping: typing,
+      isAgent: false
+    });
+  }
+
   // --- 9. UI RENDERING ---
   function renderWidget() {
     const host = document.createElement('div');
@@ -1216,6 +1251,24 @@
       .read-receipt.delivered { opacity: 0.7; }
       .read-receipt.read { opacity: 1; }
       .user-msg .read-receipt { color: rgba(255,255,255,0.8); }
+      
+      /* Typing Indicator */
+      .typing-indicator {
+        display: flex; align-items: center; gap: 4px; padding: 12px 16px;
+        background: #f3f4f6; border-radius: 18px; margin: 8px 0;
+        max-width: 80px;
+      }
+      .typing-indicator.hidden { display: none; }
+      .typing-dot {
+        width: 8px; height: 8px; background: #9ca3af;
+        border-radius: 50%; animation: typing 1.4s infinite;
+      }
+      .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+      .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes typing {
+        0%, 60%, 100% { transform: translateY(0); opacity: 0.7; }
+        30% { transform: translateY(-10px); opacity: 1; }
+      }
 
       /* Form */
       .form-container { display: flex; flex-direction: column; gap: 15px; background: var(--bg); padding: 24px; border-radius: 8px; }
@@ -1262,7 +1315,13 @@
            </div>
            <div id="closeBtn" style="cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
         </div>
-        <div class="body" id="chatBody"></div>
+        <div class="body" id="chatBody">
+          <div class="typing-indicator hidden" id="typingIndicator">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+          </div>
+        </div>
         <div class="footer hidden" id="chatFooter">
            <div class="input-wrapper">
              <input type="text" class="msg-input" id="msgInput" placeholder="Type a message..." />
@@ -1437,8 +1496,42 @@
 
     sendBtn.addEventListener('click', handleSend);
     msgInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') handleSend();
+      if (e.key === 'Enter') {
+        // Stop typing indicator when message is sent
+        if (isTyping) {
+          isTyping = false;
+          emitTypingStatus(false);
+          if (typingTimeout) {
+            clearTimeout(typingTimeout);
+            typingTimeout = null;
+          }
+        }
+        handleSend();
+      } else {
+        // User is typing
+        handleUserTyping();
+      }
     });
+    
+    // Handle typing indicator for user
+    function handleUserTyping() {
+      if (!isTyping) {
+        isTyping = true;
+        emitTypingStatus(true);
+      }
+      
+      // Clear existing timeout
+      if (typingTimeout) {
+        clearTimeout(typingTimeout);
+      }
+      
+      // Stop typing indicator after 3 seconds of inactivity
+      typingTimeout = setTimeout(() => {
+        isTyping = false;
+        emitTypingStatus(false);
+        typingTimeout = null;
+      }, 3000);
+    }
 
     // Mark messages as read when chat window is opened and scrolled
     const chatWindow = shadow.getElementById('chatWindow');

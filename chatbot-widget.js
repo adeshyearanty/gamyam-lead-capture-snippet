@@ -443,22 +443,18 @@
           return; // Don't add duplicate
         }
         
-        // For welcome messages, check if static welcome was already shown
+        // For welcome messages from server, remove static welcome if it exists
         if (isWelcomeMessage && staticWelcomeShown) {
-          // Remove static welcome and replace with server welcome
+          // Remove static welcome message from UI
           const staticWelcome = Array.from(messages.values()).find(msg => {
             return msg.id && msg.id.startsWith('static_welcome_');
           });
           if (staticWelcome && staticWelcome.element) {
             staticWelcome.element.remove();
             messages.delete(staticWelcome.id);
+            staticWelcomeShown = false; // Mark as removed
           }
-          staticWelcomeShown = false; // Mark as replaced
-        }
-        
-        // Skip welcome message if static one is already shown and this is a duplicate
-        if (isWelcomeMessage && staticWelcomeShown) {
-          return; // Don't show duplicate welcome
+          // Continue to show server welcome message (don't return)
         }
         
         // For user messages, check if we already added it optimistically (by text and time)
@@ -524,12 +520,10 @@
   }
 
   async function sendMessageToApi(text) {
-    if (!conversationId) {
-      await initializeConversation(); 
-      if (!conversationId) {
-        console.error("UniBox: Failed to initialize conversation");
-        return;
-      }
+    // Create userId if it doesn't exist (first message)
+    if (!userId) {
+      userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      localStorage.setItem(STORAGE_KEY_USER, userId);
     }
 
     // Get user details from pre-chat form if available
@@ -543,11 +537,13 @@
     }
 
     try {
+      // Send message - backend will create conversation if it doesn't exist
+      // Use existing conversationId if available, otherwise use null/empty and let backend create it
       const response = await fetch(`${API_BASE}/message/user`, {
         method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({
-          conversationId: conversationId,
+          conversationId: conversationId || 'new', // Use 'new' to indicate new conversation
           text: text,
           userId: userId,
           userName: userDetails.userName,
@@ -560,8 +556,17 @@
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       
+      const result = await response.json();
+      
+      // Update conversationId from response if provided
+      if (result.conversationId && !conversationId) {
+        conversationId = result.conversationId;
+        // Connect socket now that we have conversationId
+        connectSocket();
+      }
+      
       // Message sent successfully, socket will handle the response
-      return await response.json();
+      return result;
     } catch (error) {
       console.error("UniBox: Send Error", error);
       const host = document.getElementById("unibox-root");

@@ -74,15 +74,10 @@
   // --- 2. STATE ---
   let conversationId = null;
   let socket = null;
-  let userId = localStorage.getItem(STORAGE_KEY_USER);
+  let userId = localStorage.getItem(STORAGE_KEY_USER); // Only load existing, don't create new
   let resolvedLogoUrl = "";
   let messages = new Map(); // Store messages with IDs for read receipt tracking
-  let isAgentOnline = false; 
-
-  if (!userId) {
-    userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    localStorage.setItem(STORAGE_KEY_USER, userId);
-  }
+  let isAgentOnline = false;
 
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
@@ -150,9 +145,13 @@
     }
 
     loadSocketScript(() => {
-        const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
-        if (!settings.preChatForm.enabled || hasSubmittedForm) {
-          initializeConversation();
+        // Only restore existing conversation if userId exists (user has sent messages before)
+        // Don't create new conversation/contact until user sends first message
+        if (userId) {
+          const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
+          if (!settings.preChatForm.enabled || hasSubmittedForm) {
+            restoreExistingConversation();
+          }
         }
     });
   }
@@ -173,8 +172,79 @@
   }
 
   // --- 8. API & SOCKET LOGIC ---
-  async function initializeConversation(userDetails = {}) {
-    if (conversationId) return; 
+  
+  /**
+   * Restore existing conversation (only called if userId exists)
+   * This doesn't create new conversation/contact, just restores existing one
+   */
+  async function restoreExistingConversation() {
+    if (conversationId || !userId) return;
+    
+    setLoading(true);
+    
+    try {
+      const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
+        method: "GET",
+        headers: getHeaders()
+      });
+      
+      if (restoreRes.ok) {
+        const data = await restoreRes.json();
+        if (data.conversation) {
+          conversationId = data.conversation.id;
+          setLoading(false);
+          
+          // RENDER HISTORY
+          if (data.messages && Array.isArray(data.messages)) {
+            data.messages.forEach(msg => {
+              appendMessageToUI(
+                msg.text || msg.text_body, 
+                msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
+                msg.id || msg.messageId,
+                msg.timestamp || msg.timestamp_meta,
+                msg.status,
+                msg.readAt,
+                msg.readByUs,
+                msg.readByUsAt
+              );
+            });
+            markVisibleMessagesAsRead();
+          }
+          
+          connectSocket();
+        } else {
+          setLoading(false);
+        }
+      } else {
+        setLoading(false);
+      }
+    } catch (e) {
+      setLoading(false);
+    }
+  }
+  
+  /**
+   * Initialize conversation when user sends first message
+   * This creates the conversation and contact
+   */
+  async function initializeConversation() {
+    if (conversationId) return;
+    
+    // Create userId if it doesn't exist (first message)
+    if (!userId) {
+      userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      localStorage.setItem(STORAGE_KEY_USER, userId);
+    }
+    
+    // Get user details from pre-chat form if available
+    const userDetails = {};
+    const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
+    if (hasSubmittedForm) {
+      const storedName = sessionStorage.getItem(`${SESSION_KEY_FORM}_name`);
+      const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
+      if (storedName) userDetails.name = storedName;
+      if (storedEmail) userDetails.email = storedEmail;
+    } 
 
     // START LOADING
     setLoading(true);
@@ -220,7 +290,7 @@
           } catch (e) {}
       }
 
-      // B. CREATE NEW CONVERSATION (If restore failed or Test Mode)
+      // B. CREATE NEW CONVERSATION (Only when user sends first message)
       const res = await fetch(`${API_BASE}/conversation`, {
         method: "POST",
         headers: getHeaders(), 
@@ -406,6 +476,16 @@
       if (!conversationId) return;
     }
 
+    // Get user details from pre-chat form if available
+    const userDetails = {};
+    const hasSubmittedForm = sessionStorage.getItem(SESSION_KEY_FORM) === "true";
+    if (hasSubmittedForm) {
+      const storedName = sessionStorage.getItem(`${SESSION_KEY_FORM}_name`);
+      const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
+      if (storedName) userDetails.userName = storedName;
+      if (storedEmail) userDetails.userEmail = storedEmail;
+    }
+
     try {
       await fetch(`${API_BASE}/message/user`, {
         method: "POST",
@@ -414,6 +494,8 @@
           conversationId: conversationId,
           text: text,
           userId: userId,
+          userName: userDetails.userName,
+          userEmail: userDetails.userEmail,
           testMode: settings.testMode
         })
       });
@@ -425,9 +507,22 @@
     }
   }
 
-  function formatTimestamp(timestamp) {
+  function formatTimestamp(timestamp, showReadReceipt = false) {
     if (!timestamp) return '';
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+    
+    // Format as "00:00 AM/PM" for messages with read receipts
+    if (showReadReceipt) {
+      let hours = date.getHours();
+      const minutes = date.getMinutes().toString().padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12; // the hour '0' should be '12'
+      const hoursStr = hours.toString().padStart(2, '0');
+      return `${hoursStr}:${minutes} ${ampm}`;
+    }
+    
+    // For other cases, use relative time
     const now = new Date();
     const diffMs = now - date;
     const diffMins = Math.floor(diffMs / 60000);
@@ -440,11 +535,15 @@
     if (diffDays < 7) return `${diffDays}d ago`;
     
     // Format as date
-    const hours = date.getHours().toString().padStart(2, '0');
+    let hours = date.getHours();
     const minutes = date.getMinutes().toString().padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12;
+    const hoursStr = hours.toString().padStart(2, '0');
     const day = date.getDate();
     const month = date.toLocaleString('default', { month: 'short' });
-    return `${day} ${month}, ${hours}:${minutes}`;
+    return `${day} ${month}, ${hoursStr}:${minutes} ${ampm}`;
   }
 
   function getReadReceiptIcon(status, readAt, readByUs, readByUsAt, sender) {
@@ -483,11 +582,6 @@
     const msgMeta = document.createElement('div');
     msgMeta.className = 'msg-meta';
     
-    const timeSpan = document.createElement('span');
-    timeSpan.className = 'msg-time';
-    timeSpan.textContent = formatTimestamp(timestamp);
-    msgMeta.appendChild(timeSpan);
-    
     // Add read receipt for user messages
     if (type === 'user') {
       const receiptSpan = document.createElement('span');
@@ -495,6 +589,13 @@
       receiptSpan.innerHTML = getReadReceiptIcon(status, readAt, readByUs, readByUsAt, 'user');
       msgMeta.appendChild(receiptSpan);
     }
+    
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'msg-time';
+    // Show timestamp in "00:00 AM" format for user messages (with read receipts)
+    const showTimeFormat = type === 'user';
+    timeSpan.textContent = formatTimestamp(timestamp, showTimeFormat);
+    msgMeta.appendChild(timeSpan);
     
     msgDiv.appendChild(msgMeta);
     
@@ -878,11 +979,12 @@
 
           if (!capturedName && capturedEmail) capturedName = capturedEmail;
 
-          loadSocketScript(() => {
-              initializeConversation({ name: capturedName, email: capturedEmail });
-          });
-
+          // Store user details for when they send first message
+          // Don't create conversation/contact until first message is sent
           sessionStorage.setItem(SESSION_KEY_FORM, "true");
+          if (capturedName) sessionStorage.setItem(`${SESSION_KEY_FORM}_name`, capturedName);
+          if (capturedEmail) sessionStorage.setItem(`${SESSION_KEY_FORM}_email`, capturedEmail);
+
           currentView = 'chat';
           renderView();
         });

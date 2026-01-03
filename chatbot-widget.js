@@ -427,7 +427,8 @@
         // Handle new message
         const isUserMessage = message.sender === 'user';
         const isWelcomeMessage = message.sender === 'agent' && 
-          (message.text === (settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage));
+          (message.raw_payload?.is_welcome_message === true ||
+           message.text === (settings.appearance.header?.welcomeMessage || settings.appearance.welcomeMessage));
         
         // Check if message already exists (by messageId)
         const existingMessage = Array.from(messages.values()).find(msg => {
@@ -484,23 +485,25 @@
           }
         }
         
-        // New message from server - display it (unless it's a duplicate welcome)
-        if (!(isWelcomeMessage && staticWelcomeShown)) {
-          appendMessageToUI(
-            message.text,
-            message.sender,
-            message.messageId,
-            message.timestamp,
-            message.status,
-            message.readAt,
-            message.readByUs,
-            message.readByUsAt
-          );
-          
-          // Mark agent messages as read when received
-          if (!isUserMessage) {
-            markMessagesAsRead([message.messageId]);
-          }
+        // New message from server - display it (welcome, out of hours, or user message)
+        // Sort messages by timestamp to ensure proper ordering
+        appendMessageToUI(
+          message.text,
+          message.sender,
+          message.messageId,
+          message.timestamp,
+          message.status,
+          message.readAt,
+          message.readByUs,
+          message.readByUsAt
+        );
+        
+        // Sort messages by timestamp after adding new message
+        sortMessagesByTimestamp();
+        
+        // Mark agent messages as read when received
+        if (!isUserMessage) {
+          markMessagesAsRead([message.messageId]);
         }
       }
     });
@@ -651,6 +654,7 @@
     const msgDiv = document.createElement('div');
     msgDiv.className = type === 'agent' ? 'bot-msg' : 'user-msg';
     msgDiv.setAttribute('data-message-id', messageId || `msg_${Date.now()}`);
+    msgDiv.setAttribute('data-timestamp', (timestamp ? new Date(timestamp).getTime() : Date.now()).toString());
     
     const msgContent = document.createElement('div');
     msgContent.className = 'msg-content';
@@ -693,6 +697,33 @@
     }
     
     body.appendChild(msgDiv);
+    requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+  }
+
+  function sortMessagesByTimestamp() {
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const body = host.shadowRoot.getElementById("chatBody");
+    if (!body) return;
+    
+    // Get all message elements
+    const messageElements = Array.from(body.children).filter(child => {
+      return child.hasAttribute('data-timestamp');
+    });
+    
+    // Sort by timestamp
+    messageElements.sort((a, b) => {
+      const timestampA = parseInt(a.getAttribute('data-timestamp') || '0');
+      const timestampB = parseInt(b.getAttribute('data-timestamp') || '0');
+      return timestampA - timestampB;
+    });
+    
+    // Re-append in sorted order
+    messageElements.forEach(element => {
+      body.appendChild(element);
+    });
+    
+    // Scroll to bottom
     requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
   }
 

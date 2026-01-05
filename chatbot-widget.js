@@ -1655,6 +1655,21 @@
       }, 3000);
     }
 
+    // Mark contact messages as read when chat window is opened
+    async function markContactAsRead() {
+      if (!userId || settings.testMode) return;
+      
+      try {
+        await fetch(`${API_BASE}/read/${userId}`, {
+          method: 'POST',
+          headers: getHeaders(),
+        });
+        console.log('UniBox: Contact marked as read, unread_count reset to 0');
+      } catch (error) {
+        console.error('UniBox: Failed to mark contact as read', error);
+      }
+    }
+
     // Mark messages as read when chat window is opened and scrolled
     const chatWindow = shadow.getElementById('chatWindow');
     const chatBody = shadow.getElementById('chatBody');
@@ -1668,9 +1683,11 @@
         }, 500);
       });
 
-      // Mark messages as read when window is opened (including welcome message)
+      // Mark contact as read and messages as read when window is opened
       const observer = new MutationObserver(() => {
         if (chatWindow.classList.contains('open')) {
+          // Mark contact as read (resets unread_count to 0)
+          markContactAsRead();
           // Mark all agent messages as read when conversation opens
           markVisibleMessagesAsRead();
         }
@@ -1680,9 +1697,10 @@
         attributeFilter: ['class'],
       });
       
-      // Also mark messages as read immediately when window opens for the first time
+      // Also mark contact and messages as read immediately when window opens for the first time
       if (chatWindow.classList.contains('open')) {
         setTimeout(() => {
+          markContactAsRead();
           markVisibleMessagesAsRead();
         }, 500);
       }

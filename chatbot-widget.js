@@ -15,7 +15,7 @@
 
   // API URLs
   const API_BASE =
-    userConfig.apiBaseUrl || 'https://api.yourdomain.com/pulse/v1/chat';
+    userConfig.apiBaseUrl || 'https://dev-api.salesastra.ai/pulse/v1/chat';
   const API_S3_URL = API_BASE.replace(
     /\/chat\/?$/,
     '/s3/generate-access-url',
@@ -507,6 +507,7 @@
 
     // Listen for read receipt events
     socket.on('read_receipt', (receipt) => {
+      console.log('UniBox: Received read_receipt event:', receipt);
       updateReadReceipt(receipt);
     });
 
@@ -527,6 +528,7 @@
     socket.on('message', (message) => {
       // Handle read receipt events that come through message channel
       if (message.type === 'read_receipt') {
+        console.log('UniBox: Received read_receipt via message channel:', message);
         updateReadReceipt(message);
         return;
       }
@@ -977,8 +979,9 @@
 
     // Store message data
     if (messageId) {
-      messages.set(messageId, {
+      const messageData = {
         id: messageId,
+        messageId: messageId, // Store both for compatibility
         text,
         sender: type,
         timestamp: timestamp || new Date(),
@@ -987,7 +990,12 @@
         readByUs: readByUs || false,
         readByUsAt,
         element: msgDiv,
-      });
+      };
+      messages.set(messageId, messageData);
+      // Also store by normalizedId if different
+      if (normalizedId !== messageId) {
+        messages.set(normalizedId, messageData);
+      }
     }
 
     body.appendChild(msgDiv);
@@ -1028,10 +1036,26 @@
   function updateReadReceipt(receipt) {
     // Handle both direct read_receipt events and read_receipt messages
     const messageId = receipt.messageId || receipt.id;
-    if (!messageId) return;
+    if (!messageId) {
+      console.warn('UniBox: Read receipt missing messageId/id:', receipt);
+      return;
+    }
     
-    const message = messages.get(messageId);
-    if (!message || !message.element) return;
+    // Try to find message by messageId or id
+    let message = messages.get(messageId);
+    if (!message) {
+      // Try to find by id field if messageId didn't match
+      message = Array.from(messages.values()).find(
+        (msg) => msg.id === messageId || msg.messageId === messageId
+      );
+    }
+    
+    if (!message || !message.element) {
+      console.warn('UniBox: Message not found for read receipt:', messageId, 'Available messages:', Array.from(messages.keys()));
+      return;
+    }
+    
+    console.log('UniBox: Updating read receipt for message:', messageId, receipt);
 
     const meta = message.element.querySelector('.msg-meta');
     if (!meta) return;
@@ -1251,11 +1275,16 @@
       .header-logo { width: 32px; height: 32px; border-radius: 50%; background: #fff; padding: 2px; object-fit: cover; }
       .header-title { font-weight: 600; font-size: 16px; flex: 1; }
       .online-status {
-        font-size: 12px; margin-left: 8px;
-        display: flex; align-items: center; gap: 4px;
+        font-size: 12px; 
+        margin-left: 8px;
+        display: flex; 
+        align-items: center; 
+        gap: 4px;
         font-weight: 400;
+        height: 10px;
+        line-height: 10px;
       }
-      .online-status.online { color: #22C04C; }
+      .online-status.online { color: #22C55E; }
       .online-status.offline { color: #9DA2AB; }
 
       /* Body */

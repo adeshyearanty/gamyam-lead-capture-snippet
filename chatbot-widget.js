@@ -1,3 +1,4 @@
+
 (function () {
   // --- 1. CONFIGURATION ---
   if (!window.UniBoxSettings || !window.UniBoxSettings.tenantId) {
@@ -20,22 +21,8 @@
     '/s3/generate-access-url',
   );
   
-  // Construct base URL for assets (SVG icons)
-  // Assets are typically served from the root domain, not the API path
-  function getAssetUrl(path) {
-    try {
-      const urlObj = new URL(API_BASE);
-      // For assets, use the root domain (remove /pulse/v1/chat)
-      // Assets are typically at root level like /pulse/read.svg
-      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, '');
-      // If basePath is empty, assets are at root
-      const assetPath = basePath ? `${basePath}${path}` : path;
-      return `${urlObj.protocol}//${urlObj.host}${assetPath}`;
-    } catch (e) {
-      // Fallback to relative path if URL parsing fails
-      return path;
-    }
-  }
+  // Note: SVG icons are now inline, so getAssetUrl is no longer needed for read receipts
+  // Keeping it for potential future use with other assets
 
   // Socket Config Helper
   function getSocketConfig(apiBase) {
@@ -585,19 +572,21 @@
           return; // Don't add duplicate
         }
 
-        // For welcome messages from server, remove static welcome if it exists
-        if (isWelcomeMessage && staticWelcomeShown) {
-          // Remove static welcome message from UI
+        // Remove static welcome message when any message arrives (conversation has started)
+        // This ensures static welcome is removed when server sends welcome, user message, or any other message
+        if (staticWelcomeShown) {
           const staticWelcome = Array.from(messages.values()).find((msg) => {
             return msg.id && msg.id.startsWith('static_welcome_');
           });
           if (staticWelcome && staticWelcome.element) {
             staticWelcome.element.remove();
             messages.delete(staticWelcome.id);
-            staticWelcomeShown = false; // Mark as removed
+            staticWelcomeShown = false;
           }
-          // Continue to show server welcome message (don't return)
         }
+        
+        // For welcome messages from server, we've already removed static welcome above
+        // Continue to show server welcome message
 
         // For user messages, check if we already added it optimistically (by text and time)
         if (isUserMessage) {
@@ -844,11 +833,17 @@
     if (sender === 'user') {
       // For user messages, show if agent read them
       if (readByUs && readByUsAt) {
-        const readIconUrl = getAssetUrl('/pulse/read.svg');
-        return `<img src="${readIconUrl}" alt="Read" class="read-receipt-icon" style="width: 16px; height: 16px; opacity: 1;" />`;
+        // Read icon (purple)
+        return `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="read-receipt-icon" style="opacity: 1;">
+          <path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>`;
       }
-      const sentIconUrl = getAssetUrl('/pulse/sent.svg');
-      return `<img src="${sentIconUrl}" alt="Sent" class="read-receipt-icon" style="width: 16px; height: 16px; opacity: 0.5;" />`;
+      // Sent/Delivered icon (grey)
+      return `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="read-receipt-icon" style="opacity: 0.5;">
+        <path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
     }
     // Agent messages don't show read receipts in widget (user side)
     return '';
@@ -1333,6 +1328,8 @@
       }
       .read-receipt-icon {
         display: inline-block;
+        vertical-align: middle;
+        flex-shrink: 0;
       }
       
       /* Typing Indicator */
@@ -1555,6 +1552,18 @@
     const handleSend = () => {
       const text = msgInput.value.trim();
       if (!text) return;
+
+      // Remove static welcome message when user sends first message (conversation has started)
+      if (staticWelcomeShown) {
+        const staticWelcome = Array.from(messages.values()).find((msg) => {
+          return msg.id && msg.id.startsWith('static_welcome_');
+        });
+        if (staticWelcome && staticWelcome.element) {
+          staticWelcome.element.remove();
+          messages.delete(staticWelcome.id);
+          staticWelcomeShown = false;
+        }
+      }
 
       // Clear input immediately for better UX
       msgInput.value = '';

@@ -1,4 +1,3 @@
-
 (function () {
   // --- 1. CONFIGURATION ---
   if (!window.UniBoxSettings || !window.UniBoxSettings.tenantId) {
@@ -20,9 +19,6 @@
     /\/chat\/?$/,
     '/s3/generate-access-url',
   );
-  
-  // Note: SVG icons are now inline, so getAssetUrl is no longer needed for read receipts
-  // Keeping it for potential future use with other assets
 
   // Socket Config Helper
   function getSocketConfig(apiBase) {
@@ -82,14 +78,14 @@
   // --- 2. STATE ---
   let conversationId = null;
   let socket = null;
-  let userId = localStorage.getItem(STORAGE_KEY_USER); // Only load existing, don't create new
+  let userId = localStorage.getItem(STORAGE_KEY_USER);
   let resolvedLogoUrl = '';
-  let messages = new Map(); // Store messages with IDs for read receipt tracking
+  let messages = new Map();
   let isAgentOnline = false;
-  let staticWelcomeShown = false; // Track if static welcome message was shown
-  let typingTimeout = null; // For typing indicator debouncing
-  let isTyping = false; // Track if user is currently typing
-  let agentTyping = false; // Track if agent is currently typing
+  let staticWelcomeShown = false;
+  let typingTimeout = null;
+  let isTyping = false;
+  let agentTyping = false;
 
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
@@ -109,13 +105,12 @@
 
     if (isLoading) {
       body.innerHTML = `
-        <div class="loader-container">
-          <div class="loader"></div>
+        <div class="chat-widget-loader">
+          <div class="chat-widget-loader-spinner"></div>
         </div>
       `;
     } else {
-      // If the loader exists, remove it
-      const loader = body.querySelector('.loader-container');
+      const loader = body.querySelector('.chat-widget-loader');
       if (loader) loader.remove();
     }
   }
@@ -157,8 +152,6 @@
     }
 
     loadSocketScript(() => {
-      // Only restore existing conversation if userId exists (user has sent messages before)
-      // Don't create new conversation/contact until user sends first message
       if (userId) {
         const hasSubmittedForm =
           sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
@@ -192,15 +185,9 @@
 
   // --- 8. API & SOCKET LOGIC ---
 
-  /**
-   * Restore existing conversation (only called if userId exists)
-   * This doesn't create new conversation/contact, just restores existing one
-   */
   async function restoreExistingConversation() {
     if (conversationId || !userId) return;
-
     setLoading(true);
-
     try {
       const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
         method: 'GET',
@@ -213,14 +200,10 @@
           conversationId = data.conversation.id;
           setLoading(false);
 
-          // RENDER HISTORY
           if (data.messages && Array.isArray(data.messages)) {
-            // Remove static welcome if restoring existing conversation
             if (staticWelcomeShown) {
               const staticWelcome = Array.from(messages.values()).find(
-                (msg) => {
-                  return msg.id && msg.id.startsWith('static_welcome_');
-                },
+                (msg) => msg.id && msg.id.startsWith('static_welcome_'),
               );
               if (staticWelcome && staticWelcome.element) {
                 staticWelcome.element.remove();
@@ -230,7 +213,6 @@
             }
 
             data.messages.forEach((msg) => {
-              // appendMessageToUI will check for duplicates internally
               appendMessageToUI(
                 msg.text || msg.text_body,
                 msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
@@ -242,12 +224,10 @@
                 msg.readByUsAt,
               );
             });
-            // Mark all agent messages (including welcome) as read when conversation is restored
             setTimeout(() => {
               markVisibleMessagesAsRead();
             }, 500);
           }
-
           connectSocket();
         } else {
           setLoading(false);
@@ -260,20 +240,14 @@
     }
   }
 
-  /**
-   * Initialize conversation when user sends first message
-   * This creates the conversation and contact
-   */
   async function initializeConversation() {
     if (conversationId) return;
 
-    // Create userId if it doesn't exist (first message)
     if (!userId) {
       userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       localStorage.setItem(STORAGE_KEY_USER, userId);
     }
 
-    // Get user details from pre-chat form if available
     const userDetails = {};
     const hasSubmittedForm =
       sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
@@ -284,11 +258,9 @@
       if (storedEmail) userDetails.email = storedEmail;
     }
 
-    // START LOADING
     setLoading(true);
 
     try {
-      // A. TRY RESTORE EXISTING THREAD (Skip in Test Mode)
       if (!settings.testMode) {
         try {
           const restoreRes = await fetch(
@@ -302,11 +274,7 @@
             const data = await restoreRes.json();
             if (data.conversation) {
               conversationId = data.conversation.id;
-
-              // STOP LOADING
               setLoading(false);
-
-              // RENDER HISTORY
               if (data.messages && Array.isArray(data.messages)) {
                 data.messages.forEach((msg) => {
                   appendMessageToUI(
@@ -321,18 +289,15 @@
                     msg.readByUsAt,
                   );
                 });
-                // Mark messages as read after rendering
                 markVisibleMessagesAsRead();
               }
-
               connectSocket();
-              return; // Done
+              return;
             }
           }
         } catch (e) {}
       }
 
-      // B. CREATE NEW CONVERSATION (Only when user sends first message)
       const res = await fetch(`${API_BASE}/conversation`, {
         method: 'POST',
         headers: getHeaders(),
@@ -348,15 +313,11 @@
       const data = await res.json();
       conversationId = data.conversationId;
 
-      // Connect socket first to receive welcome message and real-time messages
       connectSocket();
 
-      // C. FETCH THREAD AGAIN (To get welcome message and any existing messages)
       if (!settings.testMode) {
         try {
-          // Wait a bit longer to ensure welcome message is sent and stored
           await new Promise((resolve) => setTimeout(resolve, 1000));
-
           const threadRes = await fetch(
             `${API_BASE}/thread/${userId}?limit=50`,
             {
@@ -365,7 +326,7 @@
             },
           );
 
-          setLoading(false); // STOP LOADING
+          setLoading(false);
 
           if (threadRes.ok) {
             const threadData = await threadRes.json();
@@ -374,12 +335,9 @@
               Array.isArray(threadData.messages) &&
               threadData.messages.length > 0
             ) {
-              // Remove static welcome if server messages exist
               if (staticWelcomeShown) {
                 const staticWelcome = Array.from(messages.values()).find(
-                  (msg) => {
-                    return msg.id && msg.id.startsWith('static_welcome_');
-                  },
+                  (msg) => msg.id && msg.id.startsWith('static_welcome_'),
                 );
                 if (staticWelcome && staticWelcome.element) {
                   staticWelcome.element.remove();
@@ -388,37 +346,31 @@
                 staticWelcomeShown = false;
               }
 
-                      threadData.messages.forEach((msg) => {
-                        // appendMessageToUI will check for duplicates internally
-                        appendMessageToUI(
-                          msg.text || msg.text_body,
-                          msg.sender ||
-                            (msg.direction === 'inbound' ? 'user' : 'agent'),
-                          msg.id || msg.messageId,
-                          msg.timestamp || msg.timestamp_meta,
-                          msg.status,
-                          msg.readAt,
-                          msg.readByUs,
-                          msg.readByUsAt,
-                        );
-                      });
-                      // Mark all agent messages (including welcome) as read after rendering
-                      setTimeout(() => {
-                        markVisibleMessagesAsRead();
-                      }, 500);
+              threadData.messages.forEach((msg) => {
+                appendMessageToUI(
+                  msg.text || msg.text_body,
+                  msg.sender ||
+                    (msg.direction === 'inbound' ? 'user' : 'agent'),
+                  msg.id || msg.messageId,
+                  msg.timestamp || msg.timestamp_meta,
+                  msg.status,
+                  msg.readAt,
+                  msg.readByUs,
+                  msg.readByUsAt,
+                );
+              });
+              setTimeout(() => {
+                markVisibleMessagesAsRead();
+              }, 500);
             }
-            // Don't show fallback welcome if static welcome was already shown
           } else {
             setLoading(false);
           }
         } catch (e) {
           setLoading(false);
-          // Don't show fallback welcome if static welcome was already shown
         }
       } else {
-        // Test Mode
         setLoading(false);
-        // Static welcome already shown in renderView
       }
     } catch (error) {
       console.error('UniBox: Init Error', error);
@@ -459,8 +411,6 @@
         isAgent: false,
       });
 
-      // After joining, fetch any missed messages (like out of hours message)
-      // that might have been sent before socket connected
       setTimeout(() => {
         if (userId && conversationId) {
           fetch(`${API_BASE}/thread/${userId}?limit=50`, {
@@ -475,7 +425,6 @@
                 Array.isArray(threadData.messages)
               ) {
                 threadData.messages.forEach((msg) => {
-                  // appendMessageToUI will check for duplicates internally
                   appendMessageToUI(
                     msg.text || msg.text_body,
                     msg.sender ||
@@ -489,7 +438,6 @@
                   );
                 });
                 sortMessagesByTimestamp();
-                // Mark all agent messages (including welcome) as read
                 setTimeout(() => {
                   markVisibleMessagesAsRead();
                 }, 500);
@@ -502,18 +450,14 @@
               ),
             );
         }
-      }, 500); // Wait 500ms after joining to ensure room is set up
+      }, 500);
     });
 
-    // Listen for read receipt events
     socket.on('read_receipt', (receipt) => {
-      console.log('UniBox: Received read_receipt event:', receipt);
       updateReadReceipt(receipt);
     });
 
-    // Listen for typing indicator events
     socket.on('typing', (data) => {
-      // Only show typing indicator if it's from an agent in this conversation
       if (data.conversationId === conversationId) {
         if (data.isAgent && data.isTyping) {
           agentTyping = true;
@@ -526,148 +470,103 @@
     });
 
     socket.on('message', (message) => {
-      // Handle read receipt events that come through message channel
       if (message.type === 'read_receipt') {
-        console.log('UniBox: Received read_receipt via message channel:', message);
         updateReadReceipt(message);
         return;
       }
       
-      // Handle new message
       const isUserMessage = message.sender === 'user';
-        const isWelcomeMessage =
-          message.sender === 'agent' &&
-          (message.raw_payload?.is_welcome_message === true ||
-            message.text ===
-              (settings.appearance.header?.welcomeMessage ||
-                settings.appearance.welcomeMessage));
-        const isOutOfHoursMessage =
-          message.sender === 'agent' &&
-          message.raw_payload?.is_auto_reply === true &&
-          message.raw_payload?.auto_reply_reason === 'outside_business_hours';
-
-        // Debug logging for out of hours messages
-        if (isOutOfHoursMessage) {
-          console.log('UniBox: Received out of hours message:', message);
-        }
-
-        // Check if message already exists (by messageId or in DOM)
-        // appendMessageToUI will handle deduplication, but we can do a quick check here too
-        const existingMessage =
-          messages.get(message.messageId) ||
-          Array.from(messages.values()).find(
-            (msg) =>
-              msg.messageId === message.messageId ||
-              msg.id === message.messageId,
-          );
-
-        if (existingMessage && existingMessage.element) {
-          // Message already exists, just update it
-          existingMessage.status = message.status || existingMessage.status;
-          existingMessage.readAt = message.readAt || existingMessage.readAt;
-          existingMessage.readByUs =
-            message.readByUs !== undefined
-              ? message.readByUs
-              : existingMessage.readByUs;
-          existingMessage.readByUsAt =
-            message.readByUsAt || existingMessage.readByUsAt;
-          return; // Don't add duplicate
-        }
-
-        // Remove static welcome message when any message arrives (conversation has started)
-        // This ensures static welcome is removed when server sends welcome, user message, or any other message
-        if (staticWelcomeShown) {
-          const staticWelcome = Array.from(messages.values()).find((msg) => {
-            return msg.id && msg.id.startsWith('static_welcome_');
-          });
-          if (staticWelcome && staticWelcome.element) {
-            staticWelcome.element.remove();
-            messages.delete(staticWelcome.id);
-            staticWelcomeShown = false;
-          }
-        }
-        
-        // For welcome messages from server, we've already removed static welcome above
-        // Continue to show server welcome message
-
-        // For user messages, check if we already added it optimistically (by text and time)
-        if (isUserMessage) {
-          const optimisticMessage = Array.from(messages.values()).find(
-            (msg) => {
-              if (!msg.element || msg.sender !== 'user') return false;
-              // Match by text and approximate time (within 10 seconds)
-              return (
-                msg.text === message.text &&
-                Math.abs(
-                  new Date(msg.timestamp) - new Date(message.timestamp),
-                ) < 10000
-              );
-            },
-          );
-
-          if (optimisticMessage && optimisticMessage.element) {
-            // Update existing optimistic message with server messageId
-            const oldId = optimisticMessage.id || optimisticMessage.messageId;
-            optimisticMessage.id = message.messageId;
-            optimisticMessage.messageId = message.messageId;
-            optimisticMessage.status =
-              message.status || optimisticMessage.status;
-            optimisticMessage.readAt =
-              message.readAt || optimisticMessage.readAt;
-            optimisticMessage.readByUs =
-              message.readByUs !== undefined
-                ? message.readByUs
-                : optimisticMessage.readByUs;
-            optimisticMessage.readByUsAt =
-              message.readByUsAt || optimisticMessage.readByUsAt;
-            optimisticMessage.element.setAttribute(
-              'data-message-id',
-              message.messageId,
-            );
-            if (oldId && oldId !== message.messageId) {
-              messages.delete(oldId);
-            }
-            messages.set(message.messageId, optimisticMessage);
-            return; // Updated existing message
-          }
-        }
-
-        // New message from server - display it (welcome, out of hours, or user message)
-        appendMessageToUI(
-          message.text,
-          message.sender,
-          message.messageId,
-          message.timestamp,
-          message.status,
-          message.readAt,
-          message.readByUs,
-          message.readByUsAt,
+      
+      const existingMessage =
+        messages.get(message.messageId) ||
+        Array.from(messages.values()).find(
+          (msg) =>
+            msg.messageId === message.messageId ||
+            msg.id === message.messageId,
         );
 
-        // Sort messages by timestamp after adding new message to ensure proper ordering
-        // Order should be: Welcome -> User message -> Out of hours
-        sortMessagesByTimestamp();
+      if (existingMessage && existingMessage.element) {
+        existingMessage.status = message.status || existingMessage.status;
+        existingMessage.readAt = message.readAt || existingMessage.readAt;
+        existingMessage.readByUs =
+          message.readByUs !== undefined
+            ? message.readByUs
+            : existingMessage.readByUs;
+        existingMessage.readByUsAt =
+          message.readByUsAt || existingMessage.readByUsAt;
+        return;
+      }
 
-        // Mark agent messages as read when received (including welcome message)
-        if (!isUserMessage) {
-          // Mark this message and any other unread agent messages
-          markVisibleMessagesAsRead();
+      if (staticWelcomeShown) {
+        const staticWelcome = Array.from(messages.values()).find((msg) => {
+          return msg.id && msg.id.startsWith('static_welcome_');
+        });
+        if (staticWelcome && staticWelcome.element) {
+          staticWelcome.element.remove();
+          messages.delete(staticWelcome.id);
+          staticWelcomeShown = false;
         }
-      
+      }
+
+      if (isUserMessage) {
+        const optimisticMessage = Array.from(messages.values()).find(
+          (msg) => {
+            if (!msg.element || msg.sender !== 'user') return false;
+            return (
+              msg.text === message.text &&
+              Math.abs(
+                new Date(msg.timestamp) - new Date(message.timestamp),
+              ) < 10000
+            );
+          },
+        );
+
+        if (optimisticMessage && optimisticMessage.element) {
+          const oldId = optimisticMessage.id || optimisticMessage.messageId;
+          optimisticMessage.id = message.messageId;
+          optimisticMessage.messageId = message.messageId;
+          optimisticMessage.status =
+            message.status || optimisticMessage.status;
+          optimisticMessage.readAt =
+            message.readAt || optimisticMessage.readAt;
+          optimisticMessage.readByUs =
+            message.readByUs !== undefined
+              ? message.readByUs
+              : optimisticMessage.readByUs;
+          optimisticMessage.readByUsAt =
+            message.readByUsAt || optimisticMessage.readByUsAt;
+          optimisticMessage.element.setAttribute(
+            'data-message-id',
+            message.messageId,
+          );
+          if (oldId && oldId !== message.messageId) {
+            messages.delete(oldId);
+          }
+          messages.set(message.messageId, optimisticMessage);
+          return;
+        }
+      }
+
+      appendMessageToUI(
+        message.text,
+        message.sender,
+        message.messageId,
+        message.timestamp,
+        message.status,
+        message.readAt,
+        message.readByUs,
+        message.readByUsAt,
+      );
+
+      sortMessagesByTimestamp();
+
+      if (!isUserMessage) {
+        markVisibleMessagesAsRead();
+      }
     });
 
     socket.on('online_status', (data) => {
-      // Update online status for both agent and user
-      // data.userId is the user whose status changed
-      // data.isAgent indicates if it's an agent or user
       updateOnlineStatus(data.isOnline, data.isAgent);
-      
-      // If it's a user (not agent), we can track their online status
-      // This is mainly for agent dashboard, but we can log it here
-      if (!data.isAgent && data.userId !== userId) {
-        // Another user's status changed (for agent dashboard)
-        // Widget doesn't need to display other users' status
-      }
     });
 
     socket.on('agent_online_status', (data) => {
@@ -681,13 +580,11 @@
   }
 
   async function sendMessageToApi(text) {
-    // Create userId if it doesn't exist (first message)
     if (!userId) {
       userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       localStorage.setItem(STORAGE_KEY_USER, userId);
     }
 
-    // Get user details from pre-chat form if available
     const userDetails = {};
     const hasSubmittedForm =
       sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
@@ -699,21 +596,16 @@
     }
 
     try {
-      // If we have a conversationId, ensure socket is connected BEFORE sending message
-      // This ensures we receive real-time messages (welcome, out of hours, etc.)
       if (conversationId && !socket) {
         connectSocket();
-        // Wait a bit for socket to connect
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
-      // Send message - backend will create conversation if it doesn't exist
-      // Use existing conversationId if available, otherwise use null/empty and let backend create it
       const response = await fetch(`${API_BASE}/message/user`, {
         method: 'POST',
         headers: getHeaders(),
         body: JSON.stringify({
-          conversationId: conversationId || 'new', // Use 'new' to indicate new conversation
+          conversationId: conversationId || 'new',
           text: text,
           userId: userId,
           userName: userDetails.userName,
@@ -728,14 +620,10 @@
 
       const result = await response.json();
 
-      // Update conversationId from response if provided
       if (result.conversationId && !conversationId) {
         conversationId = result.conversationId;
-        // Connect socket now that we have conversationId
         connectSocket();
-        // Wait a bit for socket to connect, then fetch any missed messages
         await new Promise((resolve) => setTimeout(resolve, 500));
-        // Fetch thread to get any messages that were sent before socket connected
         try {
           const threadRes = await fetch(
             `${API_BASE}/thread/${userId}?limit=50`,
@@ -748,7 +636,6 @@
             const threadData = await threadRes.json();
             if (threadData.messages && Array.isArray(threadData.messages)) {
               threadData.messages.forEach((msg) => {
-                // appendMessageToUI will check for duplicates internally
                 appendMessageToUI(
                   msg.text || msg.text_body,
                   msg.sender ||
@@ -770,7 +657,6 @@
         }
       }
 
-      // Message sent successfully, socket will handle the response
       return result;
     } catch (error) {
       console.error('UniBox: Send Error', error);
@@ -794,18 +680,16 @@
     if (!timestamp) return '';
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
 
-    // Format as "00:00 AM/PM" for messages with read receipts
     if (showReadReceipt) {
       let hours = date.getHours();
       const minutes = date.getMinutes().toString().padStart(2, '0');
       const ampm = hours >= 12 ? 'PM' : 'AM';
       hours = hours % 12;
-      hours = hours ? hours : 12; // the hour '0' should be '12'
+      hours = hours ? hours : 12;
       const hoursStr = hours.toString().padStart(2, '0');
       return `${hoursStr}:${minutes} ${ampm}`;
     }
 
-    // For other cases, use relative time
     const now = new Date();
     const diffMs = now - date;
     const diffMins = Math.floor(diffMs / 60000);
@@ -817,7 +701,6 @@
     if (diffHours < 24) return `${diffHours}h ago`;
     if (diffDays < 7) return `${diffDays}d ago`;
 
-    // Format as date
     let hours = date.getHours();
     const minutes = date.getMinutes().toString().padStart(2, '0');
     const ampm = hours >= 12 ? 'PM' : 'AM';
@@ -830,24 +713,18 @@
   }
 
   function getReadReceiptIcon(status, readAt, readByUs, readByUsAt, sender) {
-    // For live chat, we don't show read receipts for agent messages (user side)
-    // Only show read receipts for user messages (if agent read them)
     if (sender === 'user') {
-      // For user messages, show if agent read them
       if (readByUs && readByUsAt) {
-        // Read icon (purple)
-        return `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="read-receipt-icon" style="opacity: 1;">
+        return `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="chat-widget-read-receipt-icon" style="opacity: 1;">
           <path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>`;
       }
-      // Sent/Delivered icon (grey)
-      return `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="read-receipt-icon" style="opacity: 0.5;">
+      return `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="chat-widget-read-receipt-icon" style="opacity: 0.5;">
         <path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         <path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>`;
     }
-    // Agent messages don't show read receipts in widget (user side)
     return '';
   }
 
@@ -866,13 +743,12 @@
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
 
-    // Normalize messageId
     const normalizedId = messageId || `msg_${Date.now()}`;
     const normalizedTimestamp = timestamp
       ? new Date(timestamp).getTime()
       : Date.now();
 
-    // Check if message already exists in Map
+    // Check existing
     const existingInMap =
       messages.get(normalizedId) ||
       Array.from(messages.values()).find(
@@ -886,42 +762,21 @@
       );
 
     if (existingInMap && existingInMap.element) {
-      // Message already exists, just update it if needed
       existingInMap.status = status || existingInMap.status;
       existingInMap.readAt = readAt || existingInMap.readAt;
       existingInMap.readByUs =
         readByUs !== undefined ? readByUs : existingInMap.readByUs;
       existingInMap.readByUsAt = readByUsAt || existingInMap.readByUsAt;
-      return; // Don't add duplicate
+      return;
     }
 
-    // Check if message already exists in DOM (by data-message-id or by text + timestamp)
     const existingInDOM = Array.from(body.children).find((child) => {
       const childId = child.getAttribute('data-message-id');
-      const childTimestamp = parseInt(
-        child.getAttribute('data-timestamp') || '0',
-      );
-      const childText = child
-        .querySelector('.msg-content')
-        ?.textContent?.trim();
-
-      // Match by ID
       if (childId === normalizedId) return true;
-
-      // Match by text, sender type, and timestamp (within 5 seconds)
-      if (
-        childText === text &&
-        child.className === (type === 'agent' ? 'bot-msg' : 'user-msg') &&
-        Math.abs(childTimestamp - normalizedTimestamp) < 5000
-      ) {
-        return true;
-      }
-
       return false;
     });
 
     if (existingInDOM) {
-      // Message already in DOM, update the Map if needed
       if (normalizedId && !messages.has(normalizedId)) {
         messages.set(normalizedId, {
           id: normalizedId,
@@ -936,26 +791,26 @@
           element: existingInDOM,
         });
       }
-      return; // Don't add duplicate
+      return;
     }
 
+    // CREATE MESSAGE ELEMENTS WITH NEW CLASSES
     const msgDiv = document.createElement('div');
-    msgDiv.className = type === 'agent' ? 'bot-msg' : 'user-msg';
+    msgDiv.className = `chat-widget-message ${type === 'agent' ? 'bot' : 'user'}`;
     msgDiv.setAttribute('data-message-id', normalizedId);
     msgDiv.setAttribute('data-timestamp', normalizedTimestamp.toString());
 
     const msgContent = document.createElement('div');
-    msgContent.className = 'msg-content';
+    msgContent.className = 'chat-widget-message-content';
     msgContent.textContent = text;
     msgDiv.appendChild(msgContent);
 
     const msgMeta = document.createElement('div');
-    msgMeta.className = 'msg-meta';
+    msgMeta.className = 'chat-widget-message-meta';
 
-    // Add read receipt for user messages only
     if (type === 'user') {
       const receiptSpan = document.createElement('span');
-      receiptSpan.className = 'read-receipt-container';
+      receiptSpan.className = 'chat-widget-read-receipt';
       const receiptIcon = getReadReceiptIcon(
         status,
         readAt,
@@ -970,8 +825,7 @@
     }
 
     const timeSpan = document.createElement('span');
-    timeSpan.className = 'msg-time';
-    // Show timestamp in "00:00 AM/PM" format
+    timeSpan.className = 'chat-widget-message-time';
     timeSpan.textContent = formatTimestamp(timestamp, true);
     msgMeta.appendChild(timeSpan);
 
@@ -981,7 +835,7 @@
     if (messageId) {
       const messageData = {
         id: messageId,
-        messageId: messageId, // Store both for compatibility
+        messageId: messageId,
         text,
         sender: type,
         timestamp: timestamp || new Date(),
@@ -992,7 +846,6 @@
         element: msgDiv,
       };
       messages.set(messageId, messageData);
-      // Also store by normalizedId if different
       if (normalizedId !== messageId) {
         messages.set(normalizedId, messageData);
       }
@@ -1010,72 +863,53 @@
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
 
-    // Get all message elements
     const messageElements = Array.from(body.children).filter((child) => {
       return child.hasAttribute('data-timestamp');
     });
 
-    // Sort by timestamp
     messageElements.sort((a, b) => {
       const timestampA = parseInt(a.getAttribute('data-timestamp') || '0');
       const timestampB = parseInt(b.getAttribute('data-timestamp') || '0');
       return timestampA - timestampB;
     });
 
-    // Re-append in sorted order
     messageElements.forEach((element) => {
       body.appendChild(element);
     });
 
-    // Scroll to bottom
     requestAnimationFrame(() => {
       body.scrollTop = body.scrollHeight;
     });
   }
 
   function updateReadReceipt(receipt) {
-    // Handle both direct read_receipt events and read_receipt messages
     const messageId = receipt.messageId || receipt.id;
-    if (!messageId) {
-      console.warn('UniBox: Read receipt missing messageId/id:', receipt);
-      return;
-    }
+    if (!messageId) return;
     
-    // Try to find message by messageId or id
     let message = messages.get(messageId);
     if (!message) {
-      // Try to find by id field if messageId didn't match
       message = Array.from(messages.values()).find(
         (msg) => msg.id === messageId || msg.messageId === messageId
       );
     }
     
-    if (!message || !message.element) {
-      console.warn('UniBox: Message not found for read receipt:', messageId, 'Available messages:', Array.from(messages.keys()));
-      return;
-    }
+    if (!message || !message.element) return;
     
-    console.log('UniBox: Updating read receipt for message:', messageId, receipt);
-
-    const meta = message.element.querySelector('.msg-meta');
+    const meta = message.element.querySelector('.chat-widget-message-meta');
     if (!meta) return;
 
-    // Update message data
     message.status = receipt.status || message.status;
     message.readAt = receipt.readAt || message.readAt;
     message.readByUs =
       receipt.readByUs !== undefined ? receipt.readByUs : message.readByUs;
     message.readByUsAt = receipt.readByUsAt || message.readByUsAt;
 
-    // Update read receipt icon (only for user messages)
     if (message.sender === 'user') {
-      let receiptContainer = meta.querySelector('.read-receipt-container');
+      let receiptContainer = meta.querySelector('.chat-widget-read-receipt');
       if (!receiptContainer) {
-        // Create container if it doesn't exist
         receiptContainer = document.createElement('span');
-        receiptContainer.className = 'read-receipt-container';
-        // Insert before timestamp
-        const timeSpan = meta.querySelector('.msg-time');
+        receiptContainer.className = 'chat-widget-read-receipt';
+        const timeSpan = meta.querySelector('.chat-widget-message-time');
         if (timeSpan) {
           meta.insertBefore(receiptContainer, timeSpan);
         } else {
@@ -1097,7 +931,6 @@
 
   async function markMessagesAsRead(messageIds) {
     if (!conversationId || !userId || settings.testMode) return;
-
     try {
       await fetch(`${API_BASE}/messages/read`, {
         method: 'POST',
@@ -1115,22 +948,18 @@
 
   function markVisibleMessagesAsRead() {
     if (!conversationId || !userId || settings.testMode) return;
-
     const host = document.getElementById('unibox-root');
     if (!host || !host.shadowRoot) return;
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
 
-    // Get all agent messages (including welcome message) that haven't been read
-    // Mark all agent messages as read when conversation is opened or new messages arrive
     const unreadAgentMessages = Array.from(messages.values())
       .filter((msg) => {
-        // Include all agent messages (welcome, out of hours, regular agent messages)
         return msg.sender === 'agent' && 
                (msg.status !== 'read' || !msg.readAt);
       })
       .map((msg) => msg.id || msg.messageId)
-      .filter(id => id); // Filter out undefined/null IDs
+      .filter(id => id);
 
     if (unreadAgentMessages.length > 0) {
       markMessagesAsRead(unreadAgentMessages);
@@ -1152,7 +981,7 @@
     );
     if (statusIndicator) {
       statusIndicator.textContent = isAgentOnline ? '● Online' : '○ Offline';
-      statusIndicator.className = isAgentOnline ? 'online' : 'offline';
+      statusIndicator.className = `chat-widget-online-status ${isAgentOnline ? 'online' : 'offline'}`;
     }
   }
 
@@ -1163,7 +992,6 @@
     if (typingIndicator) {
       if (show) {
         typingIndicator.classList.remove('hidden');
-        // Scroll to bottom when typing indicator appears
         const body = host.shadowRoot.getElementById('chatBody');
         if (body) {
           requestAnimationFrame(() => {
@@ -1178,8 +1006,6 @@
 
   function emitTypingStatus(typing) {
     if (!socket || !conversationId || !userId || !socket.connected) return;
-    
-    // Emit typing status
     socket.emit('typing', {
       conversationId: conversationId,
       userId: userId,
@@ -1195,7 +1021,7 @@
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: 'open' });
 
-    // Styles
+    // Styles variables calculation
     const launcherBg =
       settings.appearance.chatToggleIcon.backgroundColor ||
       settings.appearance.primaryColor;
@@ -1211,232 +1037,407 @@
     const horizontalCss = isRight ? 'right: 20px;' : 'left: 20px;';
     const verticalLauncherCss = isTop ? 'top: 20px;' : 'bottom: 20px;';
     const verticalWindowCss = isTop ? 'top: 90px;' : 'bottom: 90px;';
-    const hiddenTransform = isTop ? 'translateY(-20px)' : 'translateY(20px)';
-
+    
     const getRadius = (style) => {
       if (style === 'rounded') return '12px';
       if (style === 'square') return '0px';
       return '50%';
     };
     const launcherRadius = getRadius(settings.appearance.chatToggleIcon.style);
+    const headerLogoRadius = settings.appearance.iconStyle === 'round' ? '50%' : '8px';
 
     const styleTag = document.createElement('style');
+    
+    // Updated CSS to match the provided JSX UI exactly
     styleTag.textContent = `
-      :host {
-        /* Colors */
-        --primary: ${settings.appearance.primaryColor};
-        --secondary: ${settings.appearance.secondaryColor};
-        --bg: ${settings.appearance.backgroundColor};
-        --launcher-bg: ${launcherBg};
-        --launcher-color: ${launcherIconColor};
-        --font: '${settings.appearance.fontFamily}', sans-serif;
-        --radius: 12px;
+        :host {
+          font-family: ${settings.appearance.fontFamily} !important;
+        }
         
-        position: fixed; z-index: 2147483647; 
-        top: auto; bottom: auto; left: auto; right: auto;
-        font-family: var(--font);
-      }
-      * { box-sizing: border-box; }
-      
-      /* Launcher */
-      .launcher {
-        position: fixed; ${verticalLauncherCss} ${horizontalCss}
-        width: 60px; height: 60px; 
-        background: var(--launcher-bg); 
-        color: var(--launcher-color);
-        border-radius: ${launcherRadius}; 
-        box-shadow: 0 4px 14px rgba(0,0,0,0.15); 
-        cursor: pointer; display: flex; align-items: center; justify-content: center; 
-        transition: transform 0.2s; overflow: hidden;
-      }
-      .launcher:hover { transform: scale(1.05); }
-      .launcher-img { width: 100%; height: 100%; object-fit: cover; }
+        /* Note: Container set to fixed to ensure it floats above page content as a widget */
+        .chat-widget-container {
+          position: fixed; z-index: 2147483647; 
+          top: auto; bottom: auto; left: auto; right: auto;
+          width: 0; height: 0;
+          font-family: ${settings.appearance.fontFamily};
+          display: block;
+        }
 
-      /* Window */
-      .chat-window {
-        position: fixed; ${verticalWindowCss} ${horizontalCss}
-        width: 380px; height: 600px; max-width: 90vw; max-height: 80vh;
-        background: var(--bg);
-        border-radius: var(--radius);
-        box-shadow: 0 8px 30px rgba(0,0,0,0.12); 
-        display: flex; flex-direction: column; overflow: hidden;
-        opacity: 0; pointer-events: none; transform: ${hiddenTransform} scale(0.95);
-        transition: all 0.25s ease; 
-        border: 1px solid rgba(0,0,0,0.05);
-      }
-      .chat-window.open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
+        .chat-widget-container *,
+        .chat-widget-header,
+        .chat-widget-header *,
+        .chat-widget-body,
+        .chat-widget-body *,
+        .chat-widget-footer,
+        .chat-widget-footer *,
+        .chat-widget-input,
+        .chat-widget-form-input,
+        .chat-widget-form-btn {
+          font-family: ${settings.appearance.fontFamily} !important;
+          box-sizing: border-box;
+        }
 
-      /* Header */
-      .header { 
-        background: var(--primary); 
-        padding: 16px; color: #fff; 
-        display: flex; align-items: center; gap: 12px; flex-shrink: 0; 
-      }
-      .header-logo { width: 32px; height: 32px; border-radius: 50%; background: #fff; padding: 2px; object-fit: cover; }
-      .header-title { font-weight: 600; font-size: 16px; flex: 1; }
-      .online-status {
-        font-size: 12px; 
-        margin-left: 8px;
-        display: flex; 
-        align-items: center; 
-        gap: 4px;
-        font-weight: 400;
-        height: 10px;
-        line-height: 10px;
-      }
-      .online-status.online { color: #22C55E; }
-      .online-status.offline { color: #9DA2AB; }
+        .chat-widget-launcher {
+          position: fixed; ${verticalLauncherCss} ${horizontalCss}
+          width: 60px;
+          height: 60px;
+          background: ${launcherBg};
+          color: ${launcherIconColor};
+          border-radius: ${launcherRadius};
+          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: transform 0.2s;
+          overflow: hidden;
+          z-index: 2147483647;
+        }
 
-      /* Body */
-      .body { 
-        flex: 1; padding: 24px; overflow-y: auto; 
-        background-color: #FAFBFC;
-        position: relative; 
-      }
+        .chat-widget-launcher:hover {
+          transform: scale(1.05);
+        }
 
-      /* Loader */
-      .loader-container {
-        display: flex; justify-content: center; align-items: center; height: 100%;
-      }
-      .loader {
-        border: 3px solid #f3f3f3;
-        border-top: 3px solid var(--primary);
-        border-radius: 50%;
-        width: 24px; height: 24px;
-        animation: spin 1s linear infinite;
-      }
-      @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-      }
+        .chat-widget-window {
+          position: fixed; ${verticalWindowCss} ${horizontalCss}
+          width: 380px;
+          height: 600px;
+          max-width: calc(100vw - 40px);
+          max-height: calc(100vh - 120px);
+          background: #ffffff;
+          border-radius: 12px;
+          box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          opacity: 0;
+          pointer-events: none;
+          transform: ${isTop ? "translateY(-20px)" : "translateY(20px)"} scale(0.95);
+          transition: all 0.25s ease;
+          border: 1px solid rgba(0, 0, 0, 0.05);
+          z-index: 2147483647;
+        }
 
-      /* Messages */
-      .bot-msg, .user-msg {
-        max-width: 85%; margin-bottom: 12px; 
-        display: flex; flex-direction: column;
-      }
-      .bot-msg { align-self: flex-start; }
-      .user-msg { align-self: flex-end; margin-left: auto; }
-      
-      .msg-content {
-        padding: 14px 16px; border-radius: 10px;
-        font-size: 14px; line-height: 1.43; word-break: break-word;
-        font-weight: 400;
-      }
-      .bot-msg .msg-content {
-        background: #F5F7F9; 
-        color: #18181E; 
-        border-radius: 10px;
-        border-top-left-radius: 0;
-        box-shadow: none;
-      }
-      .user-msg .msg-content {
-        background: #ECE1FF;
-        color: #18181E; 
-        border-radius: 10px;
-        border-bottom-right-radius: 0;
-        box-shadow: none;
-      }
-      
-      .msg-meta {
-        display: flex; align-items: center; gap: 4px;
-        margin-top: 8px; font-size: 12px;
-        justify-content: flex-end;
-      }
-      .user-msg .msg-meta { justify-content: flex-end; }
-      .bot-msg .msg-meta { justify-content: flex-start; }
-      
-      .msg-time {
-        color: #18181E; font-size: 12px; font-weight: 400; line-height: 16px;
-      }
-      .user-msg .msg-time { color: #18181E; }
-      .bot-msg .msg-time { color: #18181E; }
-      
-      .read-receipt-container {
-        display: inline-flex; align-items: center; margin-right: 4px;
-      }
-      .read-receipt-icon {
-        display: inline-block;
-        vertical-align: middle;
-        flex-shrink: 0;
-      }
-      
-      /* Typing Indicator */
-      .typing-indicator {
-        display: flex; align-items: center; gap: 4px; padding: 14px 16px;
-        background: #F5F7F9; border-radius: 10px; border-top-left-radius: 0;
-        margin: 8px 0; max-width: 80px;
-        align-self: flex-start;
-      }
-      .typing-indicator.hidden { display: none; }
-      .typing-dot {
-        width: 8px; height: 8px; background: #9ca3af;
-        border-radius: 50%; animation: typing 1.4s infinite;
-      }
-      .typing-dot:nth-child(2) { animation-delay: 0.2s; }
-      .typing-dot:nth-child(3) { animation-delay: 0.4s; }
-      @keyframes typing {
-        0%, 60%, 100% { transform: translateY(0); opacity: 0.7; }
-        30% { transform: translateY(-10px); opacity: 1; }
-      }
+        .chat-widget-window.open {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0) scale(1);
+        }
 
-      /* Form */
-      .form-container { display: flex; flex-direction: column; gap: 15px; background: var(--bg); padding: 24px; border-radius: 8px; }
-      .form-input { width: 100%; padding: 10px; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 14px; }
-      .form-input:focus { outline: none; border-color: var(--primary); }
-      .form-btn { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; }
+        .chat-widget-header {
+          background: ${settings.appearance.primaryColor};
+          padding: 16px;
+          color: #fff;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-shrink: 0;
+        }
 
-      /* Footer */
-      .footer { 
-        padding: 12px; background: var(--bg); border-top: 1px solid #eee; 
-        display: flex; align-items: center; gap: 8px; flex-shrink: 0; 
-      }
-      .footer.hidden { display: none; }
-      .input-wrapper { flex: 1; display: flex; align-items: center; background: #f3f4f6; border-radius: 20px; padding: 8px 12px; }
-      .msg-input { flex: 1; border: none; background: transparent; outline: none; font-size: 14px; color: #1f2937; }
-      .send-btn { 
-        background: var(--primary); color: white; border: none; 
-        width: 36px; height: 36px; border-radius: 50%; cursor: pointer; 
-        display: flex; align-items: center; justify-content: center; 
-      }
+        .chat-widget-header-logo {
+          width: 32px;
+          height: 32px;
+          border-radius: ${headerLogoRadius};
+          background: #fff;
+          padding: 2px;
+          object-fit: cover;
+        }
+
+        .chat-widget-header-title {
+          font-weight: 600;
+          font-size: 16px;
+          flex: 1;
+        }
+
+        .chat-widget-online-status {
+          font-size: 12px;
+          margin-left: 8px;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-weight: 400;
+          height: 10px;
+          line-height: 10px;
+        }
+
+        .chat-widget-online-status.online {
+          color: #22c55e;
+        }
+
+        .chat-widget-online-status.offline {
+          color: #9da2ab;
+        }
+
+        .chat-widget-body {
+          flex: 1;
+          padding: 24px;
+          overflow-y: auto;
+          background-color: #fafbfc;
+          position: relative;
+        }
+
+        .chat-widget-loader {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 100%;
+        }
+
+        .chat-widget-loader-spinner {
+          border: 3px solid #f3f3f3;
+          border-top: 3px solid ${settings.appearance.primaryColor};
+          border-radius: 50%;
+          width: 24px;
+          height: 24px;
+          animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+          0% {
+            transform: rotate(0deg);
+          }
+          100% {
+            transform: rotate(360deg);
+          }
+        }
+
+        .chat-widget-message {
+          max-width: 85%;
+          margin-bottom: 12px;
+          display: flex;
+          flex-direction: column;
+        }
+
+        .chat-widget-message.bot {
+          align-self: flex-start;
+        }
+
+        .chat-widget-message.user {
+          align-self: flex-end;
+          margin-left: auto;
+        }
+
+        .chat-widget-message-content {
+          padding: 14px 16px;
+          border-radius: 10px;
+          font-size: 14px;
+          line-height: 1.43;
+          word-break: break-word;
+          font-weight: 400;
+        }
+
+        .chat-widget-message.bot .chat-widget-message-content {
+          background: ${settings.appearance.secondaryColor};
+          color: #18181e;
+          border-radius: 10px;
+          border-top-left-radius: 0;
+        }
+
+        .chat-widget-message.user .chat-widget-message-content {
+          background: ${settings.appearance.backgroundColor};
+          color: #18181e;
+          border-radius: 10px;
+          border-bottom-right-radius: 0;
+        }
+
+        .chat-widget-message-meta {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          margin-top: 8px;
+          font-size: 12px;
+          justify-content: flex-end;
+        }
+
+        .chat-widget-message.user .chat-widget-message-meta {
+          justify-content: flex-end;
+        }
+
+        .chat-widget-message.bot .chat-widget-message-meta {
+          justify-content: flex-start;
+        }
+
+        .chat-widget-message-time {
+          color: #18181e;
+          font-size: 12px;
+          font-weight: 400;
+          line-height: 16px;
+        }
+
+        .chat-widget-read-receipt {
+          display: inline-flex;
+          align-items: center;
+          margin-right: 4px;
+        }
+        
+        .chat-widget-read-receipt-icon {
+          display: inline-block;
+          vertical-align: middle;
+          flex-shrink: 0;
+        }
+
+        .chat-widget-typing-indicator {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 14px 16px;
+          background: #f5f7f9;
+          border-radius: 10px;
+          border-top-left-radius: 0;
+          margin: 8px 0;
+          max-width: 80px;
+          align-self: flex-start;
+        }
+
+        .chat-widget-typing-indicator.hidden {
+          display: none;
+        }
+
+        .chat-widget-typing-dot {
+          width: 8px;
+          height: 8px;
+          background: #9ca3af;
+          border-radius: 50%;
+          animation: typing 1.4s infinite;
+        }
+
+        .chat-widget-typing-dot:nth-child(2) {
+          animation-delay: 0.2s;
+        }
+
+        .chat-widget-typing-dot:nth-child(3) {
+          animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+          0%,
+          60%,
+          100% {
+            transform: translateY(0);
+            opacity: 0.7;
+          }
+          30% {
+            transform: translateY(-10px);
+            opacity: 1;
+          }
+        }
+
+        .chat-widget-form-container {
+          display: flex;
+          flex-direction: column;
+          gap: 15px;
+          background: #ffffff;
+          padding: 24px;
+          border-radius: 8px;
+        }
+
+        .chat-widget-form-input {
+          width: 100%;
+          padding: 10px;
+          border: 1px solid #e5e7eb;
+          border-radius: 6px;
+          font-size: 14px;
+        }
+
+        .chat-widget-form-input:focus {
+          outline: none;
+          border-color: ${settings.appearance.primaryColor};
+        }
+
+        .chat-widget-form-btn {
+          width: 100%;
+          padding: 12px;
+          background: ${settings.appearance.primaryColor};
+          color: white;
+          border: none;
+          border-radius: 6px;
+          cursor: pointer;
+        }
+
+        .chat-widget-footer {
+          padding: 12px;
+          background: #ffffff;
+          border-top: 1px solid #eee;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
+        }
+
+        .chat-widget-footer.hidden {
+          display: none;
+        }
+
+        .chat-widget-input-wrapper {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          background: #f3f4f6;
+          border-radius: 20px;
+          padding: 8px 12px;
+        }
+
+        .chat-widget-input {
+          flex: 1;
+          border: none;
+          background: transparent;
+          outline: none;
+          font-size: 14px;
+          color: #1f2937;
+        }
+
+        .chat-widget-send-btn {
+          background: ${settings.appearance.primaryColor};
+          color: white;
+          border: none;
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
     `;
 
-    const sendIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
     const chatIcon = `<svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>`;
 
     const container = document.createElement('div');
+    container.className = 'chat-widget-container';
 
     const headerLogoImg = resolvedLogoUrl
-      ? `<img src="${resolvedLogoUrl}" class="header-logo" alt="Logo" />`
+      ? `<img src="${resolvedLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
       : '';
 
     const launcherContent = resolvedLogoUrl
-      ? `<img src="${resolvedLogoUrl}" class="launcher-img" alt="Chat" />`
+      ? `<img src="${resolvedLogoUrl}" style="width: 100%; height: 100%; object-fit: cover;" alt="Chat" />`
       : chatIcon;
 
     container.innerHTML = `
-      <div class="launcher" id="launcherBtn">${launcherContent}</div>
-      <div class="chat-window" id="chatWindow">
-        <div class="header">
+      <div class="chat-widget-launcher" id="launcherBtn">${launcherContent}</div>
+      <div class="chat-widget-window" id="chatWindow">
+        <div class="chat-widget-header">
            ${headerLogoImg}
            <div style="flex: 1;">
-             <div class="header-title">${settings.appearance.header?.title || settings.appearance.headerName}</div>
-             <div id="onlineStatusIndicator" class="online-status offline">○ Offline</div>
+             <div class="chat-widget-header-title">${settings.appearance.header?.title || settings.appearance.headerName}</div>
+             <div id="onlineStatusIndicator" class="chat-widget-online-status offline">○ Offline</div>
            </div>
            <div id="closeBtn" style="cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
         </div>
-        <div class="body" id="chatBody">
-          <div class="typing-indicator hidden" id="typingIndicator">
-            <div class="typing-dot"></div>
-            <div class="typing-dot"></div>
-            <div class="typing-dot"></div>
+        <div class="chat-widget-body" id="chatBody">
+          <div class="chat-widget-typing-indicator hidden" id="typingIndicator">
+            <div class="chat-widget-typing-dot"></div>
+            <div class="chat-widget-typing-dot"></div>
+            <div class="chat-widget-typing-dot"></div>
           </div>
         </div>
-        <div class="footer hidden" id="chatFooter">
-           <div class="input-wrapper">
-             <input type="text" class="msg-input" id="msgInput" placeholder="Type a message..." />
+        <div class="chat-widget-footer hidden" id="chatFooter">
+           <div class="chat-widget-input-wrapper">
+             <input type="text" class="chat-widget-input" id="msgInput" placeholder="Type a message..." />
            </div>
-           <button class="send-btn" id="sendBtn">${sendIcon}</button>
+           <button class="chat-widget-send-btn" id="sendBtn">
+             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+           </button>
         </div>
       </div>
     `;
@@ -1454,6 +1455,15 @@
       const body = shadow.getElementById('chatBody');
       const footer = shadow.getElementById('chatFooter');
       body.innerHTML = '';
+      
+      // Re-add typing indicator to body (it gets cleared)
+      body.innerHTML = `
+        <div class="chat-widget-typing-indicator hidden" id="typingIndicator">
+            <div class="chat-widget-typing-dot"></div>
+            <div class="chat-widget-typing-dot"></div>
+            <div class="chat-widget-typing-dot"></div>
+        </div>
+      `;
 
       if (currentView === 'form') {
         footer.classList.add('hidden');
@@ -1464,15 +1474,15 @@
             const isRequired = f.required ? 'required' : '';
 
             if (f.type === 'textarea') {
-              inputHtml = `<textarea class="form-input" name="${f.id}" ${isRequired} placeholder="${f.label}"></textarea>`;
+              inputHtml = `<textarea class="chat-widget-form-input" name="${f.id}" ${isRequired} placeholder="${f.label}"></textarea>`;
             } else {
               const inputType = f.type === 'phone' ? 'tel' : f.type;
-              inputHtml = `<input class="form-input" type="${inputType}" name="${f.id}" ${isRequired} placeholder="${f.label}">`;
+              inputHtml = `<input class="chat-widget-form-input" type="${inputType}" name="${f.id}" ${isRequired} placeholder="${f.label}">`;
             }
 
             return `
-            <div class="form-group">
-              <label class="form-label">${f.label}${f.required ? ' <span style="color:red">*</span>' : ''}</label>
+            <div style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px;">${f.label}${f.required ? ' <span style="color:red">*</span>' : ''}</label>
               ${inputHtml}
             </div>
           `;
@@ -1480,13 +1490,13 @@
           .join('');
 
         const formContainer = document.createElement('div');
-        formContainer.className = 'form-container';
+        formContainer.className = 'chat-widget-form-container';
         formContainer.innerHTML = `
           <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:16px; color:#111;">Welcome</div>
           <div style="text-align:center; margin-bottom:20px; font-size:14px; color:#666;">Please fill in your details to continue.</div>
           <form id="preChatForm">
             ${fieldsHtml}
-            <button type="submit" class="form-btn">Start Chat</button>
+            <button type="submit" class="chat-widget-form-btn">Start Chat</button>
           </form>
         `;
         body.appendChild(formContainer);
@@ -1518,8 +1528,6 @@
 
           if (!capturedName && capturedEmail) capturedName = capturedEmail;
 
-          // Store user details for when they send first message
-          // Don't create conversation/contact until first message is sent
           sessionStorage.setItem(SESSION_KEY_FORM, 'true');
           if (capturedName)
             sessionStorage.setItem(`${SESSION_KEY_FORM}_name`, capturedName);
@@ -1532,7 +1540,6 @@
       } else {
         footer.classList.remove('hidden');
 
-        // Show static welcome message immediately (from config)
         if (!staticWelcomeShown && !userId) {
           const welcomeText =
             settings.appearance.header?.welcomeMessage ||
@@ -1582,7 +1589,6 @@
       const text = msgInput.value.trim();
       if (!text) return;
 
-      // Remove static welcome message when user sends first message (conversation has started)
       if (staticWelcomeShown) {
         const staticWelcome = Array.from(messages.values()).find((msg) => {
           return msg.id && msg.id.startsWith('static_welcome_');
@@ -1594,10 +1600,8 @@
         }
       }
 
-      // Clear input immediately for better UX
       msgInput.value = '';
 
-      // Show message optimistically (always show user messages immediately)
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       appendMessageToUI(
         text,
@@ -1610,7 +1614,6 @@
         null,
       );
 
-      // Send to API (server will emit back via socket with real messageId)
       sendMessageToApi(text).catch((err) => {
         console.error('UniBox: Failed to send message', err);
       });
@@ -1619,7 +1622,6 @@
     sendBtn.addEventListener('click', handleSend);
     msgInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
-        // Stop typing indicator when message is sent
         if (isTyping) {
           isTyping = false;
           emitTypingStatus(false);
@@ -1630,24 +1632,20 @@
         }
         handleSend();
       } else {
-        // User is typing
         handleUserTyping();
       }
     });
     
-    // Handle typing indicator for user
     function handleUserTyping() {
       if (!isTyping) {
         isTyping = true;
         emitTypingStatus(true);
       }
       
-      // Clear existing timeout
       if (typingTimeout) {
         clearTimeout(typingTimeout);
       }
       
-      // Stop typing indicator after 3 seconds of inactivity
       typingTimeout = setTimeout(() => {
         isTyping = false;
         emitTypingStatus(false);
@@ -1655,26 +1653,21 @@
       }, 3000);
     }
 
-    // Mark contact messages as read when chat window is opened
     async function markContactAsRead() {
       if (!userId || settings.testMode) return;
-      
       try {
         await fetch(`${API_BASE}/read/${userId}`, {
           method: 'POST',
           headers: getHeaders(),
         });
-        console.log('UniBox: Contact marked as read, unread_count reset to 0');
       } catch (error) {
         console.error('UniBox: Failed to mark contact as read', error);
       }
     }
 
-    // Mark messages as read when chat window is opened and scrolled
     const chatWindow = shadow.getElementById('chatWindow');
     const chatBody = shadow.getElementById('chatBody');
     if (chatBody) {
-      // Mark messages as read when body is scrolled (user is viewing messages)
       let scrollTimeout;
       chatBody.addEventListener('scroll', () => {
         clearTimeout(scrollTimeout);
@@ -1683,12 +1676,9 @@
         }, 500);
       });
 
-      // Mark contact as read and messages as read when window is opened
       const observer = new MutationObserver(() => {
         if (chatWindow.classList.contains('open')) {
-          // Mark contact as read (resets unread_count to 0)
           markContactAsRead();
-          // Mark all agent messages as read when conversation opens
           markVisibleMessagesAsRead();
         }
       });
@@ -1697,7 +1687,6 @@
         attributeFilter: ['class'],
       });
       
-      // Also mark contact and messages as read immediately when window opens for the first time
       if (chatWindow.classList.contains('open')) {
         setTimeout(() => {
           markContactAsRead();

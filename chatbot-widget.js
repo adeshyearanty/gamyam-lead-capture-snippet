@@ -335,7 +335,21 @@
               Array.isArray(threadData.messages) &&
               threadData.messages.length > 0
             ) {
-              threadData.messages.forEach((msg) => {
+              // Filter out welcome messages if static welcome is already shown
+              const messagesToLoad = staticWelcomeShown
+                ? threadData.messages.filter((msg) => {
+                    const msgText = msg.text || msg.text_body;
+                    const msgSender =
+                      msg.sender ||
+                      (msg.direction === 'inbound' ? 'user' : 'agent');
+                    // Skip welcome messages from agent if static welcome is shown
+                    return !(
+                      msgSender === 'agent' && isWelcomeMessage(msgText)
+                    );
+                  })
+                : threadData.messages;
+
+              messagesToLoad.forEach((msg) => {
                 appendMessageToUI(
                   msg.text || msg.text_body,
                   msg.sender ||
@@ -413,7 +427,21 @@
                 threadData.messages &&
                 Array.isArray(threadData.messages)
               ) {
-                threadData.messages.forEach((msg) => {
+                // Filter out welcome messages if static welcome is already shown
+                const messagesToLoad = staticWelcomeShown
+                  ? threadData.messages.filter((msg) => {
+                      const msgText = msg.text || msg.text_body;
+                      const msgSender =
+                        msg.sender ||
+                        (msg.direction === 'inbound' ? 'user' : 'agent');
+                      // Skip welcome messages from agent if static welcome is shown
+                      return !(
+                        msgSender === 'agent' && isWelcomeMessage(msgText)
+                      );
+                    })
+                  : threadData.messages;
+
+                messagesToLoad.forEach((msg) => {
                   appendMessageToUI(
                     msg.text || msg.text_body,
                     msg.sender ||
@@ -613,7 +641,21 @@
           if (threadRes.ok) {
             const threadData = await threadRes.json();
             if (threadData.messages && Array.isArray(threadData.messages)) {
-              threadData.messages.forEach((msg) => {
+              // Filter out welcome messages if static welcome is already shown
+              const messagesToLoad = staticWelcomeShown
+                ? threadData.messages.filter((msg) => {
+                    const msgText = msg.text || msg.text_body;
+                    const msgSender =
+                      msg.sender ||
+                      (msg.direction === 'inbound' ? 'user' : 'agent');
+                    // Skip welcome messages from agent if static welcome is shown
+                    return !(
+                      msgSender === 'agent' && isWelcomeMessage(msgText)
+                    );
+                  })
+                : threadData.messages;
+
+              messagesToLoad.forEach((msg) => {
                 appendMessageToUI(
                   msg.text || msg.text_body,
                   msg.sender ||
@@ -706,6 +748,16 @@
     return '';
   }
 
+  // Helper function to check if a message is a welcome message
+  function isWelcomeMessage(text) {
+    if (!text) return false;
+    const welcomeText =
+      settings.appearance.header?.welcomeMessage ||
+      settings.appearance.welcomeMessage;
+    if (!welcomeText) return false;
+    return text.trim().toLowerCase() === welcomeText.trim().toLowerCase();
+  }
+
   function appendMessageToUI(
     text,
     type,
@@ -720,6 +772,11 @@
     if (!host || !host.shadowRoot) return;
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
+
+    // Prevent duplicate welcome messages: if static welcome is shown and this is a welcome message, skip it
+    if (staticWelcomeShown && type === 'agent' && isWelcomeMessage(text)) {
+      return;
+    }
 
     const normalizedId = messageId || `msg_${Date.now()}`;
     const normalizedTimestamp = timestamp
@@ -786,10 +843,6 @@
     const msgMeta = document.createElement('div');
     msgMeta.className = 'chat-widget-message-meta';
 
-    // --- [MODIFIED START] ---
-    // Read receipts and Timestamps removed from UI
-
-    /*
     if (type === 'user') {
       const receiptSpan = document.createElement('span');
       receiptSpan.className = 'chat-widget-read-receipt';
@@ -810,13 +863,8 @@
     timeSpan.className = 'chat-widget-message-time';
     timeSpan.textContent = formatTimestamp(timestamp, true);
     msgMeta.appendChild(timeSpan);
-    */
 
-    // Only append meta if there is something inside, otherwise we get empty margin space
-    if (msgMeta.hasChildNodes()) {
-        msgDiv.appendChild(msgMeta);
-    }
-    // --- [MODIFIED END] ---
+    msgDiv.appendChild(msgMeta);
 
     // Store message data
     if (messageId) {
@@ -870,11 +918,6 @@
   }
 
   function updateReadReceipt(receipt) {
-    // --- [MODIFIED START] ---
-    // Disabled UI updates for read receipts
-    return;
-    
-    /*
     const messageId = receipt.messageId || receipt.id;
     if (!messageId) return;
     
@@ -919,8 +962,6 @@
         receiptContainer.innerHTML = receiptIcon;
       }
     }
-    */
-    // --- [MODIFIED END] ---
   }
 
   async function markMessagesAsRead(messageIds) {
@@ -1016,17 +1057,9 @@
     const shadow = host.attachShadow({ mode: 'open' });
 
     // Styles variables calculation
-    // --- [MODIFIED START] ---
-    // Force white background if a logo image is used
-    let launcherBg =
+    const launcherBg =
       settings.appearance.chatToggleIcon.backgroundColor ||
       settings.appearance.primaryColor;
-    
-    if (resolvedLogoUrl) {
-        launcherBg = '#FFFFFF';
-    }
-    // --- [MODIFIED END] ---
-
     const launcherIconColor =
       launcherBg.toLowerCase() === '#ffffff' ||
       launcherBg.toLowerCase() === '#fff'

@@ -786,6 +786,10 @@
     const msgMeta = document.createElement('div');
     msgMeta.className = 'chat-widget-message-meta';
 
+    // --- [MODIFIED START] ---
+    // Read receipts and Timestamps removed from UI
+
+    /*
     if (type === 'user') {
       const receiptSpan = document.createElement('span');
       receiptSpan.className = 'chat-widget-read-receipt';
@@ -806,8 +810,13 @@
     timeSpan.className = 'chat-widget-message-time';
     timeSpan.textContent = formatTimestamp(timestamp, true);
     msgMeta.appendChild(timeSpan);
+    */
 
-    msgDiv.appendChild(msgMeta);
+    // Only append meta if there is something inside, otherwise we get empty margin space
+    if (msgMeta.hasChildNodes()) {
+        msgDiv.appendChild(msgMeta);
+    }
+    // --- [MODIFIED END] ---
 
     // Store message data
     if (messageId) {
@@ -861,6 +870,11 @@
   }
 
   function updateReadReceipt(receipt) {
+    // --- [MODIFIED START] ---
+    // Disabled UI updates for read receipts
+    return;
+    
+    /*
     const messageId = receipt.messageId || receipt.id;
     if (!messageId) return;
     
@@ -905,6 +919,8 @@
         receiptContainer.innerHTML = receiptIcon;
       }
     }
+    */
+    // --- [MODIFIED END] ---
   }
 
   async function markMessagesAsRead(messageIds) {
@@ -1000,9 +1016,17 @@
     const shadow = host.attachShadow({ mode: 'open' });
 
     // Styles variables calculation
-    const launcherBg =
+    // --- [MODIFIED START] ---
+    // Force white background if a logo image is used
+    let launcherBg =
       settings.appearance.chatToggleIcon.backgroundColor ||
       settings.appearance.primaryColor;
+    
+    if (resolvedLogoUrl) {
+        launcherBg = '#FFFFFF';
+    }
+    // --- [MODIFIED END] ---
+
     const launcherIconColor =
       launcherBg.toLowerCase() === '#ffffff' ||
       launcherBg.toLowerCase() === '#fff'

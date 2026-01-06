@@ -335,17 +335,6 @@
               Array.isArray(threadData.messages) &&
               threadData.messages.length > 0
             ) {
-              if (staticWelcomeShown) {
-                const staticWelcome = Array.from(messages.values()).find(
-                  (msg) => msg.id && msg.id.startsWith('static_welcome_'),
-                );
-                if (staticWelcome && staticWelcome.element) {
-                  staticWelcome.element.remove();
-                  messages.delete(staticWelcome.id);
-                }
-                staticWelcomeShown = false;
-              }
-
               threadData.messages.forEach((msg) => {
                 appendMessageToUI(
                   msg.text || msg.text_body,
@@ -495,17 +484,6 @@
         existingMessage.readByUsAt =
           message.readByUsAt || existingMessage.readByUsAt;
         return;
-      }
-
-      if (staticWelcomeShown) {
-        const staticWelcome = Array.from(messages.values()).find((msg) => {
-          return msg.id && msg.id.startsWith('static_welcome_');
-        });
-        if (staticWelcome && staticWelcome.element) {
-          staticWelcome.element.remove();
-          messages.delete(staticWelcome.id);
-          staticWelcomeShown = false;
-        }
       }
 
       if (isUserMessage) {
@@ -1588,17 +1566,6 @@
     const handleSend = () => {
       const text = msgInput.value.trim();
       if (!text) return;
-
-      if (staticWelcomeShown) {
-        const staticWelcome = Array.from(messages.values()).find((msg) => {
-          return msg.id && msg.id.startsWith('static_welcome_');
-        });
-        if (staticWelcome && staticWelcome.element) {
-          staticWelcome.element.remove();
-          messages.delete(staticWelcome.id);
-          staticWelcomeShown = false;
-        }
-      }
 
       msgInput.value = '';
 

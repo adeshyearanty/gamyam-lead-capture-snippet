@@ -15,10 +15,7 @@
   // API URLs
   const API_BASE =
     userConfig.apiBaseUrl || 'https://dev-api.salesastra.ai/pulse/v1/chat';
-  const API_S3_URL = API_BASE.replace(
-    /\/chat\/?$/,
-    '/s3/generate-access-url',
-  );
+  const API_S3_URL = API_BASE.replace(/\/chat\/?$/, '/s3/generate-access-url');
 
   // Socket Config Helper
   function getSocketConfig(apiBase) {
@@ -463,15 +460,14 @@
         updateReadReceipt(message);
         return;
       }
-      
+
       const isUserMessage = message.sender === 'user';
-      
+
       const existingMessage =
         messages.get(message.messageId) ||
         Array.from(messages.values()).find(
           (msg) =>
-            msg.messageId === message.messageId ||
-            msg.id === message.messageId,
+            msg.messageId === message.messageId || msg.id === message.messageId,
         );
 
       if (existingMessage && existingMessage.element) {
@@ -487,26 +483,21 @@
       }
 
       if (isUserMessage) {
-        const optimisticMessage = Array.from(messages.values()).find(
-          (msg) => {
-            if (!msg.element || msg.sender !== 'user') return false;
-            return (
-              msg.text === message.text &&
-              Math.abs(
-                new Date(msg.timestamp) - new Date(message.timestamp),
-              ) < 10000
-            );
-          },
-        );
+        const optimisticMessage = Array.from(messages.values()).find((msg) => {
+          if (!msg.element || msg.sender !== 'user') return false;
+          return (
+            msg.text === message.text &&
+            Math.abs(new Date(msg.timestamp) - new Date(message.timestamp)) <
+              10000
+          );
+        });
 
         if (optimisticMessage && optimisticMessage.element) {
           const oldId = optimisticMessage.id || optimisticMessage.messageId;
           optimisticMessage.id = message.messageId;
           optimisticMessage.messageId = message.messageId;
-          optimisticMessage.status =
-            message.status || optimisticMessage.status;
-          optimisticMessage.readAt =
-            message.readAt || optimisticMessage.readAt;
+          optimisticMessage.status = message.status || optimisticMessage.status;
+          optimisticMessage.readAt = message.readAt || optimisticMessage.readAt;
           optimisticMessage.readByUs =
             message.readByUs !== undefined
               ? message.readByUs
@@ -706,6 +697,16 @@
     return '';
   }
 
+  // Helper function to check if a message is a welcome message
+  function isWelcomeMessage(text) {
+    if (!text) return false;
+    const welcomeText =
+      settings.appearance.header?.welcomeMessage ||
+      settings.appearance.welcomeMessage;
+    if (!welcomeText) return false;
+    return text.trim().toLowerCase() === welcomeText.trim().toLowerCase();
+  }
+
   function appendMessageToUI(
     text,
     type,
@@ -720,6 +721,11 @@
     if (!host || !host.shadowRoot) return;
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
+
+    // Prevent duplicate welcome messages: if static welcome is shown and this is a welcome message, skip it
+    if (staticWelcomeShown && type === 'agent' && isWelcomeMessage(text)) {
+      return;
+    }
 
     const normalizedId = messageId || `msg_${Date.now()}`;
     const normalizedTimestamp = timestamp
@@ -814,7 +820,7 @@
 
     // Only append meta if there is something inside, otherwise we get empty margin space
     if (msgMeta.hasChildNodes()) {
-        msgDiv.appendChild(msgMeta);
+      msgDiv.appendChild(msgMeta);
     }
     // --- [MODIFIED END] ---
 
@@ -873,7 +879,7 @@
     // --- [MODIFIED START] ---
     // Disabled UI updates for read receipts
     return;
-    
+
     /*
     const messageId = receipt.messageId || receipt.id;
     if (!messageId) return;
@@ -949,11 +955,10 @@
 
     const unreadAgentMessages = Array.from(messages.values())
       .filter((msg) => {
-        return msg.sender === 'agent' && 
-               (msg.status !== 'read' || !msg.readAt);
+        return msg.sender === 'agent' && (msg.status !== 'read' || !msg.readAt);
       })
       .map((msg) => msg.id || msg.messageId)
-      .filter(id => id);
+      .filter((id) => id);
 
     if (unreadAgentMessages.length > 0) {
       markMessagesAsRead(unreadAgentMessages);
@@ -1004,7 +1009,7 @@
       conversationId: conversationId,
       userId: userId,
       isTyping: typing,
-      isAgent: false
+      isAgent: false,
     });
   }
 
@@ -1021,9 +1026,9 @@
     let launcherBg =
       settings.appearance.chatToggleIcon.backgroundColor ||
       settings.appearance.primaryColor;
-    
+
     if (resolvedLogoUrl) {
-        launcherBg = '#FFFFFF';
+      launcherBg = '#FFFFFF';
     }
     // --- [MODIFIED END] ---
 
@@ -1039,17 +1044,18 @@
     const horizontalCss = isRight ? 'right: 20px;' : 'left: 20px;';
     const verticalLauncherCss = isTop ? 'top: 20px;' : 'bottom: 20px;';
     const verticalWindowCss = isTop ? 'top: 90px;' : 'bottom: 90px;';
-    
+
     const getRadius = (style) => {
       if (style === 'rounded') return '12px';
       if (style === 'square') return '0px';
       return '50%';
     };
     const launcherRadius = getRadius(settings.appearance.chatToggleIcon.style);
-    const headerLogoRadius = settings.appearance.iconStyle === 'round' ? '50%' : '8px';
+    const headerLogoRadius =
+      settings.appearance.iconStyle === 'round' ? '50%' : '8px';
 
     const styleTag = document.createElement('style');
-    
+
     // Updated CSS to match the provided JSX UI exactly
     styleTag.textContent = `
         :host {
@@ -1114,7 +1120,7 @@
           overflow: hidden;
           opacity: 0;
           pointer-events: none;
-          transform: ${isTop ? "translateY(-20px)" : "translateY(20px)"} scale(0.95);
+          transform: ${isTop ? 'translateY(-20px)' : 'translateY(20px)'} scale(0.95);
           transition: all 0.25s ease;
           border: 1px solid rgba(0, 0, 0, 0.05);
           z-index: 2147483647;
@@ -1457,7 +1463,7 @@
       const body = shadow.getElementById('chatBody');
       const footer = shadow.getElementById('chatFooter');
       body.innerHTML = '';
-      
+
       // Re-add typing indicator to body (it gets cleared)
       body.innerHTML = `
         <div class="chat-widget-typing-indicator hidden" id="typingIndicator">
@@ -1626,17 +1632,17 @@
         handleUserTyping();
       }
     });
-    
+
     function handleUserTyping() {
       if (!isTyping) {
         isTyping = true;
         emitTypingStatus(true);
       }
-      
+
       if (typingTimeout) {
         clearTimeout(typingTimeout);
       }
-      
+
       typingTimeout = setTimeout(() => {
         isTyping = false;
         emitTypingStatus(false);
@@ -1677,7 +1683,7 @@
         attributes: true,
         attributeFilter: ['class'],
       });
-      
+
       if (chatWindow.classList.contains('open')) {
         setTimeout(() => {
           markContactAsRead();

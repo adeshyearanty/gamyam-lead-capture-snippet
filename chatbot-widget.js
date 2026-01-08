@@ -280,7 +280,7 @@
 
             data.messages.forEach((msg) => {
               appendMessageToUI(
-                msg.text || msg.text_body,
+                msg.text || msg.text_body || null,
                 msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
                 msg.id || msg.messageId,
                 msg.timestamp || msg.timestamp_meta,
@@ -351,7 +351,7 @@
               }
               
               appendMessageToUI(
-                msg.text || msg.text_body || '',
+                msg.text || msg.text_body || null,
                 msg.sender ||
                   (msg.direction === 'inbound' ? 'user' : 'agent'),
                 msg.id || msg.messageId,
@@ -412,7 +412,7 @@
             ) {
               threadData.messages.forEach((msg) => {
                 appendMessageToUI(
-                  msg.text || msg.text_body,
+                  msg.text || msg.text_body || null,
                   msg.sender ||
                     (msg.direction === 'inbound' ? 'user' : 'agent'),
                   msg.id || msg.messageId,
@@ -492,7 +492,7 @@
               ) {
                 threadData.messages.forEach((msg) => {
                   appendMessageToUI(
-                    msg.text || msg.text_body,
+                    msg.text || msg.text_body || null,
                     msg.sender ||
                       (msg.direction === 'inbound' ? 'user' : 'agent'),
                     msg.id || msg.messageId,
@@ -599,7 +599,7 @@
       }
 
       appendMessageToUI(
-        message.text || '',
+        message.text || null,
         message.sender,
         message.messageId,
         message.timestamp,
@@ -936,7 +936,7 @@
             if (threadData.messages && Array.isArray(threadData.messages)) {
               threadData.messages.forEach((msg) => {
                 appendMessageToUI(
-                  msg.text || msg.text_body,
+                  msg.text || msg.text_body || null,
                   msg.sender ||
                     (msg.direction === 'inbound' ? 'user' : 'agent'),
                   msg.id || msg.messageId,
@@ -1355,8 +1355,11 @@
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
 
+    // Normalize text - handle null/undefined
+    const normalizedText = text || null;
+
     // Prevent duplicate welcome messages: if static welcome is shown and this is a welcome message, skip it
-    if (staticWelcomeShown && type === 'agent' && isWelcomeMessage(text)) {
+    if (staticWelcomeShown && type === 'agent' && normalizedText && isWelcomeMessage(normalizedText)) {
       return;
     }
 
@@ -1365,17 +1368,23 @@
       ? new Date(timestamp).getTime()
       : Date.now();
 
-    // Check existing
+    // Check existing - use messageId and type/mediaStorageUrl for better matching
     const existingInMap =
       messages.get(normalizedId) ||
       Array.from(messages.values()).find(
-        (m) =>
-          m.id === normalizedId ||
-          m.messageId === normalizedId ||
-          (m.text === text &&
-            m.sender === type &&
-            Math.abs(new Date(m.timestamp).getTime() - normalizedTimestamp) <
-              5000),
+        (m) => {
+          // Match by ID first
+          if (m.id === normalizedId || m.messageId === normalizedId) return true;
+          // For media messages, match by mediaStorageUrl and timestamp
+          if (mediaStorageUrl && m.mediaStorageUrl === mediaStorageUrl) {
+            return Math.abs(new Date(m.timestamp).getTime() - normalizedTimestamp) < 10000;
+          }
+          // For text messages, match by text and timestamp
+          if (normalizedText && m.text === normalizedText && m.sender === type) {
+            return Math.abs(new Date(m.timestamp).getTime() - normalizedTimestamp) < 5000;
+          }
+          return false;
+        }
       );
 
     if (existingInMap && existingInMap.element) {
@@ -1398,13 +1407,15 @@
         messages.set(normalizedId, {
           id: normalizedId,
           messageId: normalizedId,
-          text,
+          text: normalizedText,
           sender: type,
           timestamp: timestamp || new Date(),
           status: status || 'sent',
           readAt,
           readByUs: readByUs || false,
           readByUsAt,
+          type: messageType,
+          mediaStorageUrl: mediaStorageUrl,
           element: existingInDOM,
         });
       }
@@ -1421,6 +1432,7 @@
     msgContent.className = 'chat-widget-message-content';
 
     // Handle media messages - show as chips/buttons instead of loading directly
+    // Check if this is a media message (has type and media_storage_url)
     const isMediaMessage = messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType);
     const hasMedia = isMediaMessage && mediaStorageUrl;
     
@@ -1453,10 +1465,13 @@
         }
       };
 
-      const getMediaLabel = (type, fileName) => {
-        if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
-          return text;
+      const getMediaLabel = (type, textValue, mediaKey) => {
+        // Use text if available and not an upload message
+        if (textValue && textValue !== 'Uploading...' && !textValue.includes('Uploading')) {
+          return textValue;
         }
+        // Extract filename from media key if available
+        const fileName = mediaKey ? mediaKey.split('/').pop() : null;
         const labels = {
           image: 'Image',
           video: 'Video',
@@ -1493,7 +1508,7 @@
         mediaChip.style.transform = 'translateY(0)';
       };
       mediaChip.onclick = () => {
-        showMediaPreview(mediaStorageUrl, messageType, text);
+        showMediaPreview(mediaStorageUrl, messageType, normalizedText);
       };
       
       const iconDiv = document.createElement('div');
@@ -1508,17 +1523,17 @@
       labelDiv.style.flex = '1';
       labelDiv.style.minWidth = '0';
       labelDiv.style.wordBreak = 'break-word';
-      labelDiv.textContent = getMediaLabel(messageType, text);
+      labelDiv.textContent = getMediaLabel(messageType, normalizedText, mediaStorageUrl);
       
       mediaChip.appendChild(iconDiv);
       mediaChip.appendChild(labelDiv);
       msgContent.appendChild(mediaChip);
       
       // Add text caption if available and not the file name
-      if (text && text !== 'Uploading...' && !text.includes('Uploading') && messageType !== 'document' && messageType !== 'file') {
+      if (normalizedText && normalizedText !== 'Uploading...' && !normalizedText.includes('Uploading') && messageType !== 'document' && messageType !== 'file') {
         const captionDiv = document.createElement('div');
         captionDiv.className = 'chat-widget-media-caption';
-        captionDiv.textContent = text;
+        captionDiv.textContent = normalizedText;
         captionDiv.style.marginTop = '8px';
         captionDiv.style.fontSize = '14px';
         captionDiv.style.lineHeight = '1.5';
@@ -1526,13 +1541,36 @@
         msgContent.appendChild(captionDiv);
       }
       
-      return; // Don't continue with old media loading logic
+      // Store message data with media info
+      if (normalizedId) {
+        const messageData = {
+          id: normalizedId,
+          messageId: normalizedId,
+          text: normalizedText,
+          sender: type,
+          timestamp: timestamp || new Date(),
+          status: status || 'sent',
+          readAt,
+          readByUs: readByUs || false,
+          readByUsAt,
+          type: messageType,
+          mediaStorageUrl: mediaStorageUrl,
+          element: msgDiv,
+        };
+        messages.set(normalizedId, messageData);
+      }
+      
+      msgDiv.appendChild(msgContent);
+      body.appendChild(msgDiv);
+      requestAnimationFrame(() => {
+        body.scrollTop = body.scrollHeight;
+      });
+      return; // Don't continue with text message logic
     }
     
-    // Media is now displayed as clickable chips that open in preview modal
-    // Old direct loading code removed
+    // Handle text messages (non-media)
     if (!hasMedia) {
-      msgContent.textContent = text || '';
+      msgContent.textContent = normalizedText || '';
     }
     
     msgDiv.appendChild(msgContent);
@@ -1572,12 +1610,12 @@
     }
     // --- [MODIFIED END] ---
 
-    // Store message data
-    if (messageId) {
+    // Store message data (for text messages only - media messages are stored above)
+    if (!hasMedia && normalizedId) {
       const messageData = {
-        id: messageId,
-        messageId: messageId,
-        text,
+        id: normalizedId,
+        messageId: normalizedId,
+        text: normalizedText,
         sender: type,
         timestamp: timestamp || new Date(),
         status: status || 'sent',
@@ -1588,12 +1626,13 @@
         mediaStorageUrl: mediaStorageUrl,
         element: msgDiv,
       };
-      messages.set(messageId, messageData);
-      if (normalizedId !== messageId) {
-        messages.set(normalizedId, messageData);
+      messages.set(normalizedId, messageData);
+      if (messageId && normalizedId !== messageId) {
+        messages.set(messageId, messageData);
       }
     }
 
+    msgDiv.appendChild(msgContent);
     body.appendChild(msgDiv);
     requestAnimationFrame(() => {
       body.scrollTop = body.scrollHeight;
@@ -2249,10 +2288,15 @@
 
         .chat-widget-media-chip {
           transition: all 0.2s ease;
+          min-height: 40px;
         }
 
         .chat-widget-media-chip:hover {
           box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .chat-widget-message-content:empty {
+          display: none;
         }
 
         .chat-widget-preview-modal {

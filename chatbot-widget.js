@@ -279,8 +279,12 @@
             }
 
             data.messages.forEach((msg) => {
+              // Normalize text - convert empty string to null
+              const textValue = msg.text || msg.text_body;
+              const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
+              
               appendMessageToUI(
-                msg.text || msg.text_body || null,
+                normalizedTextValue,
                 msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
                 msg.id || msg.messageId,
                 msg.timestamp || msg.timestamp_meta,
@@ -350,8 +354,12 @@
                 staticWelcomeShown = true;
               }
               
+              // Normalize text - convert empty string to null
+              const textValue = msg.text || msg.text_body;
+              const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
+              
               appendMessageToUI(
-                msg.text || msg.text_body || null,
+                normalizedTextValue,
                 msg.sender ||
                   (msg.direction === 'inbound' ? 'user' : 'agent'),
                 msg.id || msg.messageId,
@@ -411,8 +419,12 @@
               threadData.messages.length > 0
             ) {
               threadData.messages.forEach((msg) => {
+                // Normalize text - convert empty string to null
+                const textValue = msg.text || msg.text_body;
+                const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
+                
                 appendMessageToUI(
-                  msg.text || msg.text_body || null,
+                  normalizedTextValue,
                   msg.sender ||
                     (msg.direction === 'inbound' ? 'user' : 'agent'),
                   msg.id || msg.messageId,
@@ -491,8 +503,12 @@
                 Array.isArray(threadData.messages)
               ) {
                 threadData.messages.forEach((msg) => {
+                  // Normalize text - convert empty string to null
+                  const textValue = msg.text || msg.text_body;
+                  const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
+                  
                   appendMessageToUI(
-                    msg.text || msg.text_body || null,
+                    normalizedTextValue,
                     msg.sender ||
                       (msg.direction === 'inbound' ? 'user' : 'agent'),
                     msg.id || msg.messageId,
@@ -598,8 +614,12 @@
         }
       }
 
+      // Normalize text - convert empty string to null
+      const textValue = message.text;
+      const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
+      
       appendMessageToUI(
-        message.text || null,
+        normalizedTextValue,
         message.sender,
         message.messageId,
         message.timestamp,
@@ -934,8 +954,12 @@
             const threadData = await threadRes.json();
             if (threadData.messages && Array.isArray(threadData.messages)) {
               threadData.messages.forEach((msg) => {
+                // Normalize text - convert empty string to null
+                const textValue = msg.text || msg.text_body;
+                const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
+                
                 appendMessageToUI(
-                  msg.text || msg.text_body || null,
+                  normalizedTextValue,
                   msg.sender ||
                     (msg.direction === 'inbound' ? 'user' : 'agent'),
                   msg.id || msg.messageId,
@@ -1350,8 +1374,9 @@
     const body = host.shadowRoot.getElementById('chatBody');
     if (!body) return;
 
-    // Normalize text - handle null/undefined
-    const normalizedText = text || null;
+    // Normalize text - handle null/undefined/empty string
+    // Convert empty string to null for consistent handling
+    const normalizedText = (text && text.trim()) ? text.trim() : null;
 
     // Prevent duplicate welcome messages: if static welcome is shown and this is a welcome message, skip it
     if (staticWelcomeShown && type === 'agent' && normalizedText && isWelcomeMessage(normalizedText)) {
@@ -1429,8 +1454,9 @@
     // Handle media messages - show as chips/buttons instead of loading directly
     // Check if this is a media message (has type and media_storage_url)
     const isMediaMessage = messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType);
-    const hasMedia = isMediaMessage && mediaStorageUrl;
+    const hasMedia = isMediaMessage && mediaStorageUrl && mediaStorageUrl.trim() !== '';
     
+    // Ensure media messages are always rendered, even with empty/null text
     if (hasMedia) {
       // Show media as a clickable chip/button instead of loading directly
       const getMediaIcon = (type) => {
@@ -1570,9 +1596,14 @@
       if (normalizedText) {
         msgContent.textContent = normalizedText;
       } else {
-        // Empty message - don't render content
-        msgContent.style.display = 'none';
+        // Empty message with no media - don't render the message at all
+        return; // Don't append empty messages
       }
+    }
+    
+    // Only append if we have content (text or media)
+    if (!hasMedia && !normalizedText) {
+      return; // Safety check - don't render empty messages
     }
     
     msgDiv.appendChild(msgContent);

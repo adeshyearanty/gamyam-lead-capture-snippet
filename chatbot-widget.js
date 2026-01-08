@@ -16,6 +16,21 @@
   const API_BASE =
     userConfig.apiBaseUrl || 'https://dev-api.salesastra.ai/pulse/v1/chat';
   const API_S3_URL = API_BASE.replace(/\/chat\/?$/, '/s3/generate-access-url');
+  
+  // Utility service URL for media (separate from logo S3)
+  // Construct utility base URL from API_BASE: /pulse/v1/chat -> /utility/v1
+  function getUtilityBaseUrl() {
+    try {
+      const urlObj = new URL(API_BASE);
+      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, '');
+      return `${urlObj.protocol}//${urlObj.host}${basePath}/utility/v1`;
+    } catch (e) {
+      // Fallback if URL parsing fails
+      return API_BASE.replace(/\/pulse\/v1\/chat\/?$/, '/utility/v1') || 'https://dev-api.salesastra.ai/utility/v1';
+    }
+  }
+  const UTILITY_API_BASE = getUtilityBaseUrl();
+  const UTILITY_S3_URL = `${UTILITY_API_BASE}/s3/generate-access-url`;
 
   // Socket Config Helper
   function getSocketConfig(apiBase) {
@@ -83,6 +98,8 @@
   let typingTimeout = null;
   let isTyping = false;
   let agentTyping = false;
+  let previewMedia = null; // { url, filename, type, mediaKey }
+  let previewFile = null; // { file, previewUrl, mediaType } - for file upload preview
 
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
@@ -136,7 +153,7 @@
 
     if (settings.appearance.logoUrl) {
       try {
-        resolvedLogoUrl = await fetchSignedUrl(settings.appearance.logoUrl);
+        resolvedLogoUrl = await fetchLogoUrl(settings.appearance.logoUrl);
       } catch (err) {
         console.warn('UniBox: Failed to load logo', err);
       }
@@ -160,7 +177,13 @@
   }
 
   // --- 7. S3 LOGIC ---
-  async function fetchSignedUrl(fileName) {
+  
+  /**
+   * Fetch signed URL for logo/images (uses pulse service endpoint)
+   * @param {string} fileName - The S3 key or file name
+   * @returns {Promise<string>} - The presigned URL
+   */
+  async function fetchLogoUrl(fileName) {
     if (fileName.startsWith('http')) return fileName;
     try {
       const res = await fetch(API_S3_URL, {
@@ -178,6 +201,52 @@
     } catch (error) {
       return '';
     }
+  }
+
+  /**
+   * Fetch signed URL for media files (uses utility service endpoint)
+   * @param {string} key - The S3 key
+   * @returns {Promise<string | null>} - The presigned URL or null if error
+   */
+  async function fetchMediaUrl(key) {
+    if (!key) return null;
+    
+    // If a full URL is passed, return it as-is
+    if (key.startsWith('http://') || key.startsWith('https://')) {
+      return key;
+    }
+
+    try {
+      const res = await fetch(UTILITY_S3_URL, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ key: key }),
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to get media URL');
+      }
+      
+      const data = await res.text();
+      
+      // Response is plain text (the presigned URL)
+      const url = typeof data === 'string' ? data : String(data);
+      
+      // Validate that the response is a valid URL
+      if (!url.startsWith('http')) {
+        throw new Error('Invalid URL format returned from server');
+      }
+
+      return url;
+    } catch (error) {
+      console.error('UniBox: Error getting media access URL:', error);
+      return null;
+    }
+  }
+
+  // Legacy function for backward compatibility
+  async function fetchSignedUrl(fileName) {
+    return fetchLogoUrl(fileName);
   }
 
   // --- 8. API & SOCKET LOGIC ---
@@ -629,16 +698,39 @@
   }
 
   /**
-   * Upload and send a media message from the user.
-   * This is a convenience endpoint that combines upload + send in one call.
+   * Show file preview before sending
    */
-  async function sendMediaMessage(file) {
+  function showFilePreview(file) {
+    const mediaType = getMediaTypeFromFile(file);
+    const previewUrl = URL.createObjectURL(file);
+    
+    previewFile = {
+      file: file,
+      previewUrl: previewUrl,
+      mediaType: mediaType,
+      fileName: file.name || `file.${mediaType}`,
+    };
+    
+    renderPreviewModal();
+  }
+
+  /**
+   * Actually send the media message after preview confirmation
+   */
+  async function confirmSendMedia(caption) {
+    if (!previewFile) return;
+
+    const file = previewFile.file;
+    const mediaType = previewFile.mediaType;
+    const fileName = previewFile.fileName;
+
     // Validate file size
     try {
       validateFileSize(file);
     } catch (error) {
       console.error('UniBox: File validation error', error);
       alert(error.message || 'File size exceeds limit');
+      closePreviewModal();
       return;
     }
 
@@ -659,8 +751,6 @@
 
     // Show uploading indicator
     const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const mediaType = getMediaTypeFromFile(file);
-    const fileName = file.name || `file.${mediaType}`;
 
     try {
       if (conversationId && !socket) {
@@ -719,31 +809,19 @@
         }
       }
 
-
       // Update conversation ID if this was a new conversation
       if (result.conversationId && !conversationId) {
         conversationId = result.conversationId;
         connectSocket();
       }
       
+      // Close preview modal and cleanup
+      closePreviewModal();
+      
       // The message will be added via WebSocket, but we can also add it optimistically
-      // if we have the result and media_storage_url
       if (result.media_storage_url) {
-        // Remove any existing uploading message
-        const host = document.getElementById('unibox-root');
-        if (host && host.shadowRoot) {
-          const body = host.shadowRoot.getElementById('chatBody');
-          if (body) {
-            const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
-            if (uploadingMsg) {
-              uploadingMsg.remove();
-              messages.delete(messageId);
-            }
-          }
-        }
-        
         appendMessageToUI(
-          fileName,
+          caption || fileName,
           'user',
           result.messageId || messageId,
           result.timestamp || new Date(),
@@ -780,6 +858,24 @@
       alert(error.message || 'Failed to upload media. Please try again.');
       throw error;
     }
+  }
+
+  /**
+   * Upload and send a media message from the user.
+   * Shows preview first, then sends on confirmation.
+   */
+  async function sendMediaMessage(file) {
+    // Validate file size first
+    try {
+      validateFileSize(file);
+    } catch (error) {
+      console.error('UniBox: File validation error', error);
+      alert(error.message || 'File size exceeds limit');
+      return;
+    }
+
+    // Show preview instead of sending directly
+    showFilePreview(file);
   }
 
   async function sendMessageToApi(text) {
@@ -878,6 +974,305 @@
         }
       }
       throw error;
+    }
+  }
+
+  /**
+   * Show media preview in popup modal
+   */
+  async function showMediaPreview(mediaKey, mediaType, caption) {
+    previewMedia = {
+      mediaKey: mediaKey,
+      mediaType: mediaType,
+      caption: caption,
+      url: null,
+      filename: mediaKey.split('/').pop() || 'file',
+      isLoading: true,
+    };
+    
+    renderPreviewModal();
+    
+    // Fetch media URL
+    try {
+      const url = await fetchMediaUrl(mediaKey);
+      if (url) {
+        previewMedia.url = url;
+        previewMedia.isLoading = false;
+        renderPreviewModal();
+      } else {
+        throw new Error('Failed to load media');
+      }
+    } catch (error) {
+      console.error('UniBox: Error loading media preview', error);
+      previewMedia.isLoading = false;
+      previewMedia.error = true;
+      renderPreviewModal();
+    }
+  }
+
+  /**
+   * Render preview modal for file upload or media viewing
+   */
+  function renderPreviewModal() {
+    const host = document.getElementById('unibox-root');
+    if (!host || !host.shadowRoot) return;
+    
+    let modal = host.shadowRoot.getElementById('chatWidgetPreviewModal');
+    
+    // Remove existing modal
+    if (modal) {
+      modal.remove();
+    }
+    
+    // Don't render if no preview
+    if (!previewFile && !previewMedia) return;
+    
+    // Create modal
+    modal = document.createElement('div');
+    modal.id = 'chatWidgetPreviewModal';
+    modal.className = 'chat-widget-preview-modal';
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.right = '0';
+    modal.style.bottom = '0';
+    modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    modal.style.display = 'flex';
+    modal.style.alignItems = 'center';
+    modal.style.justifyContent = 'center';
+    modal.style.zIndex = '2147483648';
+    modal.onclick = (e) => {
+      if (e.target === modal) {
+        closePreviewModal();
+      }
+    };
+    
+    const modalContent = document.createElement('div');
+    modalContent.className = 'chat-widget-preview-content';
+    modalContent.style.backgroundColor = '#ffffff';
+    modalContent.style.borderRadius = '12px';
+    modalContent.style.padding = '20px';
+    modalContent.style.maxWidth = '90vw';
+    modalContent.style.maxHeight = '90vh';
+    modalContent.style.overflow = 'auto';
+    modalContent.style.position = 'relative';
+    modalContent.style.boxShadow = '0 8px 30px rgba(0, 0, 0, 0.3)';
+    modalContent.onclick = (e) => e.stopPropagation();
+    
+    // Close button
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.style.position = 'absolute';
+    closeBtn.style.top = '10px';
+    closeBtn.style.right = '10px';
+    closeBtn.style.width = '32px';
+    closeBtn.style.height = '32px';
+    closeBtn.style.border = 'none';
+    closeBtn.style.backgroundColor = 'transparent';
+    closeBtn.style.fontSize = '24px';
+    closeBtn.style.cursor = 'pointer';
+    closeBtn.style.color = '#6b7280';
+    closeBtn.style.borderRadius = '50%';
+    closeBtn.style.display = 'flex';
+    closeBtn.style.alignItems = 'center';
+    closeBtn.style.justifyContent = 'center';
+    closeBtn.onmouseenter = () => {
+      closeBtn.style.backgroundColor = '#f3f4f6';
+    };
+    closeBtn.onmouseleave = () => {
+      closeBtn.style.backgroundColor = 'transparent';
+    };
+    closeBtn.onclick = closePreviewModal;
+    
+    // Handle file preview (before sending)
+    if (previewFile) {
+      const previewContainer = document.createElement('div');
+      previewContainer.style.display = 'flex';
+      previewContainer.style.flexDirection = 'column';
+      previewContainer.style.gap = '16px';
+      previewContainer.style.alignItems = 'center';
+      
+      if (previewFile.mediaType === 'image') {
+        const img = document.createElement('img');
+        img.src = previewFile.previewUrl;
+        img.style.maxWidth = '100%';
+        img.style.maxHeight = '60vh';
+        img.style.borderRadius = '8px';
+        img.style.objectFit = 'contain';
+        previewContainer.appendChild(img);
+      } else {
+        const fileInfo = document.createElement('div');
+        fileInfo.style.textAlign = 'center';
+        fileInfo.style.padding = '20px';
+        fileInfo.innerHTML = `
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="${settings.appearance.primaryColor}" stroke-width="2" style="margin: 0 auto 12px;">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+          </svg>
+          <div style="font-size: 16px; font-weight: 500; color: #18181e; margin-top: 8px;">${previewFile.fileName}</div>
+        `;
+        previewContainer.appendChild(fileInfo);
+      }
+      
+      // Caption input
+      const captionInput = document.createElement('input');
+      captionInput.type = 'text';
+      captionInput.placeholder = 'Add a caption (optional)';
+      captionInput.style.width = '100%';
+      captionInput.style.padding = '10px';
+      captionInput.style.border = '1px solid #e5e7eb';
+      captionInput.style.borderRadius = '6px';
+      captionInput.style.fontSize = '14px';
+      captionInput.style.fontFamily = settings.appearance.fontFamily;
+      captionInput.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          confirmSendMedia(captionInput.value.trim() || undefined);
+        }
+      };
+      previewContainer.appendChild(captionInput);
+      
+      // Action buttons
+      const buttonContainer = document.createElement('div');
+      buttonContainer.style.display = 'flex';
+      buttonContainer.style.gap = '12px';
+      buttonContainer.style.width = '100%';
+      
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.flex = '1';
+      cancelBtn.style.padding = '10px';
+      cancelBtn.style.border = '1px solid #e5e7eb';
+      cancelBtn.style.borderRadius = '6px';
+      cancelBtn.style.backgroundColor = '#ffffff';
+      cancelBtn.style.color = '#18181e';
+      cancelBtn.style.cursor = 'pointer';
+      cancelBtn.style.fontSize = '14px';
+      cancelBtn.style.fontFamily = settings.appearance.fontFamily;
+      cancelBtn.onclick = closePreviewModal;
+      
+      const sendBtn = document.createElement('button');
+      sendBtn.type = 'button';
+      sendBtn.textContent = 'Send';
+      sendBtn.style.flex = '1';
+      sendBtn.style.padding = '10px';
+      sendBtn.style.border = 'none';
+      sendBtn.style.borderRadius = '6px';
+      sendBtn.style.backgroundColor = settings.appearance.primaryColor;
+      sendBtn.style.color = '#ffffff';
+      sendBtn.style.cursor = 'pointer';
+      sendBtn.style.fontSize = '14px';
+      sendBtn.style.fontFamily = settings.appearance.fontFamily;
+      sendBtn.style.fontWeight = '500';
+      sendBtn.onclick = () => confirmSendMedia(captionInput.value.trim() || undefined);
+      
+      buttonContainer.appendChild(cancelBtn);
+      buttonContainer.appendChild(sendBtn);
+      previewContainer.appendChild(buttonContainer);
+      
+      modalContent.appendChild(previewContainer);
+    }
+    // Handle media preview (viewing received media)
+    else if (previewMedia) {
+      const previewContainer = document.createElement('div');
+      previewContainer.style.display = 'flex';
+      previewContainer.style.flexDirection = 'column';
+      previewContainer.style.gap = '16px';
+      previewContainer.style.alignItems = 'center';
+      
+      if (previewMedia.isLoading) {
+        const loadingDiv = document.createElement('div');
+        loadingDiv.style.padding = '40px';
+        loadingDiv.style.textAlign = 'center';
+        loadingDiv.innerHTML = `
+          <div style="width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.primaryColor}; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px;"></div>
+          <div style="color: #6b7280; font-size: 14px;">Loading media...</div>
+        `;
+        previewContainer.appendChild(loadingDiv);
+      } else if (previewMedia.error) {
+        const errorDiv = document.createElement('div');
+        errorDiv.style.padding = '40px';
+        errorDiv.style.textAlign = 'center';
+        errorDiv.style.color = '#ef4444';
+        errorDiv.innerHTML = `
+          <div style="font-size: 14px;">Failed to load media</div>
+        `;
+        previewContainer.appendChild(errorDiv);
+      } else if (previewMedia.url) {
+        if (previewMedia.mediaType === 'image') {
+          const img = document.createElement('img');
+          img.src = previewMedia.url;
+          img.style.maxWidth = '100%';
+          img.style.maxHeight = '70vh';
+          img.style.borderRadius = '8px';
+          img.style.objectFit = 'contain';
+          previewContainer.appendChild(img);
+        } else if (previewMedia.mediaType === 'video') {
+          const video = document.createElement('video');
+          video.src = previewMedia.url;
+          video.controls = true;
+          video.style.maxWidth = '100%';
+          video.style.maxHeight = '70vh';
+          video.style.borderRadius = '8px';
+          previewContainer.appendChild(video);
+        } else if (previewMedia.mediaType === 'audio') {
+          const audio = document.createElement('audio');
+          audio.src = previewMedia.url;
+          audio.controls = true;
+          audio.style.width = '100%';
+          previewContainer.appendChild(audio);
+        } else {
+          const fileLink = document.createElement('a');
+          fileLink.href = previewMedia.url;
+          fileLink.target = '_blank';
+          fileLink.style.display = 'inline-block';
+          fileLink.style.padding = '12px 20px';
+          fileLink.style.backgroundColor = settings.appearance.primaryColor;
+          fileLink.style.color = '#ffffff';
+          fileLink.style.borderRadius = '6px';
+          fileLink.style.textDecoration = 'none';
+          fileLink.style.fontSize = '14px';
+          fileLink.style.fontWeight = '500';
+          fileLink.textContent = `Download ${previewMedia.filename}`;
+          previewContainer.appendChild(fileLink);
+        }
+        
+        if (previewMedia.caption) {
+          const captionDiv = document.createElement('div');
+          captionDiv.style.textAlign = 'center';
+          captionDiv.style.color = '#6b7280';
+          captionDiv.style.fontSize = '14px';
+          captionDiv.style.marginTop = '8px';
+          captionDiv.textContent = previewMedia.caption;
+          previewContainer.appendChild(captionDiv);
+        }
+      }
+      
+      modalContent.appendChild(previewContainer);
+    }
+    
+    modalContent.appendChild(closeBtn);
+    modal.appendChild(modalContent);
+    host.shadowRoot.appendChild(modal);
+  }
+
+  /**
+   * Close preview modal
+   */
+  function closePreviewModal() {
+    if (previewFile && previewFile.previewUrl) {
+      URL.revokeObjectURL(previewFile.previewUrl);
+    }
+    previewFile = null;
+    previewMedia = null;
+    
+    const host = document.getElementById('unibox-root');
+    if (host && host.shadowRoot) {
+      const modal = host.shadowRoot.getElementById('chatWidgetPreviewModal');
+      if (modal) {
+        modal.remove();
+      }
     }
   }
 
@@ -1025,319 +1420,118 @@
     const msgContent = document.createElement('div');
     msgContent.className = 'chat-widget-message-content';
 
-    // Handle media messages
+    // Handle media messages - show as chips/buttons instead of loading directly
     const isMediaMessage = messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType);
-    
-    // Handle media messages - check for media_storage_url or if text is null and type indicates media
-    const hasMedia = isMediaMessage && (mediaStorageUrl || (!text && messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType)));
+    const hasMedia = isMediaMessage && mediaStorageUrl;
     
     if (hasMedia) {
-      // Show loading state with better styling
-      const loadingDiv = document.createElement('div');
-      loadingDiv.className = 'chat-widget-media-loading';
-      loadingDiv.style.display = 'flex';
-      loadingDiv.style.alignItems = 'center';
-      loadingDiv.style.justifyContent = 'center';
-      loadingDiv.style.gap = '10px';
-      loadingDiv.style.padding = '20px';
-      loadingDiv.style.minHeight = '80px';
-      loadingDiv.innerHTML = `
-        <div style="width: 20px; height: 20px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.primaryColor}; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-        <span style="color: #6b7280; font-size: 13px; font-weight: 500;">Loading media...</span>
-      `;
-      msgContent.appendChild(loadingDiv);
-      
-      // Use mediaStorageUrl if available
-      const mediaKey = mediaStorageUrl;
+      // Show media as a clickable chip/button instead of loading directly
+      const getMediaIcon = (type) => {
+        if (type === 'image') {
+          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+          </svg>`;
+        } else if (type === 'video') {
+          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="23 7 16 12 23 17 23 7"></polygon>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>`;
+        } else if (type === 'audio') {
+          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>`;
+        } else {
+          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>`;
+        }
+      };
 
-      // Get access URL for media
-      if (!mediaKey) {
-        loadingDiv.remove();
-        const errorDiv = document.createElement('div');
-        errorDiv.className = 'chat-widget-media-error';
-        errorDiv.style.padding = '16px';
-        errorDiv.style.textAlign = 'center';
-        errorDiv.style.color = '#ef4444';
-        errorDiv.style.fontSize = '13px';
-        errorDiv.style.backgroundColor = '#fef2f2';
-        errorDiv.style.borderRadius = '8px';
-        errorDiv.textContent = text || 'Media not available';
-        msgContent.appendChild(errorDiv);
-        return;
+      const getMediaLabel = (type, fileName) => {
+        if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
+          return text;
+        }
+        const labels = {
+          image: 'Image',
+          video: 'Video',
+          audio: 'Audio',
+          document: 'Document',
+          file: 'File',
+        };
+        return fileName || labels[type] || 'Media';
+      };
+
+      const mediaChip = document.createElement('button');
+      mediaChip.className = 'chat-widget-media-chip';
+      mediaChip.type = 'button';
+      mediaChip.style.display = 'flex';
+      mediaChip.style.alignItems = 'center';
+      mediaChip.style.gap = '8px';
+      mediaChip.style.padding = '10px 12px';
+      mediaChip.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
+      mediaChip.style.border = '1px solid #e5e7eb';
+      mediaChip.style.borderRadius = '8px';
+      mediaChip.style.cursor = 'pointer';
+      mediaChip.style.transition = 'all 0.2s';
+      mediaChip.style.width = '100%';
+      mediaChip.style.textAlign = 'left';
+      mediaChip.style.color = '#18181e';
+      mediaChip.style.fontSize = '14px';
+      mediaChip.style.fontFamily = settings.appearance.fontFamily;
+      mediaChip.onmouseenter = () => {
+        mediaChip.style.backgroundColor = type === 'agent' ? '#e9ecef' : '#f3f4f6';
+        mediaChip.style.transform = 'translateY(-1px)';
+      };
+      mediaChip.onmouseleave = () => {
+        mediaChip.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
+        mediaChip.style.transform = 'translateY(0)';
+      };
+      mediaChip.onclick = () => {
+        showMediaPreview(mediaStorageUrl, messageType, text);
+      };
+      
+      const iconDiv = document.createElement('div');
+      iconDiv.style.display = 'flex';
+      iconDiv.style.alignItems = 'center';
+      iconDiv.style.justifyContent = 'center';
+      iconDiv.style.color = settings.appearance.primaryColor;
+      iconDiv.style.flexShrink = '0';
+      iconDiv.innerHTML = getMediaIcon(messageType);
+      
+      const labelDiv = document.createElement('div');
+      labelDiv.style.flex = '1';
+      labelDiv.style.minWidth = '0';
+      labelDiv.style.wordBreak = 'break-word';
+      labelDiv.textContent = getMediaLabel(messageType, text);
+      
+      mediaChip.appendChild(iconDiv);
+      mediaChip.appendChild(labelDiv);
+      msgContent.appendChild(mediaChip);
+      
+      // Add text caption if available and not the file name
+      if (text && text !== 'Uploading...' && !text.includes('Uploading') && messageType !== 'document' && messageType !== 'file') {
+        const captionDiv = document.createElement('div');
+        captionDiv.className = 'chat-widget-media-caption';
+        captionDiv.textContent = text;
+        captionDiv.style.marginTop = '8px';
+        captionDiv.style.fontSize = '14px';
+        captionDiv.style.lineHeight = '1.5';
+        captionDiv.style.color = type === 'agent' ? '#18181e' : '#18181e';
+        msgContent.appendChild(captionDiv);
       }
       
-      fetch(API_S3_URL, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({ key: mediaKey }),
-      })
-        .then(res => {
-          if (!res.ok) throw new Error('Failed to get media URL');
-          return res.text();
-        })
-        .then(data => {
-          // Parse response (could be JSON or plain text)
-          let mediaUrl;
-          try {
-            const parsed = JSON.parse(data);
-            mediaUrl = parsed.url || parsed.signedUrl || parsed;
-          } catch (e) {
-            mediaUrl = data;
-          }
-          
-          // If still not a valid URL, use the S3 key as fallback
-          if (!mediaUrl || (!mediaUrl.startsWith('http://') && !mediaUrl.startsWith('https://'))) {
-            mediaUrl = mediaStorageUrl;
-          }
-
-          // Remove loading indicator
-          loadingDiv.remove();
-
-          // Render media based on type
-          if (messageType === 'image') {
-            const imgContainer = document.createElement('div');
-            imgContainer.className = 'chat-widget-media-image-container';
-            imgContainer.style.position = 'relative';
-            imgContainer.style.marginBottom = text && text !== 'Uploading...' && !text.includes('Uploading') ? '8px' : '0';
-            
-            const imgWrapper = document.createElement('div');
-            imgWrapper.style.position = 'relative';
-            imgWrapper.style.borderRadius = '8px';
-            imgWrapper.style.overflow = 'hidden';
-            imgWrapper.style.backgroundColor = '#f3f4f6';
-            imgWrapper.style.display = 'inline-block';
-            imgWrapper.style.maxWidth = '100%';
-            
-            const img = document.createElement('img');
-            img.className = 'chat-widget-media-image';
-            img.src = mediaUrl;
-            img.style.display = 'block';
-            img.style.maxWidth = '100%';
-            img.style.maxHeight = '400px';
-            img.style.width = 'auto';
-            img.style.height = 'auto';
-            img.style.cursor = 'pointer';
-            img.style.objectFit = 'contain';
-            img.style.transition = 'opacity 0.2s';
-            img.onload = () => {
-              img.style.opacity = '1';
-            };
-            img.onerror = () => {
-              imgWrapper.innerHTML = `
-                <div style="padding: 40px 20px; text-align: center; color: #6b7280; min-height: 100px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.5;">
-                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                    <polyline points="21 15 16 10 5 21"></polyline>
-                  </svg>
-                  <span style="font-size: 13px;">Failed to load image</span>
-                </div>
-              `;
-            };
-            img.onclick = () => window.open(mediaUrl, '_blank');
-            imgWrapper.appendChild(img);
-            imgContainer.appendChild(imgWrapper);
-            
-            if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
-              const textSpan = document.createElement('div');
-              textSpan.className = 'chat-widget-media-caption';
-              textSpan.textContent = text;
-              textSpan.style.marginTop = '10px';
-              textSpan.style.fontSize = '14px';
-              textSpan.style.lineHeight = '1.5';
-              textSpan.style.color = type === 'agent' ? '#18181e' : '#18181e';
-              imgContainer.appendChild(textSpan);
-            }
-            msgContent.appendChild(imgContainer);
-          } else if (messageType === 'video') {
-            const videoContainer = document.createElement('div');
-            videoContainer.className = 'chat-widget-media-video-container';
-            videoContainer.style.marginBottom = text && text !== 'Uploading...' && !text.includes('Uploading') ? '8px' : '0';
-            
-            const videoWrapper = document.createElement('div');
-            videoWrapper.style.position = 'relative';
-            videoWrapper.style.borderRadius = '8px';
-            videoWrapper.style.overflow = 'hidden';
-            videoWrapper.style.backgroundColor = '#000';
-            videoWrapper.style.maxWidth = '100%';
-            
-            const video = document.createElement('video');
-            video.className = 'chat-widget-media-video';
-            video.src = mediaUrl;
-            video.controls = true;
-            video.style.display = 'block';
-            video.style.maxWidth = '100%';
-            video.style.maxHeight = '400px';
-            video.style.width = 'auto';
-            video.style.height = 'auto';
-            video.style.borderRadius = '8px';
-            video.onerror = () => {
-              videoWrapper.innerHTML = `
-                <div style="padding: 40px 20px; text-align: center; color: #fff; min-height: 150px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;">
-                    <polygon points="23 7 16 12 23 17 23 7"></polygon>
-                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
-                  </svg>
-                  <span style="font-size: 13px;">Failed to load video</span>
-                </div>
-              `;
-            };
-            videoWrapper.appendChild(video);
-            videoContainer.appendChild(videoWrapper);
-            
-            if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
-              const textSpan = document.createElement('div');
-              textSpan.className = 'chat-widget-media-caption';
-              textSpan.textContent = text;
-              textSpan.style.marginTop = '10px';
-              textSpan.style.fontSize = '14px';
-              textSpan.style.lineHeight = '1.5';
-              textSpan.style.color = type === 'agent' ? '#18181e' : '#18181e';
-              videoContainer.appendChild(textSpan);
-            }
-            msgContent.appendChild(videoContainer);
-          } else if (messageType === 'audio') {
-            const audioContainer = document.createElement('div');
-            audioContainer.className = 'chat-widget-media-audio-container';
-            audioContainer.style.marginBottom = text && text !== 'Uploading...' && !text.includes('Uploading') ? '8px' : '0';
-            
-            const audioWrapper = document.createElement('div');
-            audioWrapper.style.padding = '12px';
-            audioWrapper.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
-            audioWrapper.style.borderRadius = '8px';
-            audioWrapper.style.border = '1px solid #e5e7eb';
-            
-            const audio = document.createElement('audio');
-            audio.className = 'chat-widget-media-audio';
-            audio.src = mediaUrl;
-            audio.controls = true;
-            audio.style.width = '100%';
-            audio.style.outline = 'none';
-            audio.onerror = () => {
-              audioWrapper.innerHTML = `
-                <div style="padding: 20px; text-align: center; color: #6b7280; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.5;">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-                  </svg>
-                  <span style="font-size: 13px;">Failed to load audio</span>
-                </div>
-              `;
-            };
-            audioWrapper.appendChild(audio);
-            audioContainer.appendChild(audioWrapper);
-            
-            if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
-              const textSpan = document.createElement('div');
-              textSpan.className = 'chat-widget-media-caption';
-              textSpan.textContent = text;
-              textSpan.style.marginTop = '10px';
-              textSpan.style.fontSize = '14px';
-              textSpan.style.lineHeight = '1.5';
-              textSpan.style.color = type === 'agent' ? '#18181e' : '#18181e';
-              audioContainer.appendChild(textSpan);
-            }
-            msgContent.appendChild(audioContainer);
-          } else {
-            // Document or file
-            const fileContainer = document.createElement('div');
-            fileContainer.className = 'chat-widget-media-file-container';
-            fileContainer.style.display = 'flex';
-            fileContainer.style.alignItems = 'center';
-            fileContainer.style.gap = '12px';
-            fileContainer.style.padding = '12px';
-            fileContainer.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
-            fileContainer.style.borderRadius = '8px';
-            fileContainer.style.border = '1px solid #e5e7eb';
-            fileContainer.style.transition = 'background-color 0.2s';
-            
-            const iconWrapper = document.createElement('div');
-            iconWrapper.style.display = 'flex';
-            iconWrapper.style.alignItems = 'center';
-            iconWrapper.style.justifyContent = 'center';
-            iconWrapper.style.width = '40px';
-            iconWrapper.style.height = '40px';
-            iconWrapper.style.borderRadius = '8px';
-            iconWrapper.style.backgroundColor = settings.appearance.primaryColor;
-            iconWrapper.style.flexShrink = '0';
-            iconWrapper.innerHTML = `
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-            `;
-            
-            const fileInfo = document.createElement('div');
-            fileInfo.style.flex = '1';
-            fileInfo.style.minWidth = '0';
-            
-            const fileName = document.createElement('div');
-            fileName.style.fontSize = '14px';
-            fileName.style.fontWeight = '500';
-            fileName.style.color = '#18181e';
-            fileName.style.marginBottom = '2px';
-            fileName.style.wordBreak = 'break-word';
-            fileName.textContent = text || 'Document';
-            
-            const fileLabel = document.createElement('div');
-            fileLabel.style.fontSize = '12px';
-            fileLabel.style.color = '#6b7280';
-            fileLabel.textContent = 'Click to download';
-            
-            fileInfo.appendChild(fileName);
-            fileInfo.appendChild(fileLabel);
-            
-            const fileLink = document.createElement('a');
-            fileLink.href = mediaUrl;
-            fileLink.target = '_blank';
-            fileLink.rel = 'noopener noreferrer';
-            fileLink.style.display = 'flex';
-            fileLink.style.alignItems = 'center';
-            fileLink.style.gap = '12px';
-            fileLink.style.textDecoration = 'none';
-            fileLink.style.color = 'inherit';
-            fileLink.style.flex = '1';
-            fileLink.style.cursor = 'pointer';
-            fileLink.onmouseenter = () => {
-              fileContainer.style.backgroundColor = type === 'agent' ? '#e9ecef' : '#f3f4f6';
-            };
-            fileLink.onmouseleave = () => {
-              fileContainer.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
-            };
-            
-            fileLink.appendChild(iconWrapper);
-            fileLink.appendChild(fileInfo);
-            fileContainer.appendChild(fileLink);
-            msgContent.appendChild(fileContainer);
-          }
-        })
-        .catch(err => {
-          console.error('UniBox: Failed to get media URL', err);
-          loadingDiv.remove();
-          const errorDiv = document.createElement('div');
-          errorDiv.className = 'chat-widget-media-error';
-          errorDiv.style.padding = '16px';
-          errorDiv.style.textAlign = 'center';
-          errorDiv.style.color = '#ef4444';
-          errorDiv.style.fontSize = '13px';
-          errorDiv.style.backgroundColor = '#fef2f2';
-          errorDiv.style.borderRadius = '8px';
-          errorDiv.style.border = '1px solid #fecaca';
-          errorDiv.innerHTML = `
-            <div style="display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-              </svg>
-              <span>${text || `Failed to load ${messageType || 'media'}`}</span>
-            </div>
-          `;
-          msgContent.appendChild(errorDiv);
-        });
-    } else {
+      return; // Don't continue with old media loading logic
+    }
+    
+    // Media is now displayed as clickable chips that open in preview modal
+    // Old direct loading code removed
+    if (!hasMedia) {
       msgContent.textContent = text || '';
     }
     
@@ -2049,6 +2243,33 @@
             opacity: 0;
           }
           to {
+            opacity: 1;
+          }
+        }
+
+        .chat-widget-media-chip {
+          transition: all 0.2s ease;
+        }
+
+        .chat-widget-media-chip:hover {
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .chat-widget-preview-modal {
+          animation: fadeIn 0.2s ease-in;
+        }
+
+        .chat-widget-preview-content {
+          animation: slideUp 0.3s ease-out;
+        }
+
+        @keyframes slideUp {
+          from {
+            transform: translateY(20px);
+            opacity: 0;
+          }
+          to {
+            transform: translateY(0);
             opacity: 1;
           }
         }

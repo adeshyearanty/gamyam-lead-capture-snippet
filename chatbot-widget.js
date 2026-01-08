@@ -219,6 +219,8 @@
                 msg.readAt,
                 msg.readByUs,
                 msg.readByUsAt,
+                msg.type,
+                msg.media_storage_url,
               );
             });
             setTimeout(() => {
@@ -273,19 +275,21 @@
               conversationId = data.conversation.id;
               setLoading(false);
               if (data.messages && Array.isArray(data.messages)) {
-                data.messages.forEach((msg) => {
-                  appendMessageToUI(
-                    msg.text || msg.text_body,
-                    msg.sender ||
-                      (msg.direction === 'inbound' ? 'user' : 'agent'),
-                    msg.id || msg.messageId,
-                    msg.timestamp || msg.timestamp_meta,
-                    msg.status,
-                    msg.readAt,
-                    msg.readByUs,
-                    msg.readByUsAt,
-                  );
-                });
+            data.messages.forEach((msg) => {
+              appendMessageToUI(
+                msg.text || msg.text_body,
+                msg.sender ||
+                  (msg.direction === 'inbound' ? 'user' : 'agent'),
+                msg.id || msg.messageId,
+                msg.timestamp || msg.timestamp_meta,
+                msg.status,
+                msg.readAt,
+                msg.readByUs,
+                msg.readByUsAt,
+                msg.type,
+                msg.media_storage_url,
+              );
+            });
                 markVisibleMessagesAsRead();
               }
               connectSocket();
@@ -343,6 +347,8 @@
                   msg.readAt,
                   msg.readByUs,
                   msg.readByUsAt,
+                  msg.type,
+                  msg.media_storage_url,
                 );
               });
               setTimeout(() => {
@@ -421,6 +427,8 @@
                     msg.readAt,
                     msg.readByUs,
                     msg.readByUsAt,
+                    msg.type,
+                    msg.media_storage_url,
                   );
                 });
                 sortMessagesByTimestamp();
@@ -525,6 +533,8 @@
         message.readAt,
         message.readByUs,
         message.readByUsAt,
+        message.type,
+        message.media_storage_url,
       );
 
       sortMessagesByTimestamp();
@@ -546,6 +556,212 @@
     socket.on('connect_error', (err) => {
       console.error('UniBox: Socket Connection Error', err.message);
     });
+  }
+
+  // --- MEDIA UPLOAD FUNCTIONS ---
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = (error) => reject(error);
+    });
+  }
+
+  function getMediaTypeFromFile(file) {
+    const type = file.type.toLowerCase();
+    if (type.startsWith('image/')) return 'image';
+    if (type.startsWith('video/')) return 'video';
+    if (type.startsWith('audio/')) return 'audio';
+    if (type.includes('pdf') || type.includes('document') || type.includes('word') || type.includes('excel') || type.includes('sheet')) return 'document';
+    return 'file';
+  }
+
+  /**
+   * Upload a base64-encoded media file to S3 and get the S3 key.
+   * This endpoint does NOT send the message - it only uploads to S3.
+   * Use this if you want to upload once and send multiple times.
+   */
+  async function uploadMediaToS3(file) {
+    try {
+      const mediaBase64 = await fileToBase64(file);
+      const mediaType = getMediaTypeFromFile(file);
+
+      const response = await fetch(`${API_BASE}/media/upload`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          media_base64: mediaBase64,
+          media_type: mediaType,
+          conversationId: conversationId || undefined,
+          userId: userId,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      return result;
+    } catch (error) {
+      console.error('UniBox: Media upload error', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate file size (10MB limit for live chat)
+   */
+  function validateFileSize(file) {
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+      throw new Error(`File too large (${fileSizeMB}MB). Maximum size is 10MB.`);
+    }
+    return true;
+  }
+
+  /**
+   * Upload and send a media message from the user.
+   * This is a convenience endpoint that combines upload + send in one call.
+   */
+  async function sendMediaMessage(file) {
+    // Validate file size
+    try {
+      validateFileSize(file);
+    } catch (error) {
+      console.error('UniBox: File validation error', error);
+      alert(error.message || 'File size exceeds limit');
+      return;
+    }
+
+    if (!userId) {
+      userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      localStorage.setItem(STORAGE_KEY_USER, userId);
+    }
+
+    const userDetails = {};
+    const hasSubmittedForm =
+      sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
+    if (hasSubmittedForm) {
+      const storedName = sessionStorage.getItem(`${SESSION_KEY_FORM}_name`);
+      const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
+      if (storedName) userDetails.userName = storedName;
+      if (storedEmail) userDetails.userEmail = storedEmail;
+    }
+
+    // Show uploading indicator
+    const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const mediaType = getMediaTypeFromFile(file);
+    const fileName = file.name || `file.${mediaType}`;
+
+    try {
+      if (conversationId && !socket) {
+        connectSocket();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // Show uploading indicator
+      appendMessageToUI(
+        `Uploading ${fileName}...`,
+        'user',
+        messageId,
+        new Date(),
+        'sent',
+        null,
+        false,
+        null,
+        mediaType,
+        null,
+      );
+
+      // Convert file to base64
+      const mediaBase64 = await fileToBase64(file);
+
+      // Send media message (this endpoint uploads to S3 and sends in one call)
+      const response = await fetch(`${API_BASE}/media/user`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          conversationId: conversationId || undefined,
+          media_base64: mediaBase64,
+          media_type: mediaType,
+          userId: userId,
+          userName: userDetails.userName,
+          userEmail: userDetails.userEmail,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || `Failed to send media: ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      // Remove uploading indicator
+      const host = document.getElementById('unibox-root');
+      if (host && host.shadowRoot) {
+        const body = host.shadowRoot.getElementById('chatBody');
+        if (body) {
+          const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
+          if (uploadingMsg) {
+            uploadingMsg.remove();
+            messages.delete(messageId);
+          }
+        }
+      }
+
+      // Update conversation ID if this was a new conversation
+      if (result.conversationId && !conversationId) {
+        conversationId = result.conversationId;
+        connectSocket();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      // The message will be added via WebSocket, but we can also add it optimistically
+      // if we have the result
+      if (result.media_storage_url) {
+        appendMessageToUI(
+          fileName,
+          'user',
+          result.messageId || messageId,
+          result.timestamp || new Date(),
+          result.status || 'sent',
+          null,
+          false,
+          null,
+          result.type || mediaType,
+          result.media_storage_url,
+        );
+      }
+
+      return result;
+    } catch (error) {
+      console.error('UniBox: Send Media Error', error);
+      
+      // Update the uploading message to show error
+      const host = document.getElementById('unibox-root');
+      if (host && host.shadowRoot) {
+        const body = host.shadowRoot.getElementById('chatBody');
+        if (body) {
+          const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
+          if (uploadingMsg) {
+            const content = uploadingMsg.querySelector('.chat-widget-message-content');
+            if (content) {
+              content.textContent = `Failed to upload: ${error.message || 'Unknown error'}`;
+              content.style.color = '#ef4444';
+            }
+          }
+        }
+      }
+      
+      // Show user-friendly error
+      alert(error.message || 'Failed to upload media. Please try again.');
+      throw error;
+    }
   }
 
   async function sendMessageToApi(text) {
@@ -615,6 +831,8 @@
                   msg.readAt,
                   msg.readByUs,
                   msg.readByUsAt,
+                  msg.type,
+                  msg.media_storage_url,
                 );
               });
               sortMessagesByTimestamp();
@@ -716,6 +934,8 @@
     readAt,
     readByUs,
     readByUsAt,
+    messageType,
+    mediaStorageUrl,
   ) {
     const host = document.getElementById('unibox-root');
     if (!host || !host.shadowRoot) return;
@@ -786,7 +1006,164 @@
 
     const msgContent = document.createElement('div');
     msgContent.className = 'chat-widget-message-content';
-    msgContent.textContent = text;
+
+    // Handle media messages
+    const isMediaMessage = messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType);
+    
+    if (isMediaMessage && mediaStorageUrl) {
+      // Show loading state
+      const loadingDiv = document.createElement('div');
+      loadingDiv.style.display = 'flex';
+      loadingDiv.style.alignItems = 'center';
+      loadingDiv.style.gap = '8px';
+      loadingDiv.style.padding = '8px';
+      loadingDiv.innerHTML = `
+        <div style="width: 16px; height: 16px; border: 2px solid #e5e7eb; border-top-color: ${settings.appearance.primaryColor}; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+        <span style="color: #6b7280; font-size: 12px;">Loading media...</span>
+      `;
+      msgContent.appendChild(loadingDiv);
+
+      // Get access URL for media
+      fetch(API_S3_URL, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ key: mediaStorageUrl }),
+      })
+        .then(res => {
+          if (!res.ok) throw new Error('Failed to get media URL');
+          return res.text();
+        })
+        .then(data => {
+          // Parse response (could be JSON or plain text)
+          let mediaUrl;
+          try {
+            const parsed = JSON.parse(data);
+            mediaUrl = parsed.url || parsed.signedUrl || parsed;
+          } catch (e) {
+            mediaUrl = data;
+          }
+          
+          // If still not a valid URL, use the S3 key as fallback
+          if (!mediaUrl || (!mediaUrl.startsWith('http://') && !mediaUrl.startsWith('https://'))) {
+            mediaUrl = mediaStorageUrl;
+          }
+
+          // Remove loading indicator
+          loadingDiv.remove();
+
+          // Render media based on type
+          if (messageType === 'image') {
+            const imgContainer = document.createElement('div');
+            imgContainer.style.position = 'relative';
+            
+            const img = document.createElement('img');
+            img.src = mediaUrl;
+            img.style.maxWidth = '100%';
+            img.style.maxHeight = '300px';
+            img.style.borderRadius = '8px';
+            img.style.cursor = 'pointer';
+            img.style.objectFit = 'contain';
+            img.onerror = () => {
+              imgContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Failed to load image</div>';
+            };
+            img.onclick = () => window.open(mediaUrl, '_blank');
+            imgContainer.appendChild(img);
+            
+            if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
+              const textSpan = document.createElement('div');
+              textSpan.textContent = text;
+              textSpan.style.marginTop = '8px';
+              textSpan.style.fontSize = '14px';
+              imgContainer.appendChild(textSpan);
+            }
+            msgContent.appendChild(imgContainer);
+          } else if (messageType === 'video') {
+            const videoContainer = document.createElement('div');
+            const video = document.createElement('video');
+            video.src = mediaUrl;
+            video.controls = true;
+            video.style.maxWidth = '100%';
+            video.style.maxHeight = '300px';
+            video.style.borderRadius = '8px';
+            video.onerror = () => {
+              videoContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Failed to load video</div>';
+            };
+            videoContainer.appendChild(video);
+            
+            if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
+              const textSpan = document.createElement('div');
+              textSpan.textContent = text;
+              textSpan.style.marginTop = '8px';
+              textSpan.style.fontSize = '14px';
+              videoContainer.appendChild(textSpan);
+            }
+            msgContent.appendChild(videoContainer);
+          } else if (messageType === 'audio') {
+            const audioContainer = document.createElement('div');
+            const audio = document.createElement('audio');
+            audio.src = mediaUrl;
+            audio.controls = true;
+            audio.style.width = '100%';
+            audio.onerror = () => {
+              audioContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Failed to load audio</div>';
+            };
+            audioContainer.appendChild(audio);
+            
+            if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
+              const textSpan = document.createElement('div');
+              textSpan.textContent = text;
+              textSpan.style.marginTop = '8px';
+              textSpan.style.fontSize = '14px';
+              audioContainer.appendChild(textSpan);
+            }
+            msgContent.appendChild(audioContainer);
+          } else {
+            // Document or file
+            const fileContainer = document.createElement('div');
+            fileContainer.style.display = 'flex';
+            fileContainer.style.alignItems = 'center';
+            fileContainer.style.gap = '8px';
+            fileContainer.style.padding = '8px';
+            fileContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.05)';
+            fileContainer.style.borderRadius = '6px';
+            
+            const fileLink = document.createElement('a');
+            fileLink.href = mediaUrl;
+            fileLink.target = '_blank';
+            fileLink.style.display = 'flex';
+            fileLink.style.alignItems = 'center';
+            fileLink.style.gap = '8px';
+            fileLink.style.textDecoration = 'none';
+            fileLink.style.color = '#18181e';
+            fileLink.style.flex = '1';
+            fileLink.innerHTML = `
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+              </svg>
+              <span style="font-size: 14px; word-break: break-word;">${text || 'Download File'}</span>
+            `;
+            fileContainer.appendChild(fileLink);
+            msgContent.appendChild(fileContainer);
+          }
+        })
+        .catch(err => {
+          console.error('UniBox: Failed to get media URL', err);
+          loadingDiv.remove();
+          const errorDiv = document.createElement('div');
+          errorDiv.style.padding = '12px';
+          errorDiv.style.textAlign = 'center';
+          errorDiv.style.color = '#6b7280';
+          errorDiv.style.fontSize = '14px';
+          errorDiv.textContent = text || `[${messageType}] - Failed to load`;
+          msgContent.appendChild(errorDiv);
+        });
+    } else {
+      msgContent.textContent = text || '';
+    }
+    
     msgDiv.appendChild(msgContent);
 
     const msgMeta = document.createElement('div');
@@ -836,6 +1213,8 @@
         readAt,
         readByUs: readByUs || false,
         readByUsAt,
+        type: messageType,
+        mediaStorageUrl: mediaStorageUrl,
         element: msgDiv,
       };
       messages.set(messageId, messageData);
@@ -1383,6 +1762,24 @@
           background: #f3f4f6;
           border-radius: 20px;
           padding: 8px 12px;
+          gap: 8px;
+        }
+
+        .chat-widget-attach-btn {
+          background: transparent;
+          border: none;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #6b7280;
+          padding: 4px;
+          border-radius: 4px;
+          transition: background 0.2s;
+        }
+
+        .chat-widget-attach-btn:hover {
+          background: rgba(0, 0, 0, 0.05);
         }
 
         .chat-widget-input {
@@ -1405,6 +1802,28 @@
           display: flex;
           align-items: center;
           justify-content: center;
+        }
+
+        .chat-widget-message-content img {
+          display: block;
+          max-width: 100%;
+          height: auto;
+        }
+
+        .chat-widget-message-content video {
+          display: block;
+          max-width: 100%;
+          height: auto;
+        }
+
+        .chat-widget-message-content audio {
+          width: 100%;
+          margin-top: 4px;
+        }
+
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
         }
     `;
 
@@ -1441,6 +1860,12 @@
         </div>
         <div class="chat-widget-footer hidden" id="chatFooter">
            <div class="chat-widget-input-wrapper">
+             <input type="file" id="fileInput" style="display: none;" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx" />
+             <button class="chat-widget-attach-btn" id="attachBtn" title="Attach file">
+               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+               </svg>
+             </button>
              <input type="text" class="chat-widget-input" id="msgInput" placeholder="Type a message..." />
            </div>
            <button class="chat-widget-send-btn" id="sendBtn">
@@ -1577,6 +2002,8 @@
     const closeBtn = shadow.getElementById('closeBtn');
     const sendBtn = shadow.getElementById('sendBtn');
     const msgInput = shadow.getElementById('msgInput');
+    const attachBtn = shadow.getElementById('attachBtn');
+    const fileInput = shadow.getElementById('fileInput');
 
     const toggle = (forceState) => {
       const isOpen = windowEl.classList.contains('open');
@@ -1615,6 +2042,20 @@
         console.error('UniBox: Failed to send message', err);
       });
     };
+
+    attachBtn.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        sendMediaMessage(file).catch((err) => {
+          console.error('UniBox: Failed to send media', err);
+        });
+        fileInput.value = ''; // Reset input
+      }
+    });
 
     sendBtn.addEventListener('click', handleSend);
     msgInput.addEventListener('keypress', (e) => {

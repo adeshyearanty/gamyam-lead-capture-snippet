@@ -276,8 +276,13 @@
               setLoading(false);
               if (data.messages && Array.isArray(data.messages)) {
             data.messages.forEach((msg) => {
+              // Skip static welcome if we're restoring messages (welcome will be in messages)
+              if (msg.sender === 'agent' && isWelcomeMessage(msg.text || msg.text_body)) {
+                staticWelcomeShown = true;
+              }
+              
               appendMessageToUI(
-                msg.text || msg.text_body,
+                msg.text || msg.text_body || '',
                 msg.sender ||
                   (msg.direction === 'inbound' ? 'user' : 'agent'),
                 msg.id || msg.messageId,
@@ -525,7 +530,7 @@
       }
 
       appendMessageToUI(
-        message.text,
+        message.text || '',
         message.sender,
         message.messageId,
         message.timestamp,
@@ -714,16 +719,29 @@
         }
       }
 
+
       // Update conversation ID if this was a new conversation
       if (result.conversationId && !conversationId) {
         conversationId = result.conversationId;
         connectSocket();
-        await new Promise((resolve) => setTimeout(resolve, 500));
       }
-
+      
       // The message will be added via WebSocket, but we can also add it optimistically
-      // if we have the result
+      // if we have the result and media_storage_url
       if (result.media_storage_url) {
+        // Remove any existing uploading message
+        const host = document.getElementById('unibox-root');
+        if (host && host.shadowRoot) {
+          const body = host.shadowRoot.getElementById('chatBody');
+          if (body) {
+            const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
+            if (uploadingMsg) {
+              uploadingMsg.remove();
+              messages.delete(messageId);
+            }
+          }
+        }
+        
         appendMessageToUI(
           fileName,
           'user',
@@ -1010,24 +1028,48 @@
     // Handle media messages
     const isMediaMessage = messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType);
     
-    if (isMediaMessage && mediaStorageUrl) {
-      // Show loading state
+    // Handle media messages - check for media_storage_url or if text is null and type indicates media
+    const hasMedia = isMediaMessage && (mediaStorageUrl || (!text && messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType)));
+    
+    if (hasMedia) {
+      // Show loading state with better styling
       const loadingDiv = document.createElement('div');
+      loadingDiv.className = 'chat-widget-media-loading';
       loadingDiv.style.display = 'flex';
       loadingDiv.style.alignItems = 'center';
-      loadingDiv.style.gap = '8px';
-      loadingDiv.style.padding = '8px';
+      loadingDiv.style.justifyContent = 'center';
+      loadingDiv.style.gap = '10px';
+      loadingDiv.style.padding = '20px';
+      loadingDiv.style.minHeight = '80px';
       loadingDiv.innerHTML = `
-        <div style="width: 16px; height: 16px; border: 2px solid #e5e7eb; border-top-color: ${settings.appearance.primaryColor}; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-        <span style="color: #6b7280; font-size: 12px;">Loading media...</span>
+        <div style="width: 20px; height: 20px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.primaryColor}; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+        <span style="color: #6b7280; font-size: 13px; font-weight: 500;">Loading media...</span>
       `;
       msgContent.appendChild(loadingDiv);
+      
+      // Use mediaStorageUrl if available
+      const mediaKey = mediaStorageUrl;
 
       // Get access URL for media
+      if (!mediaKey) {
+        loadingDiv.remove();
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'chat-widget-media-error';
+        errorDiv.style.padding = '16px';
+        errorDiv.style.textAlign = 'center';
+        errorDiv.style.color = '#ef4444';
+        errorDiv.style.fontSize = '13px';
+        errorDiv.style.backgroundColor = '#fef2f2';
+        errorDiv.style.borderRadius = '8px';
+        errorDiv.textContent = text || 'Media not available';
+        msgContent.appendChild(errorDiv);
+        return;
+      }
+      
       fetch(API_S3_URL, {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({ key: mediaStorageUrl }),
+        body: JSON.stringify({ key: mediaKey }),
       })
         .then(res => {
           if (!res.ok) throw new Error('Failed to get media URL');
@@ -1054,97 +1096,219 @@
           // Render media based on type
           if (messageType === 'image') {
             const imgContainer = document.createElement('div');
+            imgContainer.className = 'chat-widget-media-image-container';
             imgContainer.style.position = 'relative';
+            imgContainer.style.marginBottom = text && text !== 'Uploading...' && !text.includes('Uploading') ? '8px' : '0';
+            
+            const imgWrapper = document.createElement('div');
+            imgWrapper.style.position = 'relative';
+            imgWrapper.style.borderRadius = '8px';
+            imgWrapper.style.overflow = 'hidden';
+            imgWrapper.style.backgroundColor = '#f3f4f6';
+            imgWrapper.style.display = 'inline-block';
+            imgWrapper.style.maxWidth = '100%';
             
             const img = document.createElement('img');
+            img.className = 'chat-widget-media-image';
             img.src = mediaUrl;
+            img.style.display = 'block';
             img.style.maxWidth = '100%';
-            img.style.maxHeight = '300px';
-            img.style.borderRadius = '8px';
+            img.style.maxHeight = '400px';
+            img.style.width = 'auto';
+            img.style.height = 'auto';
             img.style.cursor = 'pointer';
             img.style.objectFit = 'contain';
+            img.style.transition = 'opacity 0.2s';
+            img.onload = () => {
+              img.style.opacity = '1';
+            };
             img.onerror = () => {
-              imgContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Failed to load image</div>';
+              imgWrapper.innerHTML = `
+                <div style="padding: 40px 20px; text-align: center; color: #6b7280; min-height: 100px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.5;">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                    <polyline points="21 15 16 10 5 21"></polyline>
+                  </svg>
+                  <span style="font-size: 13px;">Failed to load image</span>
+                </div>
+              `;
             };
             img.onclick = () => window.open(mediaUrl, '_blank');
-            imgContainer.appendChild(img);
+            imgWrapper.appendChild(img);
+            imgContainer.appendChild(imgWrapper);
             
             if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
               const textSpan = document.createElement('div');
+              textSpan.className = 'chat-widget-media-caption';
               textSpan.textContent = text;
-              textSpan.style.marginTop = '8px';
+              textSpan.style.marginTop = '10px';
               textSpan.style.fontSize = '14px';
+              textSpan.style.lineHeight = '1.5';
+              textSpan.style.color = type === 'agent' ? '#18181e' : '#18181e';
               imgContainer.appendChild(textSpan);
             }
             msgContent.appendChild(imgContainer);
           } else if (messageType === 'video') {
             const videoContainer = document.createElement('div');
+            videoContainer.className = 'chat-widget-media-video-container';
+            videoContainer.style.marginBottom = text && text !== 'Uploading...' && !text.includes('Uploading') ? '8px' : '0';
+            
+            const videoWrapper = document.createElement('div');
+            videoWrapper.style.position = 'relative';
+            videoWrapper.style.borderRadius = '8px';
+            videoWrapper.style.overflow = 'hidden';
+            videoWrapper.style.backgroundColor = '#000';
+            videoWrapper.style.maxWidth = '100%';
+            
             const video = document.createElement('video');
+            video.className = 'chat-widget-media-video';
             video.src = mediaUrl;
             video.controls = true;
+            video.style.display = 'block';
             video.style.maxWidth = '100%';
-            video.style.maxHeight = '300px';
+            video.style.maxHeight = '400px';
+            video.style.width = 'auto';
+            video.style.height = 'auto';
             video.style.borderRadius = '8px';
             video.onerror = () => {
-              videoContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Failed to load video</div>';
+              videoWrapper.innerHTML = `
+                <div style="padding: 40px 20px; text-align: center; color: #fff; min-height: 150px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;">
+                    <polygon points="23 7 16 12 23 17 23 7"></polygon>
+                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                  </svg>
+                  <span style="font-size: 13px;">Failed to load video</span>
+                </div>
+              `;
             };
-            videoContainer.appendChild(video);
+            videoWrapper.appendChild(video);
+            videoContainer.appendChild(videoWrapper);
             
             if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
               const textSpan = document.createElement('div');
+              textSpan.className = 'chat-widget-media-caption';
               textSpan.textContent = text;
-              textSpan.style.marginTop = '8px';
+              textSpan.style.marginTop = '10px';
               textSpan.style.fontSize = '14px';
+              textSpan.style.lineHeight = '1.5';
+              textSpan.style.color = type === 'agent' ? '#18181e' : '#18181e';
               videoContainer.appendChild(textSpan);
             }
             msgContent.appendChild(videoContainer);
           } else if (messageType === 'audio') {
             const audioContainer = document.createElement('div');
+            audioContainer.className = 'chat-widget-media-audio-container';
+            audioContainer.style.marginBottom = text && text !== 'Uploading...' && !text.includes('Uploading') ? '8px' : '0';
+            
+            const audioWrapper = document.createElement('div');
+            audioWrapper.style.padding = '12px';
+            audioWrapper.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
+            audioWrapper.style.borderRadius = '8px';
+            audioWrapper.style.border = '1px solid #e5e7eb';
+            
             const audio = document.createElement('audio');
+            audio.className = 'chat-widget-media-audio';
             audio.src = mediaUrl;
             audio.controls = true;
             audio.style.width = '100%';
+            audio.style.outline = 'none';
             audio.onerror = () => {
-              audioContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Failed to load audio</div>';
+              audioWrapper.innerHTML = `
+                <div style="padding: 20px; text-align: center; color: #6b7280; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.5;">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                  </svg>
+                  <span style="font-size: 13px;">Failed to load audio</span>
+                </div>
+              `;
             };
-            audioContainer.appendChild(audio);
+            audioWrapper.appendChild(audio);
+            audioContainer.appendChild(audioWrapper);
             
             if (text && text !== 'Uploading...' && !text.includes('Uploading')) {
               const textSpan = document.createElement('div');
+              textSpan.className = 'chat-widget-media-caption';
               textSpan.textContent = text;
-              textSpan.style.marginTop = '8px';
+              textSpan.style.marginTop = '10px';
               textSpan.style.fontSize = '14px';
+              textSpan.style.lineHeight = '1.5';
+              textSpan.style.color = type === 'agent' ? '#18181e' : '#18181e';
               audioContainer.appendChild(textSpan);
             }
             msgContent.appendChild(audioContainer);
           } else {
             // Document or file
             const fileContainer = document.createElement('div');
+            fileContainer.className = 'chat-widget-media-file-container';
             fileContainer.style.display = 'flex';
             fileContainer.style.alignItems = 'center';
-            fileContainer.style.gap = '8px';
-            fileContainer.style.padding = '8px';
-            fileContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.05)';
-            fileContainer.style.borderRadius = '6px';
+            fileContainer.style.gap = '12px';
+            fileContainer.style.padding = '12px';
+            fileContainer.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
+            fileContainer.style.borderRadius = '8px';
+            fileContainer.style.border = '1px solid #e5e7eb';
+            fileContainer.style.transition = 'background-color 0.2s';
             
-            const fileLink = document.createElement('a');
-            fileLink.href = mediaUrl;
-            fileLink.target = '_blank';
-            fileLink.style.display = 'flex';
-            fileLink.style.alignItems = 'center';
-            fileLink.style.gap = '8px';
-            fileLink.style.textDecoration = 'none';
-            fileLink.style.color = '#18181e';
-            fileLink.style.flex = '1';
-            fileLink.innerHTML = `
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            const iconWrapper = document.createElement('div');
+            iconWrapper.style.display = 'flex';
+            iconWrapper.style.alignItems = 'center';
+            iconWrapper.style.justifyContent = 'center';
+            iconWrapper.style.width = '40px';
+            iconWrapper.style.height = '40px';
+            iconWrapper.style.borderRadius = '8px';
+            iconWrapper.style.backgroundColor = settings.appearance.primaryColor;
+            iconWrapper.style.flexShrink = '0';
+            iconWrapper.innerHTML = `
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                 <polyline points="14 2 14 8 20 8"></polyline>
                 <line x1="16" y1="13" x2="8" y2="13"></line>
                 <line x1="16" y1="17" x2="8" y2="17"></line>
               </svg>
-              <span style="font-size: 14px; word-break: break-word;">${text || 'Download File'}</span>
             `;
+            
+            const fileInfo = document.createElement('div');
+            fileInfo.style.flex = '1';
+            fileInfo.style.minWidth = '0';
+            
+            const fileName = document.createElement('div');
+            fileName.style.fontSize = '14px';
+            fileName.style.fontWeight = '500';
+            fileName.style.color = '#18181e';
+            fileName.style.marginBottom = '2px';
+            fileName.style.wordBreak = 'break-word';
+            fileName.textContent = text || 'Document';
+            
+            const fileLabel = document.createElement('div');
+            fileLabel.style.fontSize = '12px';
+            fileLabel.style.color = '#6b7280';
+            fileLabel.textContent = 'Click to download';
+            
+            fileInfo.appendChild(fileName);
+            fileInfo.appendChild(fileLabel);
+            
+            const fileLink = document.createElement('a');
+            fileLink.href = mediaUrl;
+            fileLink.target = '_blank';
+            fileLink.rel = 'noopener noreferrer';
+            fileLink.style.display = 'flex';
+            fileLink.style.alignItems = 'center';
+            fileLink.style.gap = '12px';
+            fileLink.style.textDecoration = 'none';
+            fileLink.style.color = 'inherit';
+            fileLink.style.flex = '1';
+            fileLink.style.cursor = 'pointer';
+            fileLink.onmouseenter = () => {
+              fileContainer.style.backgroundColor = type === 'agent' ? '#e9ecef' : '#f3f4f6';
+            };
+            fileLink.onmouseleave = () => {
+              fileContainer.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
+            };
+            
+            fileLink.appendChild(iconWrapper);
+            fileLink.appendChild(fileInfo);
             fileContainer.appendChild(fileLink);
             msgContent.appendChild(fileContainer);
           }
@@ -1153,11 +1317,24 @@
           console.error('UniBox: Failed to get media URL', err);
           loadingDiv.remove();
           const errorDiv = document.createElement('div');
-          errorDiv.style.padding = '12px';
+          errorDiv.className = 'chat-widget-media-error';
+          errorDiv.style.padding = '16px';
           errorDiv.style.textAlign = 'center';
-          errorDiv.style.color = '#6b7280';
-          errorDiv.style.fontSize = '14px';
-          errorDiv.textContent = text || `[${messageType}] - Failed to load`;
+          errorDiv.style.color = '#ef4444';
+          errorDiv.style.fontSize = '13px';
+          errorDiv.style.backgroundColor = '#fef2f2';
+          errorDiv.style.borderRadius = '8px';
+          errorDiv.style.border = '1px solid #fecaca';
+          errorDiv.innerHTML = `
+            <div style="display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px;">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+              <span>${text || `Failed to load ${messageType || 'media'}`}</span>
+            </div>
+          `;
           msgContent.appendChild(errorDiv);
         });
     } else {
@@ -1821,6 +1998,61 @@
           margin-top: 4px;
         }
 
+        .chat-widget-media-image-container {
+          display: inline-block;
+          max-width: 100%;
+        }
+
+        .chat-widget-media-image {
+          transition: transform 0.2s, opacity 0.2s;
+          opacity: 0;
+        }
+
+        .chat-widget-media-image:hover {
+          transform: scale(1.02);
+        }
+
+        .chat-widget-media-video-container {
+          display: inline-block;
+          max-width: 100%;
+        }
+
+        .chat-widget-media-audio-container {
+          width: 100%;
+        }
+
+        .chat-widget-media-file-container {
+          width: 100%;
+          cursor: pointer;
+        }
+
+        .chat-widget-media-file-container:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .chat-widget-media-caption {
+          word-break: break-word;
+          white-space: pre-wrap;
+        }
+
+        .chat-widget-media-loading {
+          animation: fadeIn 0.2s ease-in;
+        }
+
+        .chat-widget-media-error {
+          animation: fadeIn 0.2s ease-in;
+        }
+
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+
         @keyframes spin {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
@@ -1973,22 +2205,29 @@
       } else {
         footer.classList.remove('hidden');
 
-        if (!staticWelcomeShown && !userId) {
+        // Show welcome message if not already shown and no messages exist
+        if (!staticWelcomeShown) {
           const welcomeText =
             settings.appearance.header?.welcomeMessage ||
             settings.appearance.welcomeMessage;
           if (welcomeText) {
-            appendMessageToUI(
-              welcomeText,
-              'agent',
-              `static_welcome_${Date.now()}`,
-              new Date(),
-              'sent',
-              null,
-              false,
-              null,
-            );
-            staticWelcomeShown = true;
+            // Check if there are any existing messages
+            const hasMessages = Array.from(messages.values()).length > 0;
+            if (!hasMessages) {
+              appendMessageToUI(
+                welcomeText,
+                'agent',
+                `static_welcome_${Date.now()}`,
+                new Date(),
+                'sent',
+                null,
+                false,
+                null,
+                'text',
+                undefined,
+              );
+              staticWelcomeShown = true;
+            }
           }
         }
       }

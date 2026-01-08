@@ -98,8 +98,8 @@
   let typingTimeout = null;
   let isTyping = false;
   let agentTyping = false;
-  let previewMedia = null; // { url, filename, type, mediaKey }
-  let previewFile = null; // { file, previewUrl, mediaType } - for file upload preview
+  let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
+  let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - for file upload preview
 
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
@@ -861,8 +861,7 @@
   }
 
   /**
-   * Upload and send a media message from the user.
-   * Shows preview first, then sends on confirmation.
+   * Add file to selected files (shows as chip above input)
    */
   async function sendMediaMessage(file) {
     // Validate file size first
@@ -874,8 +873,8 @@
       return;
     }
 
-    // Show preview instead of sending directly
-    showFilePreview(file);
+    // Add to selected files (will show as chip)
+    addSelectedFile(file);
   }
 
   async function sendMessageToApi(text) {
@@ -1024,8 +1023,8 @@
       modal.remove();
     }
     
-    // Don't render if no preview
-    if (!previewFile && !previewMedia) return;
+    // Don't render if no preview (only for viewing received media)
+    if (!previewMedia) return;
     
     // Create modal
     modal = document.createElement('div');
@@ -1085,8 +1084,8 @@
     };
     closeBtn.onclick = closePreviewModal;
     
-    // Handle file preview (before sending)
-    if (previewFile) {
+    // Handle media preview (viewing received media only - file preview removed)
+    if (false && previewFile) {
       const previewContainer = document.createElement('div');
       previewContainer.style.display = 'flex';
       previewContainer.style.flexDirection = 'column';
@@ -1261,10 +1260,6 @@
    * Close preview modal
    */
   function closePreviewModal() {
-    if (previewFile && previewFile.previewUrl) {
-      URL.revokeObjectURL(previewFile.previewUrl);
-    }
-    previewFile = null;
     previewMedia = null;
     
     const host = document.getElementById('unibox-root');
@@ -1499,6 +1494,7 @@
       mediaChip.style.color = '#18181e';
       mediaChip.style.fontSize = '14px';
       mediaChip.style.fontFamily = settings.appearance.fontFamily;
+      mediaChip.style.minHeight = '40px'; // Ensure minimum height for visibility
       mediaChip.onmouseenter = () => {
         mediaChip.style.backgroundColor = type === 'agent' ? '#e9ecef' : '#f3f4f6';
         mediaChip.style.transform = 'translateY(-1px)';
@@ -1570,7 +1566,13 @@
     
     // Handle text messages (non-media)
     if (!hasMedia) {
-      msgContent.textContent = normalizedText || '';
+      // Only set text content if we have text (don't set empty string for null)
+      if (normalizedText) {
+        msgContent.textContent = normalizedText;
+      } else {
+        // Empty message - don't render content
+        msgContent.style.display = 'none';
+      }
     }
     
     msgDiv.appendChild(msgContent);
@@ -2289,6 +2291,8 @@
         .chat-widget-media-chip {
           transition: all 0.2s ease;
           min-height: 40px;
+          display: flex !important;
+          visibility: visible !important;
         }
 
         .chat-widget-media-chip:hover {
@@ -2297,6 +2301,13 @@
 
         .chat-widget-message-content:empty {
           display: none;
+        }
+        
+        /* Ensure media chips are always visible */
+        .chat-widget-message-content .chat-widget-media-chip {
+          display: flex !important;
+          visibility: visible !important;
+          opacity: 1 !important;
         }
 
         .chat-widget-preview-modal {
@@ -2526,6 +2537,17 @@
 
     const handleSend = () => {
       const text = msgInput.value.trim();
+      
+      // If there are selected files, send them with caption
+      if (selectedFiles.length > 0) {
+        sendSelectedFiles(text || undefined).catch((err) => {
+          console.error('UniBox: Failed to send media', err);
+        });
+        msgInput.value = '';
+        return;
+      }
+
+      // Otherwise send text message
       if (!text) return;
 
       msgInput.value = '';
@@ -2539,6 +2561,8 @@
         'sent',
         null,
         false,
+        null,
+        'text',
         null,
       );
 
@@ -2577,6 +2601,18 @@
         handleUserTyping();
       }
     });
+    
+    // Update send button state based on selected files or text
+    const updateSendButtonState = () => {
+      const hasText = msgInput.value.trim().length > 0;
+      const hasFiles = selectedFiles.length > 0;
+      sendBtn.disabled = !hasText && !hasFiles;
+      sendBtn.style.opacity = (hasText || hasFiles) ? '1' : '0.5';
+      sendBtn.style.cursor = (hasText || hasFiles) ? 'pointer' : 'not-allowed';
+    };
+    
+    msgInput.addEventListener('input', updateSendButtonState);
+    updateSendButtonState();
 
     function handleUserTyping() {
       if (!isTyping) {

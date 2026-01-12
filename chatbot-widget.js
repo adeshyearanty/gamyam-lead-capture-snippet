@@ -217,13 +217,15 @@
       return {
         'Content-Type': 'application/json',
         'x-tenant-id': userConfig.tenantId,
-        'x-api-key': userConfig.apiKey || userConfig.widgetToken,
+        'x-api-key': userConfig.apiKey || userConfig.widgetToken, // General API key
+        'x-chatbot-token': userConfig.widgetToken, // Widget-specific token
       };
     }
     return {
       'Content-Type': 'application/json',
       'x-tenant-id': settings.tenantId,
-      'x-api-key': settings.apiKey || settings.widgetToken,
+      'x-api-key': settings.apiKey || settings.widgetToken, // General API key
+      'x-chatbot-token': settings.widgetToken, // Widget-specific token
     };
   }
 
@@ -672,16 +674,19 @@
       path: SOCKET_CONFIG.path,
       auth: {
         tenantId: settings.tenantId,
-        'x-api-key': settings.apiKey || settings.widgetToken,
+        'x-api-key': settings.apiKey || settings.widgetToken, // General API key
+        'x-chatbot-token': settings.widgetToken, // Widget-specific token
       },
       query: {
-        'x-api-key': settings.apiKey || settings.widgetToken,
+        'x-api-key': settings.apiKey || settings.widgetToken, // General API key
+        'x-chatbot-token': settings.widgetToken, // Widget-specific token
       },
       transports: ['polling', 'websocket'],
       transportOptions: {
         polling: {
           extraHeaders: {
-            'x-api-key': settings.apiKey || settings.widgetToken,
+            'x-api-key': settings.apiKey || settings.widgetToken, // General API key
+            'x-chatbot-token': settings.widgetToken, // Widget-specific token
           },
         },
       },

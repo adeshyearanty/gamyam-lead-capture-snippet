@@ -1,75 +1,168 @@
 (function () {
   // --- 1. CONFIGURATION ---
-  if (!window.UniBoxSettings || !window.UniBoxSettings.tenantId) {
-    console.error('UniBox: Settings or Tenant ID missing.');
+  // Support both new encrypted method (window.UniBoxEmbedConfig) and legacy method (window.UniBoxSettings)
+
+  let userConfig = null;
+
+  // Check for new encrypted embed config
+  if (window.UniBoxEmbedConfig) {
+    try {
+      const embedConfig = window.UniBoxEmbedConfig;
+      const encryptedConfig = embedConfig.encryptedConfig;
+
+      if (!encryptedConfig) {
+        console.error("UniBox: Missing encryptedConfig in embed config.");
+        return;
+      }
+
+      // Decrypt config using the same fixed key used for encryption
+      function decryptConfig(encryptedData, key) {
+        try {
+          // Decode from base64
+          const decoded = atob(encryptedData);
+          // XOR decrypt
+          let decrypted = "";
+          for (let i = 0; i < decoded.length; i++) {
+            const keyChar = key[i % key.length];
+            decrypted += String.fromCharCode(
+              decoded.charCodeAt(i) ^ keyChar.charCodeAt(0)
+            );
+          }
+          // Decode from base64 to UTF-8 string
+          const jsonString = decodeURIComponent(escape(atob(decrypted)));
+          return JSON.parse(jsonString);
+        } catch (e) {
+          console.error("UniBox: Failed to decrypt config", e);
+          return null;
+        }
+      }
+
+      // Use the same encryption key (must match the one used in script generator)
+      const encryptionKey = "unibox-widget-encryption-key-2024";
+      const decryptedConfig = decryptConfig(encryptedConfig, encryptionKey);
+
+      if (decryptedConfig) {
+        userConfig = decryptedConfig;
+      } else {
+        console.error("UniBox: Failed to decrypt config.");
+        return;
+      }
+    } catch (e) {
+      console.error("UniBox: Error processing embed config", e);
+      return;
+    }
+  }
+  // Fall back to legacy method
+  else if (window.UniBoxSettings) {
+    userConfig = window.UniBoxSettings;
+  } else {
+    console.error(
+      "UniBox: Settings missing. Please configure window.UniBoxEmbedConfig or window.UniBoxSettings."
+    );
     return;
   }
 
-  const userConfig = window.UniBoxSettings;
+  const requiredFields = ["tenantId", "apiKey", "chatbotId"];
+  const missingFields = requiredFields.filter((field) => !userConfig[field]);
 
-  // Storage Keys
+  if (missingFields.length > 0) {
+    console.error(
+      `UniBox: Missing required fields: ${missingFields.join(", ")}`
+    );
+    return;
+  }
+
+  // Get base URL - support both apiBaseUrl and baseUrl
+  const baseUrl =
+    userConfig.apiBaseUrl ||
+    userConfig.baseUrl ||
+    "https://dev-api.salesastra.ai/pulse/v1/chat";
+
+  // Storage Keys (using tenantId from userConfig)
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
 
-  // API URLs
-  const API_BASE =
-    userConfig.apiBaseUrl || 'https://dev-api.salesastra.ai/pulse/v1/chat';
-  const API_S3_URL = API_BASE.replace(/\/chat\/?$/, '/s3/generate-access-url');
-  
+  // API URLs - will be set after we get the full config
+  let API_BASE = baseUrl;
+  let API_S3_URL = "";
+  let UTILITY_API_BASE = "";
+  let UTILITY_S3_URL = "";
+  let SOCKET_CONFIG = { namespaceUrl: "", path: "" };
+
   // Utility service URL for media (separate from logo S3)
   // Construct utility base URL from API_BASE: /pulse/v1/chat -> /utility/v1
   function getUtilityBaseUrl() {
     try {
       const urlObj = new URL(API_BASE);
-      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, '');
+      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, "");
       return `${urlObj.protocol}//${urlObj.host}${basePath}/utility/v1`;
     } catch (e) {
       // Fallback if URL parsing fails
-      return API_BASE.replace(/\/pulse\/v1\/chat\/?$/, '/utilities/v1') || 'https://dev-api.salesastra.ai/utilities/v1';
+      return (
+        API_BASE.replace(/\/pulse\/v1\/chat\/?$/, "/utilities/v1") ||
+        "https://dev-api.salesastra.ai/utilities/v1"
+      );
     }
   }
-  const UTILITY_API_BASE = getUtilityBaseUrl();
-  const UTILITY_S3_URL = `${UTILITY_API_BASE}/s3/generate-access-url`;
 
   // Socket Config Helper
   function getSocketConfig(apiBase) {
     try {
       const urlObj = new URL(apiBase);
-      const basePath = urlObj.pathname.replace(/\/chat\/?$/, '');
+      const basePath = urlObj.pathname.replace(/\/chat\/?$/, "");
       return {
         namespaceUrl: `${urlObj.protocol}//${urlObj.host}${basePath}/events`,
         path: `${basePath}/socket.io/`,
       };
     } catch (e) {
-      console.error('UniBox: Invalid API URL', e);
-      return { namespaceUrl: '', path: '' };
+      console.error("UniBox: Invalid API URL", e);
+      return { namespaceUrl: "", path: "" };
     }
   }
 
-  const SOCKET_CONFIG = getSocketConfig(API_BASE);
+  // Get Config API URL
+  function getConfigApiUrl() {
+    try {
+      const urlObj = new URL(baseUrl);
+      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, "");
+      const configUrl = `${urlObj.protocol}//${urlObj.host}${basePath}/v1/public/chatbot/config`;
+      // Add chatbotId as query parameter
+      const urlWithParams = new URL(configUrl);
+      urlWithParams.searchParams.set("chatbotId", userConfig.chatbotId);
+      return urlWithParams.toString();
+    } catch (e) {
+      // Fallback if URL parsing fails
+      const fallbackUrl =
+        baseUrl.replace(/\/pulse\/v1\/chat\/?$/, "/v1/public/chatbot/config") ||
+        "https://dev-api.salesastra.ai/v1/public/chatbot/config";
+      return `${fallbackUrl}?chatbotId=${encodeURIComponent(
+        userConfig.chatbotId
+      )}`;
+    }
+  }
 
   const defaults = {
-    tenantId: '',
-    apiKey: '',
+    tenantId: "",
+    apiKey: "",
     testMode: false,
     appearance: {
-      primaryColor: '#2563EB',
-      secondaryColor: '#F3F4F6',
-      backgroundColor: '#FFFFFF',
-      fontFamily: 'Inter, sans-serif',
-      iconStyle: 'rounded',
-      logoUrl: '',
+      primaryColor: "#2563EB",
+      secondaryColor: "#F3F4F6",
+      backgroundColor: "#FFFFFF",
+      fontFamily: "Inter, sans-serif",
+      iconStyle: "rounded",
+      logoUrl: "",
       header: {
-        title: 'Support',
-        welcomeMessage: 'Hi there! How can we help?',
-        offlineMessage: 'We are currently offline.',
+        title: "Support",
+        welcomeMessage: "Hi there! How can we help?",
+        offlineMessage: "We are currently offline.",
       },
-      headerName: 'Support',
-      welcomeMessage: 'Hi there! How can we help?',
+      headerName: "Support",
+      welcomeMessage: "Hi there! How can we help?",
       chatToggleIcon: {
-        backgroundColor: '#2563EB',
-        style: 'rounded',
+        backgroundColor: "#2563EB",
+        style: "rounded",
       },
     },
     behavior: {
@@ -77,7 +170,7 @@
       typingIndicator: true,
       autoOpen: false,
       autoOpenDelay: 2000,
-      stickyPlacement: 'bottom-right',
+      stickyPlacement: "bottom-right",
     },
     preChatForm: {
       enabled: false,
@@ -85,13 +178,14 @@
     },
   };
 
-  const settings = deepMerge(defaults, userConfig);
+  // Settings will be initialized after fetching config
+  let settings = null;
 
   // --- 2. STATE ---
   let conversationId = null;
   let socket = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
-  let resolvedLogoUrl = '';
+  let resolvedLogoUrl = "";
   let messages = new Map();
   let isAgentOnline = false;
   let staticWelcomeShown = false;
@@ -103,18 +197,26 @@
 
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
+    if (!settings) {
+      console.error("UniBox: Settings not initialized");
+      return {
+        "Content-Type": "application/json",
+        "x-tenant-id": userConfig.tenantId,
+        "x-api-key": userConfig.apiKey,
+      };
+    }
     return {
-      'Content-Type': 'application/json',
-      'x-tenant-id': settings.tenantId,
-      'x-api-key': settings.apiKey,
+      "Content-Type": "application/json",
+      "x-tenant-id": settings.tenantId,
+      "x-api-key": settings.apiKey,
     };
   }
 
   // --- 4. HELPER: UI LOADING STATE ---
   function setLoading(isLoading) {
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const body = host.shadowRoot.getElementById('chatBody');
+    const body = host.shadowRoot.getElementById("chatBody");
     if (!body) return;
 
     if (isLoading) {
@@ -124,7 +226,7 @@
         </div>
       `;
     } else {
-      const loader = body.querySelector('.chat-widget-loader');
+      const loader = body.querySelector(".chat-widget-loader");
       if (loader) loader.remove();
     }
   }
@@ -135,63 +237,146 @@
       callback();
       return;
     }
-    const script = document.createElement('script');
-    script.src = 'https://cdn.socket.io/4.7.4/socket.io.min.js';
+    const script = document.createElement("script");
+    script.src = "https://cdn.socket.io/4.7.4/socket.io.min.js";
     script.onload = callback;
     document.head.appendChild(script);
   }
 
-  // --- 6. INITIALIZATION ---
-  if (document.readyState === 'complete') {
+  // --- 6. FETCH CONFIG FROM API ---
+  /**
+   * Fetch widget configuration from the API
+   * @returns {Promise<Object>} - The fetched configuration
+   */
+  async function fetchWidgetConfig() {
+    const configApiUrl = getConfigApiUrl();
+    const origin = window.location.origin;
+    const referer = window.location.href;
+
+    try {
+      const response = await fetch(configApiUrl, {
+        method: "GET",
+        headers: {
+          "x-chatbot-token": userConfig.apiKey,
+          "x-tenant-id": userConfig.tenantId,
+          origin: origin,
+          referer: referer,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Failed to fetch config: ${response.status} - ${errorText}`
+        );
+      }
+
+      const apiConfig = await response.json();
+
+      // Transform API response to match widget structure
+      const transformedConfig = {
+        tenantId: userConfig.tenantId,
+        apiKey: userConfig.apiKey,
+        testMode: userConfig.testMode || false,
+        appearance: apiConfig.widgetAppearance || defaults.appearance,
+        behavior: {
+          ...defaults.behavior,
+          ...(apiConfig.widgetBehavior || {}),
+          // Preserve autoOpen and autoOpenDelay from defaults if not in API response
+          autoOpen:
+            apiConfig.widgetBehavior?.autoOpen ?? defaults.behavior.autoOpen,
+          autoOpenDelay:
+            apiConfig.widgetBehavior?.autoOpenDelay ??
+            defaults.behavior.autoOpenDelay,
+        },
+        preChatForm: apiConfig.preChatForm || defaults.preChatForm,
+        // Store additional config that might be useful
+        botFlow: apiConfig.botFlow,
+        defaultLanguage: apiConfig.defaultLanguage,
+        timezone: apiConfig.timezone,
+      };
+
+      return transformedConfig;
+    } catch (error) {
+      console.error("UniBox: Failed to fetch widget configuration:", error);
+      // Fallback to defaults with user-provided minimal config
+      return deepMerge(defaults, {
+        tenantId: userConfig.tenantId,
+        apiKey: userConfig.apiKey,
+        chatbotId: userConfig.chatbotId,
+        testMode: userConfig.testMode || false,
+      });
+    }
+  }
+
+  // --- 7. INITIALIZATION ---
+  if (document.readyState === "complete") {
     init();
   } else {
-    window.addEventListener('load', init);
+    window.addEventListener("load", init);
   }
 
   async function init() {
-    loadGoogleFont(settings.appearance.fontFamily);
+    try {
+      // Fetch configuration from API
+      const fetchedConfig = await fetchWidgetConfig();
 
-    if (settings.appearance.logoUrl) {
-      try {
-        resolvedLogoUrl = await fetchLogoUrl(settings.appearance.logoUrl);
-      } catch (err) {
-        console.warn('UniBox: Failed to load logo', err);
-      }
-    }
+      // Merge fetched config with defaults
+      settings = deepMerge(defaults, fetchedConfig);
 
-    renderWidget();
+      // Now initialize API URLs and socket config with the baseUrl
+      API_BASE = baseUrl;
+      API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
+      UTILITY_API_BASE = getUtilityBaseUrl();
+      UTILITY_S3_URL = `${UTILITY_API_BASE}/s3/generate-access-url`;
+      SOCKET_CONFIG = getSocketConfig(API_BASE);
 
-    if (settings.testMode) {
-      console.warn('UniBox: Running in TEST MODE.');
-    }
+      loadGoogleFont(settings.appearance.fontFamily);
 
-    loadSocketScript(() => {
-      if (userId) {
-        const hasSubmittedForm =
-          sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
-        if (!settings.preChatForm.enabled || hasSubmittedForm) {
-          restoreExistingConversation();
+      if (settings.appearance.logoUrl) {
+        try {
+          resolvedLogoUrl = await fetchLogoUrl(settings.appearance.logoUrl);
+        } catch (err) {
+          console.warn("UniBox: Failed to load logo", err);
         }
       }
-    });
+
+      renderWidget();
+
+      if (settings.testMode) {
+        console.warn("UniBox: Running in TEST MODE.");
+      }
+
+      loadSocketScript(() => {
+        if (userId) {
+          const hasSubmittedForm =
+            sessionStorage.getItem(SESSION_KEY_FORM) === "true";
+          if (!settings.preChatForm.enabled || hasSubmittedForm) {
+            restoreExistingConversation();
+          }
+        }
+      });
+    } catch (error) {
+      console.error("UniBox: Initialization failed:", error);
+    }
   }
 
-  // --- 7. S3 LOGIC ---
-  
+  // --- 8. S3 LOGIC ---
+
   /**
    * Fetch signed URL for logo/images (uses pulse service endpoint)
    * @param {string} fileName - The S3 key or file name
    * @returns {Promise<string>} - The presigned URL
    */
   async function fetchLogoUrl(fileName) {
-    if (fileName.startsWith('http')) return fileName;
+    if (fileName.startsWith("http")) return fileName;
     try {
       const res = await fetch(API_S3_URL, {
-        method: 'POST',
+        method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({ fileName: fileName }),
       });
-      if (!res.ok) throw new Error('S3 Sign failed');
+      if (!res.ok) throw new Error("S3 Sign failed");
       const data = await res.text();
       try {
         return JSON.parse(data).url || JSON.parse(data).signedUrl || data;
@@ -199,7 +384,7 @@
         return data;
       }
     } catch (error) {
-      return '';
+      return "";
     }
   }
 
@@ -210,36 +395,36 @@
    */
   async function fetchMediaUrl(key) {
     if (!key) return null;
-    
+
     // If a full URL is passed, return it as-is
-    if (key.startsWith('http://') || key.startsWith('https://')) {
+    if (key.startsWith("http://") || key.startsWith("https://")) {
       return key;
     }
 
     try {
       const res = await fetch(UTILITY_S3_URL, {
-        method: 'POST',
+        method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({ key: key }),
       });
-      
+
       if (!res.ok) {
-        throw new Error('Failed to get media URL');
+        throw new Error("Failed to get media URL");
       }
-      
+
       const data = await res.text();
-      
+
       // Response is plain text (the presigned URL)
-      const url = typeof data === 'string' ? data : String(data);
-      
+      const url = typeof data === "string" ? data : String(data);
+
       // Validate that the response is a valid URL
-      if (!url.startsWith('http')) {
-        throw new Error('Invalid URL format returned from server');
+      if (!url.startsWith("http")) {
+        throw new Error("Invalid URL format returned from server");
       }
 
       return url;
     } catch (error) {
-      console.error('UniBox: Error getting media access URL:', error);
+      console.error("UniBox: Error getting media access URL:", error);
       return null;
     }
   }
@@ -249,14 +434,14 @@
     return fetchLogoUrl(fileName);
   }
 
-  // --- 8. API & SOCKET LOGIC ---
+  // --- 9. API & SOCKET LOGIC ---
 
   async function restoreExistingConversation() {
     if (conversationId || !userId) return;
     setLoading(true);
     try {
       const restoreRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
-        method: 'GET',
+        method: "GET",
         headers: getHeaders(),
       });
 
@@ -269,7 +454,7 @@
           if (data.messages && Array.isArray(data.messages)) {
             if (staticWelcomeShown) {
               const staticWelcome = Array.from(messages.values()).find(
-                (msg) => msg.id && msg.id.startsWith('static_welcome_'),
+                (msg) => msg.id && msg.id.startsWith("static_welcome_")
               );
               if (staticWelcome && staticWelcome.element) {
                 staticWelcome.element.remove();
@@ -281,11 +466,12 @@
             data.messages.forEach((msg) => {
               // Normalize text - convert empty string to null
               const textValue = msg.text || msg.text_body;
-              const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
-              
+              const normalizedTextValue =
+                textValue && textValue.trim() ? textValue.trim() : null;
+
               appendMessageToUI(
                 normalizedTextValue,
-                msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
+                msg.sender || (msg.direction === "inbound" ? "user" : "agent"),
                 msg.id || msg.messageId,
                 msg.timestamp || msg.timestamp_meta,
                 msg.status,
@@ -293,7 +479,7 @@
                 msg.readByUs,
                 msg.readByUsAt,
                 msg.type,
-                msg.media_storage_url,
+                msg.media_storage_url
               );
             });
             setTimeout(() => {
@@ -322,7 +508,7 @@
 
     const userDetails = {};
     const hasSubmittedForm =
-      sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
+      sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     if (hasSubmittedForm) {
       const storedName = sessionStorage.getItem(`${SESSION_KEY_FORM}_name`);
       const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
@@ -338,9 +524,9 @@
           const restoreRes = await fetch(
             `${API_BASE}/thread/${userId}?limit=50`,
             {
-              method: 'GET',
+              method: "GET",
               headers: getHeaders(),
-            },
+            }
           );
           if (restoreRes.ok) {
             const data = await restoreRes.json();
@@ -348,30 +534,34 @@
               conversationId = data.conversation.id;
               setLoading(false);
               if (data.messages && Array.isArray(data.messages)) {
-            data.messages.forEach((msg) => {
-              // Skip static welcome if we're restoring messages (welcome will be in messages)
-              if (msg.sender === 'agent' && isWelcomeMessage(msg.text || msg.text_body)) {
-                staticWelcomeShown = true;
-              }
-              
-              // Normalize text - convert empty string to null
-              const textValue = msg.text || msg.text_body;
-              const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
-              
-              appendMessageToUI(
-                normalizedTextValue,
-                msg.sender ||
-                  (msg.direction === 'inbound' ? 'user' : 'agent'),
-                msg.id || msg.messageId,
-                msg.timestamp || msg.timestamp_meta,
-                msg.status,
-                msg.readAt,
-                msg.readByUs,
-                msg.readByUsAt,
-                msg.type,
-                msg.media_storage_url,
-              );
-            });
+                data.messages.forEach((msg) => {
+                  // Skip static welcome if we're restoring messages (welcome will be in messages)
+                  if (
+                    msg.sender === "agent" &&
+                    isWelcomeMessage(msg.text || msg.text_body)
+                  ) {
+                    staticWelcomeShown = true;
+                  }
+
+                  // Normalize text - convert empty string to null
+                  const textValue = msg.text || msg.text_body;
+                  const normalizedTextValue =
+                    textValue && textValue.trim() ? textValue.trim() : null;
+
+                  appendMessageToUI(
+                    normalizedTextValue,
+                    msg.sender ||
+                      (msg.direction === "inbound" ? "user" : "agent"),
+                    msg.id || msg.messageId,
+                    msg.timestamp || msg.timestamp_meta,
+                    msg.status,
+                    msg.readAt,
+                    msg.readByUs,
+                    msg.readByUsAt,
+                    msg.type,
+                    msg.media_storage_url
+                  );
+                });
                 markVisibleMessagesAsRead();
               }
               connectSocket();
@@ -382,17 +572,17 @@
       }
 
       const res = await fetch(`${API_BASE}/conversation`, {
-        method: 'POST',
+        method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({
           userId: userId,
-          userName: userDetails.name || 'Guest User',
-          userEmail: userDetails.email || '',
+          userName: userDetails.name || "Guest User",
+          userEmail: userDetails.email || "",
           testMode: settings.testMode,
         }),
       });
 
-      if (!res.ok) throw new Error('Failed to start conversation');
+      if (!res.ok) throw new Error("Failed to start conversation");
       const data = await res.json();
       conversationId = data.conversationId;
 
@@ -404,9 +594,9 @@
           const threadRes = await fetch(
             `${API_BASE}/thread/${userId}?limit=50`,
             {
-              method: 'GET',
+              method: "GET",
               headers: getHeaders(),
-            },
+            }
           );
 
           setLoading(false);
@@ -421,12 +611,13 @@
               threadData.messages.forEach((msg) => {
                 // Normalize text - convert empty string to null
                 const textValue = msg.text || msg.text_body;
-                const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
-                
+                const normalizedTextValue =
+                  textValue && textValue.trim() ? textValue.trim() : null;
+
                 appendMessageToUI(
                   normalizedTextValue,
                   msg.sender ||
-                    (msg.direction === 'inbound' ? 'user' : 'agent'),
+                    (msg.direction === "inbound" ? "user" : "agent"),
                   msg.id || msg.messageId,
                   msg.timestamp || msg.timestamp_meta,
                   msg.status,
@@ -434,7 +625,7 @@
                   msg.readByUs,
                   msg.readByUsAt,
                   msg.type,
-                  msg.media_storage_url,
+                  msg.media_storage_url
                 );
               });
               setTimeout(() => {
@@ -451,7 +642,7 @@
         setLoading(false);
       }
     } catch (error) {
-      console.error('UniBox: Init Error', error);
+      console.error("UniBox: Init Error", error);
       setLoading(false);
     }
   }
@@ -463,16 +654,16 @@
       path: SOCKET_CONFIG.path,
       auth: {
         tenantId: settings.tenantId,
-        'x-api-key': settings.apiKey,
+        "x-api-key": settings.apiKey,
       },
       query: {
-        'x-api-key': settings.apiKey,
+        "x-api-key": settings.apiKey,
       },
-      transports: ['polling', 'websocket'],
+      transports: ["polling", "websocket"],
       transportOptions: {
         polling: {
           extraHeaders: {
-            'x-api-key': settings.apiKey,
+            "x-api-key": settings.apiKey,
           },
         },
       },
@@ -481,9 +672,9 @@
 
     socket = window.io(SOCKET_CONFIG.namespaceUrl, options);
 
-    socket.on('connect', () => {
-      socket.emit('join', {
-        type: 'chat',
+    socket.on("connect", () => {
+      socket.emit("join", {
+        type: "chat",
         conversationId: conversationId,
         userId: userId,
         isAgent: false,
@@ -492,7 +683,7 @@
       setTimeout(() => {
         if (userId && conversationId) {
           fetch(`${API_BASE}/thread/${userId}?limit=50`, {
-            method: 'GET',
+            method: "GET",
             headers: getHeaders(),
           })
             .then((res) => (res.ok ? res.json() : null))
@@ -505,12 +696,13 @@
                 threadData.messages.forEach((msg) => {
                   // Normalize text - convert empty string to null
                   const textValue = msg.text || msg.text_body;
-                  const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
-                  
+                  const normalizedTextValue =
+                    textValue && textValue.trim() ? textValue.trim() : null;
+
                   appendMessageToUI(
                     normalizedTextValue,
                     msg.sender ||
-                      (msg.direction === 'inbound' ? 'user' : 'agent'),
+                      (msg.direction === "inbound" ? "user" : "agent"),
                     msg.id || msg.messageId,
                     msg.timestamp || msg.timestamp_meta,
                     msg.status,
@@ -518,7 +710,7 @@
                     msg.readByUs,
                     msg.readByUsAt,
                     msg.type,
-                    msg.media_storage_url,
+                    msg.media_storage_url
                   );
                 });
                 sortMessagesByTimestamp();
@@ -529,19 +721,19 @@
             })
             .catch((e) =>
               console.error(
-                'UniBox: Failed to fetch thread after socket connect',
-                e,
-              ),
+                "UniBox: Failed to fetch thread after socket connect",
+                e
+              )
             );
         }
       }, 500);
     });
 
-    socket.on('read_receipt', (receipt) => {
+    socket.on("read_receipt", (receipt) => {
       updateReadReceipt(receipt);
     });
 
-    socket.on('typing', (data) => {
+    socket.on("typing", (data) => {
       if (data.conversationId === conversationId) {
         if (data.isAgent && data.isTyping) {
           agentTyping = true;
@@ -553,19 +745,19 @@
       }
     });
 
-    socket.on('message', (message) => {
-      if (message.type === 'read_receipt') {
+    socket.on("message", (message) => {
+      if (message.type === "read_receipt") {
         updateReadReceipt(message);
         return;
       }
 
-      const isUserMessage = message.sender === 'user';
+      const isUserMessage = message.sender === "user";
 
       const existingMessage =
         messages.get(message.messageId) ||
         Array.from(messages.values()).find(
           (msg) =>
-            msg.messageId === message.messageId || msg.id === message.messageId,
+            msg.messageId === message.messageId || msg.id === message.messageId
         );
 
       if (existingMessage && existingMessage.element) {
@@ -582,7 +774,7 @@
 
       if (isUserMessage) {
         const optimisticMessage = Array.from(messages.values()).find((msg) => {
-          if (!msg.element || msg.sender !== 'user') return false;
+          if (!msg.element || msg.sender !== "user") return false;
           return (
             msg.text === message.text &&
             Math.abs(new Date(msg.timestamp) - new Date(message.timestamp)) <
@@ -603,8 +795,8 @@
           optimisticMessage.readByUsAt =
             message.readByUsAt || optimisticMessage.readByUsAt;
           optimisticMessage.element.setAttribute(
-            'data-message-id',
-            message.messageId,
+            "data-message-id",
+            message.messageId
           );
           if (oldId && oldId !== message.messageId) {
             messages.delete(oldId);
@@ -616,8 +808,9 @@
 
       // Normalize text - convert empty string to null
       const textValue = message.text;
-      const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
-      
+      const normalizedTextValue =
+        textValue && textValue.trim() ? textValue.trim() : null;
+
       appendMessageToUI(
         normalizedTextValue,
         message.sender,
@@ -628,7 +821,7 @@
         message.readByUs,
         message.readByUsAt,
         message.type,
-        message.media_storage_url,
+        message.media_storage_url
       );
 
       sortMessagesByTimestamp();
@@ -638,17 +831,17 @@
       }
     });
 
-    socket.on('online_status', (data) => {
+    socket.on("online_status", (data) => {
       updateOnlineStatus(data.isOnline, data.isAgent);
     });
 
-    socket.on('agent_online_status', (data) => {
+    socket.on("agent_online_status", (data) => {
       isAgentOnline = data.isOnline;
       updateOnlineStatusIndicator();
     });
 
-    socket.on('connect_error', (err) => {
-      console.error('UniBox: Socket Connection Error', err.message);
+    socket.on("connect_error", (err) => {
+      console.error("UniBox: Socket Connection Error", err.message);
     });
   }
 
@@ -664,11 +857,18 @@
 
   function getMediaTypeFromFile(file) {
     const type = file.type.toLowerCase();
-    if (type.startsWith('image/')) return 'image';
-    if (type.startsWith('video/')) return 'video';
-    if (type.startsWith('audio/')) return 'audio';
-    if (type.includes('pdf') || type.includes('document') || type.includes('word') || type.includes('excel') || type.includes('sheet')) return 'document';
-    return 'file';
+    if (type.startsWith("image/")) return "image";
+    if (type.startsWith("video/")) return "video";
+    if (type.startsWith("audio/")) return "audio";
+    if (
+      type.includes("pdf") ||
+      type.includes("document") ||
+      type.includes("word") ||
+      type.includes("excel") ||
+      type.includes("sheet")
+    )
+      return "document";
+    return "file";
   }
 
   /**
@@ -682,7 +882,7 @@
       const mediaType = getMediaTypeFromFile(file);
 
       const response = await fetch(`${API_BASE}/media/upload`, {
-        method: 'POST',
+        method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({
           media_base64: mediaBase64,
@@ -694,13 +894,15 @@
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+        throw new Error(
+          errorData.error?.message || `HTTP error! status: ${response.status}`
+        );
       }
 
       const result = await response.json();
       return result;
     } catch (error) {
-      console.error('UniBox: Media upload error', error);
+      console.error("UniBox: Media upload error", error);
       throw error;
     }
   }
@@ -712,7 +914,9 @@
     const maxSize = 10 * 1024 * 1024; // 10MB
     if (file.size > maxSize) {
       const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
-      throw new Error(`File too large (${fileSizeMB}MB). Maximum size is 10MB.`);
+      throw new Error(
+        `File too large (${fileSizeMB}MB). Maximum size is 10MB.`
+      );
     }
     return true;
   }
@@ -723,14 +927,14 @@
   function showFilePreview(file) {
     const mediaType = getMediaTypeFromFile(file);
     const previewUrl = URL.createObjectURL(file);
-    
+
     previewFile = {
       file: file,
       previewUrl: previewUrl,
       mediaType: mediaType,
       fileName: file.name || `file.${mediaType}`,
     };
-    
+
     renderPreviewModal();
   }
 
@@ -748,8 +952,8 @@
     try {
       validateFileSize(file);
     } catch (error) {
-      console.error('UniBox: File validation error', error);
-      alert(error.message || 'File size exceeds limit');
+      console.error("UniBox: File validation error", error);
+      alert(error.message || "File size exceeds limit");
       closePreviewModal();
       return;
     }
@@ -761,7 +965,7 @@
 
     const userDetails = {};
     const hasSubmittedForm =
-      sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
+      sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     if (hasSubmittedForm) {
       const storedName = sessionStorage.getItem(`${SESSION_KEY_FORM}_name`);
       const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
@@ -770,7 +974,9 @@
     }
 
     // Show uploading indicator
-    const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const messageId = `msg_${Date.now()}_${Math.random()
+      .toString(36)
+      .substr(2, 9)}`;
 
     try {
       if (conversationId && !socket) {
@@ -781,15 +987,15 @@
       // Show uploading indicator
       appendMessageToUI(
         `Uploading ${fileName}...`,
-        'user',
+        "user",
         messageId,
         new Date(),
-        'sent',
+        "sent",
         null,
         false,
         null,
         mediaType,
-        null,
+        null
       );
 
       // Convert file to base64
@@ -797,7 +1003,7 @@
 
       // Send media message (this endpoint uploads to S3 and sends in one call)
       const response = await fetch(`${API_BASE}/media/user`, {
-        method: 'POST',
+        method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({
           conversationId: conversationId || undefined,
@@ -811,17 +1017,21 @@
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error?.message || `Failed to send media: ${response.status}`);
+        throw new Error(
+          errorData.error?.message || `Failed to send media: ${response.status}`
+        );
       }
 
       const result = await response.json();
 
       // Remove uploading indicator
-      const host = document.getElementById('unibox-root');
+      const host = document.getElementById("unibox-root");
       if (host && host.shadowRoot) {
-        const body = host.shadowRoot.getElementById('chatBody');
+        const body = host.shadowRoot.getElementById("chatBody");
         if (body) {
-          const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
+          const uploadingMsg = body.querySelector(
+            `[data-message-id="${messageId}"]`
+          );
           if (uploadingMsg) {
             uploadingMsg.remove();
             messages.delete(messageId);
@@ -834,48 +1044,54 @@
         conversationId = result.conversationId;
         connectSocket();
       }
-      
+
       // Close preview modal and cleanup
       closePreviewModal();
-      
+
       // The message will be added via WebSocket, but we can also add it optimistically
       if (result.media_storage_url) {
         appendMessageToUI(
           caption || fileName,
-          'user',
+          "user",
           result.messageId || messageId,
           result.timestamp || new Date(),
-          result.status || 'sent',
+          result.status || "sent",
           null,
           false,
           null,
           result.type || mediaType,
-          result.media_storage_url,
+          result.media_storage_url
         );
       }
 
       return result;
     } catch (error) {
-      console.error('UniBox: Send Media Error', error);
-      
+      console.error("UniBox: Send Media Error", error);
+
       // Update the uploading message to show error
-      const host = document.getElementById('unibox-root');
+      const host = document.getElementById("unibox-root");
       if (host && host.shadowRoot) {
-        const body = host.shadowRoot.getElementById('chatBody');
+        const body = host.shadowRoot.getElementById("chatBody");
         if (body) {
-          const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
+          const uploadingMsg = body.querySelector(
+            `[data-message-id="${messageId}"]`
+          );
           if (uploadingMsg) {
-            const content = uploadingMsg.querySelector('.chat-widget-message-content');
+            const content = uploadingMsg.querySelector(
+              ".chat-widget-message-content"
+            );
             if (content) {
-              content.textContent = `Failed to upload: ${error.message || 'Unknown error'}`;
-              content.style.color = '#ef4444';
+              content.textContent = `Failed to upload: ${
+                error.message || "Unknown error"
+              }`;
+              content.style.color = "#ef4444";
             }
           }
         }
       }
-      
+
       // Show user-friendly error
-      alert(error.message || 'Failed to upload media. Please try again.');
+      alert(error.message || "Failed to upload media. Please try again.");
       throw error;
     }
   }
@@ -886,27 +1102,27 @@
   function addSelectedFile(file) {
     const mediaType = getMediaTypeFromFile(file);
     const previewUrl = URL.createObjectURL(file);
-    
+
     selectedFiles.push({
       file: file,
       previewUrl: previewUrl,
       mediaType: mediaType,
       fileName: file.name || `file.${mediaType}`,
     });
-    
+
     renderFileChips();
-    
+
     // Update send button state
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (host && host.shadowRoot) {
-      const sendBtn = host.shadowRoot.getElementById('sendBtn');
+      const sendBtn = host.shadowRoot.getElementById("sendBtn");
       if (sendBtn) {
-        const msgInput = host.shadowRoot.getElementById('msgInput');
+        const msgInput = host.shadowRoot.getElementById("msgInput");
         const hasText = msgInput && msgInput.value.trim().length > 0;
         const hasFiles = selectedFiles.length > 0;
         sendBtn.disabled = !hasText && !hasFiles;
-        sendBtn.style.opacity = (hasText || hasFiles) ? '1' : '0.5';
-        sendBtn.style.cursor = (hasText || hasFiles) ? 'pointer' : 'not-allowed';
+        sendBtn.style.opacity = hasText || hasFiles ? "1" : "0.5";
+        sendBtn.style.cursor = hasText || hasFiles ? "pointer" : "not-allowed";
       }
     }
   }
@@ -920,18 +1136,18 @@
     }
     selectedFiles.splice(index, 1);
     renderFileChips();
-    
+
     // Update send button state
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (host && host.shadowRoot) {
-      const sendBtn = host.shadowRoot.getElementById('sendBtn');
+      const sendBtn = host.shadowRoot.getElementById("sendBtn");
       if (sendBtn) {
-        const msgInput = host.shadowRoot.getElementById('msgInput');
+        const msgInput = host.shadowRoot.getElementById("msgInput");
         const hasText = msgInput && msgInput.value.trim().length > 0;
         const hasFiles = selectedFiles.length > 0;
         sendBtn.disabled = !hasText && !hasFiles;
-        sendBtn.style.opacity = (hasText || hasFiles) ? '1' : '0.5';
-        sendBtn.style.cursor = (hasText || hasFiles) ? 'pointer' : 'not-allowed';
+        sendBtn.style.opacity = hasText || hasFiles ? "1" : "0.5";
+        sendBtn.style.cursor = hasText || hasFiles ? "pointer" : "not-allowed";
       }
     }
   }
@@ -940,70 +1156,71 @@
    * Render file chips above input field (like MessageInput.tsx)
    */
   function renderFileChips() {
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    
-    const footer = host.shadowRoot.getElementById('chatFooter');
+
+    const footer = host.shadowRoot.getElementById("chatFooter");
     if (!footer) {
       // Footer might not be ready yet, try again after a short delay
       setTimeout(renderFileChips, 100);
       return;
     }
-    
+
     // Ensure footer is visible
-    footer.classList.remove('hidden');
-    
+    footer.classList.remove("hidden");
+
     // Remove existing chips container
-    const existingChips = host.shadowRoot.getElementById('fileChipsContainer');
+    const existingChips = host.shadowRoot.getElementById("fileChipsContainer");
     if (existingChips) {
       existingChips.remove();
     }
-    
+
     // If no files, don't render anything
     if (selectedFiles.length === 0) return;
-    
+
     // Create chips container
-    const chipsContainer = document.createElement('div');
-    chipsContainer.id = 'fileChipsContainer';
-    chipsContainer.className = 'file-chips-container';
-    chipsContainer.style.display = 'flex';
-    chipsContainer.style.flexWrap = 'wrap';
-    chipsContainer.style.gap = '8px';
-    chipsContainer.style.padding = '12px 16px';
-    chipsContainer.style.borderBottom = '1px solid #e5e7eb';
-    chipsContainer.style.backgroundColor = '#ffffff';
-    chipsContainer.style.width = '100%';
-    chipsContainer.style.boxSizing = 'border-box';
-    
+    const chipsContainer = document.createElement("div");
+    chipsContainer.id = "fileChipsContainer";
+    chipsContainer.className = "file-chips-container";
+    chipsContainer.style.display = "flex";
+    chipsContainer.style.flexWrap = "wrap";
+    chipsContainer.style.gap = "8px";
+    chipsContainer.style.padding = "12px 16px";
+    chipsContainer.style.borderBottom = "1px solid #e5e7eb";
+    chipsContainer.style.backgroundColor = "#ffffff";
+    chipsContainer.style.width = "100%";
+    chipsContainer.style.boxSizing = "border-box";
+
     selectedFiles.forEach((fileData, index) => {
-      const chip = document.createElement('div');
-      chip.style.display = 'flex';
-      chip.style.alignItems = 'center';
-      chip.style.gap = '8px';
-      chip.style.height = '36px';
-      chip.style.padding = '0 12px';
-      chip.style.borderRadius = '6px';
-      chip.style.backgroundColor = '#ffffff';
-      chip.style.border = '1px solid #EFEFEF';
-      chip.style.fontSize = '14px';
-      chip.style.fontFamily = settings.appearance.fontFamily || 'DM Sans, sans-serif';
-      chip.style.fontWeight = '400';
-      chip.style.lineHeight = '20px';
-      chip.style.color = '#18181E';
-      
+      const chip = document.createElement("div");
+      chip.style.display = "flex";
+      chip.style.alignItems = "center";
+      chip.style.gap = "8px";
+      chip.style.height = "36px";
+      chip.style.padding = "0 12px";
+      chip.style.borderRadius = "6px";
+      chip.style.backgroundColor = "#ffffff";
+      chip.style.border = "1px solid #EFEFEF";
+      chip.style.fontSize = "14px";
+      chip.style.fontFamily =
+        settings.appearance.fontFamily || "DM Sans, sans-serif";
+      chip.style.fontWeight = "400";
+      chip.style.lineHeight = "20px";
+      chip.style.color = "#18181E";
+
       // Determine icon based on file type (matching MessageInput.tsx)
       const lower = fileData.fileName.toLowerCase();
-      const isPdf = lower.endsWith('.pdf');
-      
+      const isPdf = lower.endsWith(".pdf");
+
       // Create icon element (using SVG like MessageInput.tsx uses Image component)
-      const iconDiv = document.createElement('div');
-      iconDiv.style.display = 'flex';
-      iconDiv.style.alignItems = 'center';
-      iconDiv.style.justifyContent = 'center';
-      iconDiv.style.width = '20px';
-      iconDiv.style.height = '20px';
-      iconDiv.style.flexShrink = '0';
-      
+      const iconDiv = document.createElement("div");
+      iconDiv.style.display = "flex";
+      iconDiv.style.alignItems = "center";
+      iconDiv.style.justifyContent = "center";
+      iconDiv.style.width = "20px";
+      iconDiv.style.height = "20px";
+      iconDiv.style.flexShrink = "0";
+
       // Use SVG icons (since we can't use Image component in vanilla JS)
       if (isPdf) {
         iconDiv.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1021,60 +1238,60 @@
         </svg>`;
         iconDiv.style.color = settings.appearance.primaryColor;
       }
-      
+
       // File name
-      const nameSpan = document.createElement('span');
-      nameSpan.style.overflow = 'hidden';
-      nameSpan.style.textOverflow = 'ellipsis';
-      nameSpan.style.whiteSpace = 'nowrap';
-      nameSpan.style.maxWidth = '180px';
+      const nameSpan = document.createElement("span");
+      nameSpan.style.overflow = "hidden";
+      nameSpan.style.textOverflow = "ellipsis";
+      nameSpan.style.whiteSpace = "nowrap";
+      nameSpan.style.maxWidth = "180px";
       nameSpan.textContent = fileData.fileName;
-      
+
       // Remove button (matching MessageInput.tsx style)
-      const removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.style.display = 'flex';
-      removeBtn.style.alignItems = 'center';
-      removeBtn.style.justifyContent = 'center';
-      removeBtn.style.padding = '4px';
-      removeBtn.style.backgroundColor = 'transparent';
-      removeBtn.style.border = 'none';
-      removeBtn.style.cursor = 'pointer';
-      removeBtn.style.borderRadius = '4px';
-      removeBtn.style.flexShrink = '0';
-      removeBtn.style.transition = 'background-color 0.2s';
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.style.display = "flex";
+      removeBtn.style.alignItems = "center";
+      removeBtn.style.justifyContent = "center";
+      removeBtn.style.padding = "4px";
+      removeBtn.style.backgroundColor = "transparent";
+      removeBtn.style.border = "none";
+      removeBtn.style.cursor = "pointer";
+      removeBtn.style.borderRadius = "4px";
+      removeBtn.style.flexShrink = "0";
+      removeBtn.style.transition = "background-color 0.2s";
       removeBtn.onmouseenter = () => {
-        removeBtn.style.backgroundColor = '#f3f4f6';
+        removeBtn.style.backgroundColor = "#f3f4f6";
       };
       removeBtn.onmouseleave = () => {
-        removeBtn.style.backgroundColor = 'transparent';
+        removeBtn.style.backgroundColor = "transparent";
       };
       removeBtn.onclick = () => removeSelectedFile(index);
       removeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"></line>
         <line x1="6" y1="6" x2="18" y2="18"></line>
       </svg>`;
-      removeBtn.style.color = '#6b7280';
-      
+      removeBtn.style.color = "#6b7280";
+
       chip.appendChild(iconDiv);
       chip.appendChild(nameSpan);
       chip.appendChild(removeBtn);
       chipsContainer.appendChild(chip);
     });
-    
+
     // Insert chips container before input wrapper (inside footer)
-    const inputWrapper = footer.querySelector('.chat-widget-input-wrapper');
+    const inputWrapper = footer.querySelector(".chat-widget-input-wrapper");
     if (inputWrapper) {
       footer.insertBefore(chipsContainer, inputWrapper);
     } else {
       // If input wrapper not found, append to footer
       footer.insertBefore(chipsContainer, footer.firstChild);
     }
-    
+
     // Ensure chips are visible
-    chipsContainer.style.display = 'flex';
-    chipsContainer.style.visibility = 'visible';
-    chipsContainer.style.opacity = '1';
+    chipsContainer.style.display = "flex";
+    chipsContainer.style.visibility = "visible";
+    chipsContainer.style.opacity = "1";
   }
 
   /**
@@ -1086,7 +1303,7 @@
     // Get user details
     const userDetails = {};
     const hasSubmittedForm =
-      sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
+      sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     if (hasSubmittedForm) {
       const storedName = sessionStorage.getItem(`${SESSION_KEY_FORM}_name`);
       const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
@@ -1102,9 +1319,9 @@
     // Send each file
     const filesToSend = [...selectedFiles];
     const filesToCleanup = [...selectedFiles];
-    
+
     // Clear selected files immediately
-    selectedFiles.forEach(fileData => {
+    selectedFiles.forEach((fileData) => {
       if (fileData.previewUrl) {
         URL.revokeObjectURL(fileData.previewUrl);
       }
@@ -1121,24 +1338,26 @@
       try {
         validateFileSize(file);
       } catch (error) {
-        console.error('UniBox: File validation error', error);
-        alert(error.message || 'File size exceeds limit');
+        console.error("UniBox: File validation error", error);
+        alert(error.message || "File size exceeds limit");
         continue;
       }
 
       // Show uploading message
-      const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const messageId = `msg_${Date.now()}_${Math.random()
+        .toString(36)
+        .substr(2, 9)}`;
       appendMessageToUI(
-        'Uploading...',
-        'user',
+        "Uploading...",
+        "user",
         messageId,
         new Date(),
-        'sending',
+        "sending",
         null,
         false,
         null,
         mediaType,
-        null,
+        null
       );
 
       try {
@@ -1152,7 +1371,7 @@
 
         // Send media message
         const response = await fetch(`${API_BASE}/media/user`, {
-          method: 'POST',
+          method: "POST",
           headers: getHeaders(),
           body: JSON.stringify({
             conversationId: conversationId || undefined,
@@ -1166,17 +1385,22 @@
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error?.message || `Failed to send media: ${response.status}`);
+          throw new Error(
+            errorData.error?.message ||
+              `Failed to send media: ${response.status}`
+          );
         }
 
         const result = await response.json();
 
         // Remove uploading message
-        const host = document.getElementById('unibox-root');
+        const host = document.getElementById("unibox-root");
         if (host && host.shadowRoot) {
-          const body = host.shadowRoot.getElementById('chatBody');
+          const body = host.shadowRoot.getElementById("chatBody");
           if (body) {
-            const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
+            const uploadingMsg = body.querySelector(
+              `[data-message-id="${messageId}"]`
+            );
             if (uploadingMsg) {
               uploadingMsg.remove();
               messages.delete(messageId);
@@ -1189,43 +1413,49 @@
           conversationId = result.conversationId;
           connectSocket();
         }
-        
+
         // The message will be added via WebSocket, but we can also add it optimistically
         if (result.media_storage_url) {
           appendMessageToUI(
             caption || fileName,
-            'user',
+            "user",
             result.messageId || messageId,
             result.timestamp || new Date(),
-            result.status || 'sent',
+            result.status || "sent",
             null,
             false,
             null,
             result.type || mediaType,
-            result.media_storage_url,
+            result.media_storage_url
           );
         }
       } catch (error) {
-        console.error('UniBox: Send Media Error', error);
-        
+        console.error("UniBox: Send Media Error", error);
+
         // Update the uploading message to show error
-        const host = document.getElementById('unibox-root');
+        const host = document.getElementById("unibox-root");
         if (host && host.shadowRoot) {
-          const body = host.shadowRoot.getElementById('chatBody');
+          const body = host.shadowRoot.getElementById("chatBody");
           if (body) {
-            const uploadingMsg = body.querySelector(`[data-message-id="${messageId}"]`);
+            const uploadingMsg = body.querySelector(
+              `[data-message-id="${messageId}"]`
+            );
             if (uploadingMsg) {
-              const content = uploadingMsg.querySelector('.chat-widget-message-content');
+              const content = uploadingMsg.querySelector(
+                ".chat-widget-message-content"
+              );
               if (content) {
-                content.textContent = `Failed to upload: ${error.message || 'Unknown error'}`;
-                content.style.color = '#ef4444';
+                content.textContent = `Failed to upload: ${
+                  error.message || "Unknown error"
+                }`;
+                content.style.color = "#ef4444";
               }
             }
           }
         }
-        
+
         // Show user-friendly error
-        alert(error.message || 'Failed to upload media. Please try again.');
+        alert(error.message || "Failed to upload media. Please try again.");
       }
     }
   }
@@ -1238,8 +1468,8 @@
     try {
       validateFileSize(file);
     } catch (error) {
-      console.error('UniBox: File validation error', error);
-      alert(error.message || 'File size exceeds limit');
+      console.error("UniBox: File validation error", error);
+      alert(error.message || "File size exceeds limit");
       return;
     }
 
@@ -1255,7 +1485,7 @@
 
     const userDetails = {};
     const hasSubmittedForm =
-      sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
+      sessionStorage.getItem(SESSION_KEY_FORM) === "true";
     if (hasSubmittedForm) {
       const storedName = sessionStorage.getItem(`${SESSION_KEY_FORM}_name`);
       const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
@@ -1270,10 +1500,10 @@
       }
 
       const response = await fetch(`${API_BASE}/message/user`, {
-        method: 'POST',
+        method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({
-          conversationId: conversationId || 'new',
+          conversationId: conversationId || "new",
           text: text,
           userId: userId,
           userName: userDetails.userName,
@@ -1296,9 +1526,9 @@
           const threadRes = await fetch(
             `${API_BASE}/thread/${userId}?limit=50`,
             {
-              method: 'GET',
+              method: "GET",
               headers: getHeaders(),
-            },
+            }
           );
           if (threadRes.ok) {
             const threadData = await threadRes.json();
@@ -1306,12 +1536,13 @@
               threadData.messages.forEach((msg) => {
                 // Normalize text - convert empty string to null
                 const textValue = msg.text || msg.text_body;
-                const normalizedTextValue = (textValue && textValue.trim()) ? textValue.trim() : null;
-                
+                const normalizedTextValue =
+                  textValue && textValue.trim() ? textValue.trim() : null;
+
                 appendMessageToUI(
                   normalizedTextValue,
                   msg.sender ||
-                    (msg.direction === 'inbound' ? 'user' : 'agent'),
+                    (msg.direction === "inbound" ? "user" : "agent"),
                   msg.id || msg.messageId,
                   msg.timestamp || msg.timestamp_meta,
                   msg.status,
@@ -1319,7 +1550,7 @@
                   msg.readByUs,
                   msg.readByUsAt,
                   msg.type,
-                  msg.media_storage_url,
+                  msg.media_storage_url
                 );
               });
               sortMessagesByTimestamp();
@@ -1327,22 +1558,22 @@
             }
           }
         } catch (e) {
-          console.error('UniBox: Failed to fetch thread after message', e);
+          console.error("UniBox: Failed to fetch thread after message", e);
         }
       }
 
       return result;
     } catch (error) {
-      console.error('UniBox: Send Error', error);
-      const host = document.getElementById('unibox-root');
+      console.error("UniBox: Send Error", error);
+      const host = document.getElementById("unibox-root");
       if (host && host.shadowRoot) {
-        const body = host.shadowRoot.getElementById('chatBody');
+        const body = host.shadowRoot.getElementById("chatBody");
         if (body) {
-          const errDiv = document.createElement('div');
-          errDiv.style.textAlign = 'center';
-          errDiv.style.fontSize = '12px';
-          errDiv.style.color = 'red';
-          errDiv.innerText = 'Failed to deliver message';
+          const errDiv = document.createElement("div");
+          errDiv.style.textAlign = "center";
+          errDiv.style.fontSize = "12px";
+          errDiv.style.color = "red";
+          errDiv.innerText = "Failed to deliver message";
           body.appendChild(errDiv);
         }
       }
@@ -1359,12 +1590,12 @@
       mediaType: mediaType,
       caption: caption,
       url: null,
-      filename: mediaKey.split('/').pop() || 'file',
+      filename: mediaKey.split("/").pop() || "file",
       isLoading: true,
     };
-    
+
     renderPreviewModal();
-    
+
     // Fetch media URL
     try {
       const url = await fetchMediaUrl(mediaKey);
@@ -1373,10 +1604,10 @@
         previewMedia.isLoading = false;
         renderPreviewModal();
       } else {
-        throw new Error('Failed to load media');
+        throw new Error("Failed to load media");
       }
     } catch (error) {
-      console.error('UniBox: Error loading media preview', error);
+      console.error("UniBox: Error loading media preview", error);
       previewMedia.isLoading = false;
       previewMedia.error = true;
       renderPreviewModal();
@@ -1387,97 +1618,97 @@
    * Render preview modal for file upload or media viewing
    */
   function renderPreviewModal() {
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    
-    let modal = host.shadowRoot.getElementById('chatWidgetPreviewModal');
-    
+
+    let modal = host.shadowRoot.getElementById("chatWidgetPreviewModal");
+
     // Remove existing modal
     if (modal) {
       modal.remove();
     }
-    
+
     // Don't render if no preview (only for viewing received media)
     if (!previewMedia) return;
-    
+
     // Create modal
-    modal = document.createElement('div');
-    modal.id = 'chatWidgetPreviewModal';
-    modal.className = 'chat-widget-preview-modal';
-    modal.style.position = 'fixed';
-    modal.style.top = '0';
-    modal.style.left = '0';
-    modal.style.right = '0';
-    modal.style.bottom = '0';
-    modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-    modal.style.display = 'flex';
-    modal.style.alignItems = 'center';
-    modal.style.justifyContent = 'center';
-    modal.style.zIndex = '2147483648';
+    modal = document.createElement("div");
+    modal.id = "chatWidgetPreviewModal";
+    modal.className = "chat-widget-preview-modal";
+    modal.style.position = "fixed";
+    modal.style.top = "0";
+    modal.style.left = "0";
+    modal.style.right = "0";
+    modal.style.bottom = "0";
+    modal.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+    modal.style.display = "flex";
+    modal.style.alignItems = "center";
+    modal.style.justifyContent = "center";
+    modal.style.zIndex = "2147483648";
     modal.onclick = (e) => {
       if (e.target === modal) {
         closePreviewModal();
       }
     };
-    
-    const modalContent = document.createElement('div');
-    modalContent.className = 'chat-widget-preview-content';
-    modalContent.style.backgroundColor = '#ffffff';
-    modalContent.style.borderRadius = '12px';
-    modalContent.style.padding = '20px';
-    modalContent.style.maxWidth = '90vw';
-    modalContent.style.maxHeight = '90vh';
-    modalContent.style.overflow = 'auto';
-    modalContent.style.position = 'relative';
-    modalContent.style.boxShadow = '0 8px 30px rgba(0, 0, 0, 0.3)';
+
+    const modalContent = document.createElement("div");
+    modalContent.className = "chat-widget-preview-content";
+    modalContent.style.backgroundColor = "#ffffff";
+    modalContent.style.borderRadius = "12px";
+    modalContent.style.padding = "20px";
+    modalContent.style.maxWidth = "90vw";
+    modalContent.style.maxHeight = "90vh";
+    modalContent.style.overflow = "auto";
+    modalContent.style.position = "relative";
+    modalContent.style.boxShadow = "0 8px 30px rgba(0, 0, 0, 0.3)";
     modalContent.onclick = (e) => e.stopPropagation();
-    
+
     // Close button
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.innerHTML = '&times;';
-    closeBtn.style.position = 'absolute';
-    closeBtn.style.top = '10px';
-    closeBtn.style.right = '10px';
-    closeBtn.style.width = '32px';
-    closeBtn.style.height = '32px';
-    closeBtn.style.border = 'none';
-    closeBtn.style.backgroundColor = 'transparent';
-    closeBtn.style.fontSize = '24px';
-    closeBtn.style.cursor = 'pointer';
-    closeBtn.style.color = '#6b7280';
-    closeBtn.style.borderRadius = '50%';
-    closeBtn.style.display = 'flex';
-    closeBtn.style.alignItems = 'center';
-    closeBtn.style.justifyContent = 'center';
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.innerHTML = "&times;";
+    closeBtn.style.position = "absolute";
+    closeBtn.style.top = "10px";
+    closeBtn.style.right = "10px";
+    closeBtn.style.width = "32px";
+    closeBtn.style.height = "32px";
+    closeBtn.style.border = "none";
+    closeBtn.style.backgroundColor = "transparent";
+    closeBtn.style.fontSize = "24px";
+    closeBtn.style.cursor = "pointer";
+    closeBtn.style.color = "#6b7280";
+    closeBtn.style.borderRadius = "50%";
+    closeBtn.style.display = "flex";
+    closeBtn.style.alignItems = "center";
+    closeBtn.style.justifyContent = "center";
     closeBtn.onmouseenter = () => {
-      closeBtn.style.backgroundColor = '#f3f4f6';
+      closeBtn.style.backgroundColor = "#f3f4f6";
     };
     closeBtn.onmouseleave = () => {
-      closeBtn.style.backgroundColor = 'transparent';
+      closeBtn.style.backgroundColor = "transparent";
     };
     closeBtn.onclick = closePreviewModal;
-    
+
     // Handle media preview (viewing received media only - file preview removed)
     if (false && previewFile) {
-      const previewContainer = document.createElement('div');
-      previewContainer.style.display = 'flex';
-      previewContainer.style.flexDirection = 'column';
-      previewContainer.style.gap = '16px';
-      previewContainer.style.alignItems = 'center';
-      
-      if (previewFile.mediaType === 'image') {
-        const img = document.createElement('img');
+      const previewContainer = document.createElement("div");
+      previewContainer.style.display = "flex";
+      previewContainer.style.flexDirection = "column";
+      previewContainer.style.gap = "16px";
+      previewContainer.style.alignItems = "center";
+
+      if (previewFile.mediaType === "image") {
+        const img = document.createElement("img");
         img.src = previewFile.previewUrl;
-        img.style.maxWidth = '100%';
-        img.style.maxHeight = '60vh';
-        img.style.borderRadius = '8px';
-        img.style.objectFit = 'contain';
+        img.style.maxWidth = "100%";
+        img.style.maxHeight = "60vh";
+        img.style.borderRadius = "8px";
+        img.style.objectFit = "contain";
         previewContainer.appendChild(img);
       } else {
-        const fileInfo = document.createElement('div');
-        fileInfo.style.textAlign = 'center';
-        fileInfo.style.padding = '20px';
+        const fileInfo = document.createElement("div");
+        fileInfo.style.textAlign = "center";
+        fileInfo.style.padding = "20px";
         fileInfo.innerHTML = `
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="${settings.appearance.primaryColor}" stroke-width="2" style="margin: 0 auto 12px;">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -1487,144 +1718,145 @@
         `;
         previewContainer.appendChild(fileInfo);
       }
-      
+
       // Caption input
-      const captionInput = document.createElement('input');
-      captionInput.type = 'text';
-      captionInput.placeholder = 'Add a caption (optional)';
-      captionInput.style.width = '100%';
-      captionInput.style.padding = '10px';
-      captionInput.style.border = '1px solid #e5e7eb';
-      captionInput.style.borderRadius = '6px';
-      captionInput.style.fontSize = '14px';
+      const captionInput = document.createElement("input");
+      captionInput.type = "text";
+      captionInput.placeholder = "Add a caption (optional)";
+      captionInput.style.width = "100%";
+      captionInput.style.padding = "10px";
+      captionInput.style.border = "1px solid #e5e7eb";
+      captionInput.style.borderRadius = "6px";
+      captionInput.style.fontSize = "14px";
       captionInput.style.fontFamily = settings.appearance.fontFamily;
       captionInput.onkeydown = (e) => {
-        if (e.key === 'Enter') {
+        if (e.key === "Enter") {
           confirmSendMedia(captionInput.value.trim() || undefined);
         }
       };
       previewContainer.appendChild(captionInput);
-      
+
       // Action buttons
-      const buttonContainer = document.createElement('div');
-      buttonContainer.style.display = 'flex';
-      buttonContainer.style.gap = '12px';
-      buttonContainer.style.width = '100%';
-      
-      const cancelBtn = document.createElement('button');
-      cancelBtn.type = 'button';
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.style.flex = '1';
-      cancelBtn.style.padding = '10px';
-      cancelBtn.style.border = '1px solid #e5e7eb';
-      cancelBtn.style.borderRadius = '6px';
-      cancelBtn.style.backgroundColor = '#ffffff';
-      cancelBtn.style.color = '#18181e';
-      cancelBtn.style.cursor = 'pointer';
-      cancelBtn.style.fontSize = '14px';
+      const buttonContainer = document.createElement("div");
+      buttonContainer.style.display = "flex";
+      buttonContainer.style.gap = "12px";
+      buttonContainer.style.width = "100%";
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.style.flex = "1";
+      cancelBtn.style.padding = "10px";
+      cancelBtn.style.border = "1px solid #e5e7eb";
+      cancelBtn.style.borderRadius = "6px";
+      cancelBtn.style.backgroundColor = "#ffffff";
+      cancelBtn.style.color = "#18181e";
+      cancelBtn.style.cursor = "pointer";
+      cancelBtn.style.fontSize = "14px";
       cancelBtn.style.fontFamily = settings.appearance.fontFamily;
       cancelBtn.onclick = closePreviewModal;
-      
-      const sendBtn = document.createElement('button');
-      sendBtn.type = 'button';
-      sendBtn.textContent = 'Send';
-      sendBtn.style.flex = '1';
-      sendBtn.style.padding = '10px';
-      sendBtn.style.border = 'none';
-      sendBtn.style.borderRadius = '6px';
+
+      const sendBtn = document.createElement("button");
+      sendBtn.type = "button";
+      sendBtn.textContent = "Send";
+      sendBtn.style.flex = "1";
+      sendBtn.style.padding = "10px";
+      sendBtn.style.border = "none";
+      sendBtn.style.borderRadius = "6px";
       sendBtn.style.backgroundColor = settings.appearance.primaryColor;
-      sendBtn.style.color = '#ffffff';
-      sendBtn.style.cursor = 'pointer';
-      sendBtn.style.fontSize = '14px';
+      sendBtn.style.color = "#ffffff";
+      sendBtn.style.cursor = "pointer";
+      sendBtn.style.fontSize = "14px";
       sendBtn.style.fontFamily = settings.appearance.fontFamily;
-      sendBtn.style.fontWeight = '500';
-      sendBtn.onclick = () => confirmSendMedia(captionInput.value.trim() || undefined);
-      
+      sendBtn.style.fontWeight = "500";
+      sendBtn.onclick = () =>
+        confirmSendMedia(captionInput.value.trim() || undefined);
+
       buttonContainer.appendChild(cancelBtn);
       buttonContainer.appendChild(sendBtn);
       previewContainer.appendChild(buttonContainer);
-      
+
       modalContent.appendChild(previewContainer);
     }
     // Handle media preview (viewing received media)
     else if (previewMedia) {
-      const previewContainer = document.createElement('div');
-      previewContainer.style.display = 'flex';
-      previewContainer.style.flexDirection = 'column';
-      previewContainer.style.gap = '16px';
-      previewContainer.style.alignItems = 'center';
-      
+      const previewContainer = document.createElement("div");
+      previewContainer.style.display = "flex";
+      previewContainer.style.flexDirection = "column";
+      previewContainer.style.gap = "16px";
+      previewContainer.style.alignItems = "center";
+
       if (previewMedia.isLoading) {
-        const loadingDiv = document.createElement('div');
-        loadingDiv.style.padding = '40px';
-        loadingDiv.style.textAlign = 'center';
+        const loadingDiv = document.createElement("div");
+        loadingDiv.style.padding = "40px";
+        loadingDiv.style.textAlign = "center";
         loadingDiv.innerHTML = `
           <div style="width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.primaryColor}; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px;"></div>
           <div style="color: #6b7280; font-size: 14px;">Loading media...</div>
         `;
         previewContainer.appendChild(loadingDiv);
       } else if (previewMedia.error) {
-        const errorDiv = document.createElement('div');
-        errorDiv.style.padding = '40px';
-        errorDiv.style.textAlign = 'center';
-        errorDiv.style.color = '#ef4444';
+        const errorDiv = document.createElement("div");
+        errorDiv.style.padding = "40px";
+        errorDiv.style.textAlign = "center";
+        errorDiv.style.color = "#ef4444";
         errorDiv.innerHTML = `
           <div style="font-size: 14px;">Failed to load media</div>
         `;
         previewContainer.appendChild(errorDiv);
       } else if (previewMedia.url) {
-        if (previewMedia.mediaType === 'image') {
-          const img = document.createElement('img');
+        if (previewMedia.mediaType === "image") {
+          const img = document.createElement("img");
           img.src = previewMedia.url;
-          img.style.maxWidth = '100%';
-          img.style.maxHeight = '70vh';
-          img.style.borderRadius = '8px';
-          img.style.objectFit = 'contain';
+          img.style.maxWidth = "100%";
+          img.style.maxHeight = "70vh";
+          img.style.borderRadius = "8px";
+          img.style.objectFit = "contain";
           previewContainer.appendChild(img);
-        } else if (previewMedia.mediaType === 'video') {
-          const video = document.createElement('video');
+        } else if (previewMedia.mediaType === "video") {
+          const video = document.createElement("video");
           video.src = previewMedia.url;
           video.controls = true;
-          video.style.maxWidth = '100%';
-          video.style.maxHeight = '70vh';
-          video.style.borderRadius = '8px';
+          video.style.maxWidth = "100%";
+          video.style.maxHeight = "70vh";
+          video.style.borderRadius = "8px";
           previewContainer.appendChild(video);
-        } else if (previewMedia.mediaType === 'audio') {
-          const audio = document.createElement('audio');
+        } else if (previewMedia.mediaType === "audio") {
+          const audio = document.createElement("audio");
           audio.src = previewMedia.url;
           audio.controls = true;
-          audio.style.width = '100%';
+          audio.style.width = "100%";
           previewContainer.appendChild(audio);
         } else {
-          const fileLink = document.createElement('a');
+          const fileLink = document.createElement("a");
           fileLink.href = previewMedia.url;
-          fileLink.target = '_blank';
-          fileLink.style.display = 'inline-block';
-          fileLink.style.padding = '12px 20px';
+          fileLink.target = "_blank";
+          fileLink.style.display = "inline-block";
+          fileLink.style.padding = "12px 20px";
           fileLink.style.backgroundColor = settings.appearance.primaryColor;
-          fileLink.style.color = '#ffffff';
-          fileLink.style.borderRadius = '6px';
-          fileLink.style.textDecoration = 'none';
-          fileLink.style.fontSize = '14px';
-          fileLink.style.fontWeight = '500';
+          fileLink.style.color = "#ffffff";
+          fileLink.style.borderRadius = "6px";
+          fileLink.style.textDecoration = "none";
+          fileLink.style.fontSize = "14px";
+          fileLink.style.fontWeight = "500";
           fileLink.textContent = `Download ${previewMedia.filename}`;
           previewContainer.appendChild(fileLink);
         }
-        
+
         if (previewMedia.caption) {
-          const captionDiv = document.createElement('div');
-          captionDiv.style.textAlign = 'center';
-          captionDiv.style.color = '#6b7280';
-          captionDiv.style.fontSize = '14px';
-          captionDiv.style.marginTop = '8px';
+          const captionDiv = document.createElement("div");
+          captionDiv.style.textAlign = "center";
+          captionDiv.style.color = "#6b7280";
+          captionDiv.style.fontSize = "14px";
+          captionDiv.style.marginTop = "8px";
           captionDiv.textContent = previewMedia.caption;
           previewContainer.appendChild(captionDiv);
         }
       }
-      
+
       modalContent.appendChild(previewContainer);
     }
-    
+
     modalContent.appendChild(closeBtn);
     modal.appendChild(modalContent);
     host.shadowRoot.appendChild(modal);
@@ -1635,10 +1867,10 @@
    */
   function closePreviewModal() {
     previewMedia = null;
-    
-    const host = document.getElementById('unibox-root');
+
+    const host = document.getElementById("unibox-root");
     if (host && host.shadowRoot) {
-      const modal = host.shadowRoot.getElementById('chatWidgetPreviewModal');
+      const modal = host.shadowRoot.getElementById("chatWidgetPreviewModal");
       if (modal) {
         modal.remove();
       }
@@ -1646,16 +1878,16 @@
   }
 
   function formatTimestamp(timestamp, showReadReceipt = false) {
-    if (!timestamp) return '';
+    if (!timestamp) return "";
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
 
     if (showReadReceipt) {
       let hours = date.getHours();
-      const minutes = date.getMinutes().toString().padStart(2, '0');
-      const ampm = hours >= 12 ? 'PM' : 'AM';
+      const minutes = date.getMinutes().toString().padStart(2, "0");
+      const ampm = hours >= 12 ? "PM" : "AM";
       hours = hours % 12;
       hours = hours ? hours : 12;
-      const hoursStr = hours.toString().padStart(2, '0');
+      const hoursStr = hours.toString().padStart(2, "0");
       return `${hoursStr}:${minutes} ${ampm}`;
     }
 
@@ -1665,24 +1897,24 @@
     const diffHours = Math.floor(diffMs / 3600000);
     const diffDays = Math.floor(diffMs / 86400000);
 
-    if (diffMins < 1) return 'Just now';
+    if (diffMins < 1) return "Just now";
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffHours < 24) return `${diffHours}h ago`;
     if (diffDays < 7) return `${diffDays}d ago`;
 
     let hours = date.getHours();
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const minutes = date.getMinutes().toString().padStart(2, "0");
+    const ampm = hours >= 12 ? "PM" : "AM";
     hours = hours % 12;
     hours = hours ? hours : 12;
-    const hoursStr = hours.toString().padStart(2, '0');
+    const hoursStr = hours.toString().padStart(2, "0");
     const day = date.getDate();
-    const month = date.toLocaleString('default', { month: 'short' });
+    const month = date.toLocaleString("default", { month: "short" });
     return `${day} ${month}, ${hoursStr}:${minutes} ${ampm}`;
   }
 
   function getReadReceiptIcon(status, readAt, readByUs, readByUsAt, sender) {
-    if (sender === 'user') {
+    if (sender === "user") {
       if (readByUs && readByUsAt) {
         return `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="chat-widget-read-receipt-icon" style="opacity: 1;">
           <path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1694,7 +1926,7 @@
         <path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>`;
     }
-    return '';
+    return "";
   }
 
   // Helper function to check if a message is a welcome message
@@ -1717,19 +1949,24 @@
     readByUs,
     readByUsAt,
     messageType,
-    mediaStorageUrl,
+    mediaStorageUrl
   ) {
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const body = host.shadowRoot.getElementById('chatBody');
+    const body = host.shadowRoot.getElementById("chatBody");
     if (!body) return;
 
     // Normalize text - handle null/undefined/empty string
     // Convert empty string to null for consistent handling
-    const normalizedText = (text && text.trim()) ? text.trim() : null;
+    const normalizedText = text && text.trim() ? text.trim() : null;
 
     // Prevent duplicate welcome messages: if static welcome is shown and this is a welcome message, skip it
-    if (staticWelcomeShown && type === 'agent' && normalizedText && isWelcomeMessage(normalizedText)) {
+    if (
+      staticWelcomeShown &&
+      type === "agent" &&
+      normalizedText &&
+      isWelcomeMessage(normalizedText)
+    ) {
       return;
     }
 
@@ -1741,21 +1978,25 @@
     // Check existing - use messageId and type/mediaStorageUrl for better matching
     const existingInMap =
       messages.get(normalizedId) ||
-      Array.from(messages.values()).find(
-        (m) => {
-          // Match by ID first
-          if (m.id === normalizedId || m.messageId === normalizedId) return true;
-          // For media messages, match by mediaStorageUrl and timestamp
-          if (mediaStorageUrl && m.mediaStorageUrl === mediaStorageUrl) {
-            return Math.abs(new Date(m.timestamp).getTime() - normalizedTimestamp) < 10000;
-          }
-          // For text messages, match by text and timestamp
-          if (normalizedText && m.text === normalizedText && m.sender === type) {
-            return Math.abs(new Date(m.timestamp).getTime() - normalizedTimestamp) < 5000;
-          }
-          return false;
+      Array.from(messages.values()).find((m) => {
+        // Match by ID first
+        if (m.id === normalizedId || m.messageId === normalizedId) return true;
+        // For media messages, match by mediaStorageUrl and timestamp
+        if (mediaStorageUrl && m.mediaStorageUrl === mediaStorageUrl) {
+          return (
+            Math.abs(new Date(m.timestamp).getTime() - normalizedTimestamp) <
+            10000
+          );
         }
-      );
+        // For text messages, match by text and timestamp
+        if (normalizedText && m.text === normalizedText && m.sender === type) {
+          return (
+            Math.abs(new Date(m.timestamp).getTime() - normalizedTimestamp) <
+            5000
+          );
+        }
+        return false;
+      });
 
     if (existingInMap && existingInMap.element) {
       existingInMap.status = status || existingInMap.status;
@@ -1767,7 +2008,7 @@
     }
 
     const existingInDOM = Array.from(body.children).find((child) => {
-      const childId = child.getAttribute('data-message-id');
+      const childId = child.getAttribute("data-message-id");
       if (childId === normalizedId) return true;
       return false;
     });
@@ -1780,7 +2021,7 @@
           text: normalizedText,
           sender: type,
           timestamp: timestamp || new Date(),
-          status: status || 'sent',
+          status: status || "sent",
           readAt,
           readByUs: readByUs || false,
           readByUsAt,
@@ -1793,35 +2034,40 @@
     }
 
     // CREATE MESSAGE ELEMENTS WITH NEW CLASSES
-    const msgDiv = document.createElement('div');
-    msgDiv.className = `chat-widget-message ${type === 'agent' ? 'bot' : 'user'}`;
-    msgDiv.setAttribute('data-message-id', normalizedId);
-    msgDiv.setAttribute('data-timestamp', normalizedTimestamp.toString());
+    const msgDiv = document.createElement("div");
+    msgDiv.className = `chat-widget-message ${
+      type === "agent" ? "bot" : "user"
+    }`;
+    msgDiv.setAttribute("data-message-id", normalizedId);
+    msgDiv.setAttribute("data-timestamp", normalizedTimestamp.toString());
 
-    const msgContent = document.createElement('div');
-    msgContent.className = 'chat-widget-message-content';
+    const msgContent = document.createElement("div");
+    msgContent.className = "chat-widget-message-content";
 
     // Handle media messages - show as chips/buttons instead of loading directly
     // Check if this is a media message (has type and media_storage_url)
-    const isMediaMessage = messageType && ['image', 'video', 'audio', 'document', 'file'].includes(messageType);
-    const hasMedia = isMediaMessage && mediaStorageUrl && mediaStorageUrl.trim() !== '';
-    
+    const isMediaMessage =
+      messageType &&
+      ["image", "video", "audio", "document", "file"].includes(messageType);
+    const hasMedia =
+      isMediaMessage && mediaStorageUrl && mediaStorageUrl.trim() !== "";
+
     // Ensure media messages are always rendered, even with empty/null text
     if (hasMedia) {
       // Show media as a clickable chip/button instead of loading directly
       const getMediaIcon = (type) => {
-        if (type === 'image') {
+        if (type === "image") {
           return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
             <circle cx="8.5" cy="8.5" r="1.5"></circle>
             <polyline points="21 15 16 10 5 21"></polyline>
           </svg>`;
-        } else if (type === 'video') {
+        } else if (type === "video") {
           return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="23 7 16 12 23 17 23 7"></polygon>
             <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
           </svg>`;
-        } else if (type === 'audio') {
+        } else if (type === "audio") {
           return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
             <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
@@ -1838,81 +2084,98 @@
 
       const getMediaLabel = (type, textValue, mediaKey) => {
         // Use text if available and not an upload message
-        if (textValue && textValue !== 'Uploading...' && !textValue.includes('Uploading')) {
+        if (
+          textValue &&
+          textValue !== "Uploading..." &&
+          !textValue.includes("Uploading")
+        ) {
           return textValue;
         }
         // Extract filename from media key if available
-        const fileName = mediaKey ? mediaKey.split('/').pop() : null;
+        const fileName = mediaKey ? mediaKey.split("/").pop() : null;
         const labels = {
-          image: 'Image',
-          video: 'Video',
-          audio: 'Audio',
-          document: 'Document',
-          file: 'File',
+          image: "Image",
+          video: "Video",
+          audio: "Audio",
+          document: "Document",
+          file: "File",
         };
-        return fileName || labels[type] || 'Media';
+        return fileName || labels[type] || "Media";
       };
 
-      const mediaChip = document.createElement('button');
-      mediaChip.className = 'chat-widget-media-chip';
-      mediaChip.type = 'button';
-      mediaChip.style.display = 'flex';
-      mediaChip.style.alignItems = 'center';
-      mediaChip.style.gap = '8px';
-      mediaChip.style.padding = '10px 12px';
-      mediaChip.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
-      mediaChip.style.border = '1px solid #e5e7eb';
-      mediaChip.style.borderRadius = '8px';
-      mediaChip.style.cursor = 'pointer';
-      mediaChip.style.transition = 'all 0.2s';
-      mediaChip.style.width = '100%';
-      mediaChip.style.textAlign = 'left';
-      mediaChip.style.color = '#18181e';
-      mediaChip.style.fontSize = '14px';
+      const mediaChip = document.createElement("button");
+      mediaChip.className = "chat-widget-media-chip";
+      mediaChip.type = "button";
+      mediaChip.style.display = "flex";
+      mediaChip.style.alignItems = "center";
+      mediaChip.style.gap = "8px";
+      mediaChip.style.padding = "10px 12px";
+      mediaChip.style.backgroundColor =
+        type === "agent" ? "#f5f7f9" : "#f9fafb";
+      mediaChip.style.border = "1px solid #e5e7eb";
+      mediaChip.style.borderRadius = "8px";
+      mediaChip.style.cursor = "pointer";
+      mediaChip.style.transition = "all 0.2s";
+      mediaChip.style.width = "100%";
+      mediaChip.style.textAlign = "left";
+      mediaChip.style.color = "#18181e";
+      mediaChip.style.fontSize = "14px";
       mediaChip.style.fontFamily = settings.appearance.fontFamily;
-      mediaChip.style.minHeight = '40px'; // Ensure minimum height for visibility
+      mediaChip.style.minHeight = "40px"; // Ensure minimum height for visibility
       mediaChip.onmouseenter = () => {
-        mediaChip.style.backgroundColor = type === 'agent' ? '#e9ecef' : '#f3f4f6';
-        mediaChip.style.transform = 'translateY(-1px)';
+        mediaChip.style.backgroundColor =
+          type === "agent" ? "#e9ecef" : "#f3f4f6";
+        mediaChip.style.transform = "translateY(-1px)";
       };
       mediaChip.onmouseleave = () => {
-        mediaChip.style.backgroundColor = type === 'agent' ? '#f5f7f9' : '#f9fafb';
-        mediaChip.style.transform = 'translateY(0)';
+        mediaChip.style.backgroundColor =
+          type === "agent" ? "#f5f7f9" : "#f9fafb";
+        mediaChip.style.transform = "translateY(0)";
       };
       mediaChip.onclick = () => {
         showMediaPreview(mediaStorageUrl, messageType, normalizedText);
       };
-      
-      const iconDiv = document.createElement('div');
-      iconDiv.style.display = 'flex';
-      iconDiv.style.alignItems = 'center';
-      iconDiv.style.justifyContent = 'center';
+
+      const iconDiv = document.createElement("div");
+      iconDiv.style.display = "flex";
+      iconDiv.style.alignItems = "center";
+      iconDiv.style.justifyContent = "center";
       iconDiv.style.color = settings.appearance.primaryColor;
-      iconDiv.style.flexShrink = '0';
+      iconDiv.style.flexShrink = "0";
       iconDiv.innerHTML = getMediaIcon(messageType);
-      
-      const labelDiv = document.createElement('div');
-      labelDiv.style.flex = '1';
-      labelDiv.style.minWidth = '0';
-      labelDiv.style.wordBreak = 'break-word';
-      labelDiv.textContent = getMediaLabel(messageType, normalizedText, mediaStorageUrl);
-      
+
+      const labelDiv = document.createElement("div");
+      labelDiv.style.flex = "1";
+      labelDiv.style.minWidth = "0";
+      labelDiv.style.wordBreak = "break-word";
+      labelDiv.textContent = getMediaLabel(
+        messageType,
+        normalizedText,
+        mediaStorageUrl
+      );
+
       mediaChip.appendChild(iconDiv);
       mediaChip.appendChild(labelDiv);
       msgContent.appendChild(mediaChip);
-      
+
       // Add text caption if available and not the file name
-      if (normalizedText && normalizedText !== 'Uploading...' && !normalizedText.includes('Uploading') && messageType !== 'document' && messageType !== 'file') {
-        const captionDiv = document.createElement('div');
-        captionDiv.className = 'chat-widget-media-caption';
+      if (
+        normalizedText &&
+        normalizedText !== "Uploading..." &&
+        !normalizedText.includes("Uploading") &&
+        messageType !== "document" &&
+        messageType !== "file"
+      ) {
+        const captionDiv = document.createElement("div");
+        captionDiv.className = "chat-widget-media-caption";
         captionDiv.textContent = normalizedText;
-        captionDiv.style.marginTop = '8px';
-        captionDiv.style.fontSize = '14px';
-        captionDiv.style.lineHeight = '1.5';
-        captionDiv.style.color = type === 'agent' ? '#18181e' : '#18181e';
+        captionDiv.style.marginTop = "8px";
+        captionDiv.style.fontSize = "14px";
+        captionDiv.style.lineHeight = "1.5";
+        captionDiv.style.color = type === "agent" ? "#18181e" : "#18181e";
         msgContent.appendChild(captionDiv);
       }
-      
+
       // Store message data with media info
       if (normalizedId) {
         const messageData = {
@@ -1921,7 +2184,7 @@
           text: normalizedText,
           sender: type,
           timestamp: timestamp || new Date(),
-          status: status || 'sent',
+          status: status || "sent",
           readAt,
           readByUs: readByUs || false,
           readByUsAt,
@@ -1931,7 +2194,7 @@
         };
         messages.set(normalizedId, messageData);
       }
-      
+
       msgDiv.appendChild(msgContent);
       body.appendChild(msgDiv);
       requestAnimationFrame(() => {
@@ -1939,7 +2202,7 @@
       });
       return; // Don't continue with text message logic
     }
-    
+
     // Handle text messages (non-media)
     if (!hasMedia) {
       // Only set text content if we have text (don't set empty string for null)
@@ -1950,16 +2213,16 @@
         return; // Don't append empty messages
       }
     }
-    
+
     // Only append if we have content (text or media)
     if (!hasMedia && !normalizedText) {
       return; // Safety check - don't render empty messages
     }
-    
+
     msgDiv.appendChild(msgContent);
 
-    const msgMeta = document.createElement('div');
-    msgMeta.className = 'chat-widget-message-meta';
+    const msgMeta = document.createElement("div");
+    msgMeta.className = "chat-widget-message-meta";
 
     // --- [MODIFIED START] ---
     // Read receipts and Timestamps removed from UI
@@ -2001,7 +2264,7 @@
         text: normalizedText,
         sender: type,
         timestamp: timestamp || new Date(),
-        status: status || 'sent',
+        status: status || "sent",
         readAt,
         readByUs: readByUs || false,
         readByUsAt,
@@ -2023,18 +2286,18 @@
   }
 
   function sortMessagesByTimestamp() {
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const body = host.shadowRoot.getElementById('chatBody');
+    const body = host.shadowRoot.getElementById("chatBody");
     if (!body) return;
 
     const messageElements = Array.from(body.children).filter((child) => {
-      return child.hasAttribute('data-timestamp');
+      return child.hasAttribute("data-timestamp");
     });
 
     messageElements.sort((a, b) => {
-      const timestampA = parseInt(a.getAttribute('data-timestamp') || '0');
-      const timestampB = parseInt(b.getAttribute('data-timestamp') || '0');
+      const timestampA = parseInt(a.getAttribute("data-timestamp") || "0");
+      const timestampB = parseInt(b.getAttribute("data-timestamp") || "0");
       return timestampA - timestampB;
     });
 
@@ -2105,7 +2368,7 @@
     if (!conversationId || !userId || settings.testMode) return;
     try {
       await fetch(`${API_BASE}/messages/read`, {
-        method: 'POST',
+        method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({
           conversationId: conversationId,
@@ -2114,20 +2377,20 @@
         }),
       });
     } catch (error) {
-      console.error('UniBox: Failed to mark messages as read', error);
+      console.error("UniBox: Failed to mark messages as read", error);
     }
   }
 
   function markVisibleMessagesAsRead() {
     if (!conversationId || !userId || settings.testMode) return;
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const body = host.shadowRoot.getElementById('chatBody');
+    const body = host.shadowRoot.getElementById("chatBody");
     if (!body) return;
 
     const unreadAgentMessages = Array.from(messages.values())
       .filter((msg) => {
-        return msg.sender === 'agent' && (msg.status !== 'read' || !msg.readAt);
+        return msg.sender === "agent" && (msg.status !== "read" || !msg.readAt);
       })
       .map((msg) => msg.id || msg.messageId)
       .filter((id) => id);
@@ -2145,39 +2408,41 @@
   }
 
   function updateOnlineStatusIndicator() {
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
     const statusIndicator = host.shadowRoot.getElementById(
-      'onlineStatusIndicator',
+      "onlineStatusIndicator"
     );
     if (statusIndicator) {
-      statusIndicator.textContent = isAgentOnline ? '● Online' : '○ Offline';
-      statusIndicator.className = `chat-widget-online-status ${isAgentOnline ? 'online' : 'offline'}`;
+      statusIndicator.textContent = isAgentOnline ? "● Online" : "○ Offline";
+      statusIndicator.className = `chat-widget-online-status ${
+        isAgentOnline ? "online" : "offline"
+      }`;
     }
   }
 
   function showTypingIndicator(show) {
-    const host = document.getElementById('unibox-root');
+    const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const typingIndicator = host.shadowRoot.getElementById('typingIndicator');
+    const typingIndicator = host.shadowRoot.getElementById("typingIndicator");
     if (typingIndicator) {
       if (show) {
-        typingIndicator.classList.remove('hidden');
-        const body = host.shadowRoot.getElementById('chatBody');
+        typingIndicator.classList.remove("hidden");
+        const body = host.shadowRoot.getElementById("chatBody");
         if (body) {
           requestAnimationFrame(() => {
             body.scrollTop = body.scrollHeight;
           });
         }
       } else {
-        typingIndicator.classList.add('hidden');
+        typingIndicator.classList.add("hidden");
       }
     }
   }
 
   function emitTypingStatus(typing) {
     if (!socket || !conversationId || !userId || !socket.connected) return;
-    socket.emit('typing', {
+    socket.emit("typing", {
       conversationId: conversationId,
       userId: userId,
       isTyping: typing,
@@ -2185,12 +2450,12 @@
     });
   }
 
-  // --- 9. UI RENDERING ---
+  // --- 10. UI RENDERING ---
   function renderWidget() {
-    const host = document.createElement('div');
-    host.id = 'unibox-root';
+    const host = document.createElement("div");
+    host.id = "unibox-root";
     document.body.appendChild(host);
-    const shadow = host.attachShadow({ mode: 'open' });
+    const shadow = host.attachShadow({ mode: "open" });
 
     // Styles variables calculation
     // --- [MODIFIED START] ---
@@ -2200,33 +2465,33 @@
       settings.appearance.primaryColor;
 
     if (resolvedLogoUrl) {
-      launcherBg = '#FFFFFF';
+      launcherBg = "#FFFFFF";
     }
     // --- [MODIFIED END] ---
 
     const launcherIconColor =
-      launcherBg.toLowerCase() === '#ffffff' ||
-      launcherBg.toLowerCase() === '#fff'
+      launcherBg.toLowerCase() === "#ffffff" ||
+      launcherBg.toLowerCase() === "#fff"
         ? settings.appearance.primaryColor
-        : '#FFFFFF';
+        : "#FFFFFF";
 
-    const placement = settings.behavior.stickyPlacement || 'bottom-right';
-    const isTop = placement.includes('top');
-    const isRight = placement.includes('right');
-    const horizontalCss = isRight ? 'right: 20px;' : 'left: 20px;';
-    const verticalLauncherCss = isTop ? 'top: 20px;' : 'bottom: 20px;';
-    const verticalWindowCss = isTop ? 'top: 90px;' : 'bottom: 90px;';
+    const placement = settings.behavior.stickyPlacement || "bottom-right";
+    const isTop = placement.includes("top");
+    const isRight = placement.includes("right");
+    const horizontalCss = isRight ? "right: 20px;" : "left: 20px;";
+    const verticalLauncherCss = isTop ? "top: 20px;" : "bottom: 20px;";
+    const verticalWindowCss = isTop ? "top: 90px;" : "bottom: 90px;";
 
     const getRadius = (style) => {
-      if (style === 'rounded') return '12px';
-      if (style === 'square') return '0px';
-      return '50%';
+      if (style === "rounded") return "12px";
+      if (style === "square") return "0px";
+      return "50%";
     };
     const launcherRadius = getRadius(settings.appearance.chatToggleIcon.style);
     const headerLogoRadius =
-      settings.appearance.iconStyle === 'round' ? '50%' : '8px';
+      settings.appearance.iconStyle === "round" ? "50%" : "8px";
 
-    const styleTag = document.createElement('style');
+    const styleTag = document.createElement("style");
 
     // Updated CSS to match the provided JSX UI exactly
     styleTag.textContent = `
@@ -2292,7 +2557,9 @@
           overflow: hidden;
           opacity: 0;
           pointer-events: none;
-          transform: ${isTop ? 'translateY(-20px)' : 'translateY(20px)'} scale(0.95);
+          transform: ${
+            isTop ? "translateY(-20px)" : "translateY(20px)"
+          } scale(0.95);
           transition: all 0.25s ease;
           border: 1px solid rgba(0, 0, 0, 0.05);
           z-index: 2147483647;
@@ -2727,12 +2994,12 @@
 
     const chatIcon = `<svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>`;
 
-    const container = document.createElement('div');
-    container.className = 'chat-widget-container';
+    const container = document.createElement("div");
+    container.className = "chat-widget-container";
 
     const headerLogoImg = resolvedLogoUrl
       ? `<img src="${resolvedLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
-      : '';
+      : "";
 
     const launcherContent = resolvedLogoUrl
       ? `<img src="${resolvedLogoUrl}" style="width: 100%; height: 100%; object-fit: cover;" alt="Chat" />`
@@ -2744,7 +3011,10 @@
         <div class="chat-widget-header">
            ${headerLogoImg}
            <div style="flex: 1;">
-             <div class="chat-widget-header-title">${settings.appearance.header?.title || settings.appearance.headerName}</div>
+             <div class="chat-widget-header-title">${
+               settings.appearance.header?.title ||
+               settings.appearance.headerName
+             }</div>
              <div id="onlineStatusIndicator" class="chat-widget-online-status offline">○ Offline</div>
            </div>
            <div id="closeBtn" style="cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
@@ -2776,16 +3046,16 @@
     shadow.appendChild(styleTag);
     shadow.appendChild(container);
 
-    // --- 10. VIEW LOGIC ---
+    // --- 11. VIEW LOGIC ---
     const isFormEnabled = settings.preChatForm.enabled;
     const hasSubmittedForm =
-      sessionStorage.getItem(SESSION_KEY_FORM) === 'true';
-    let currentView = isFormEnabled && !hasSubmittedForm ? 'form' : 'chat';
+      sessionStorage.getItem(SESSION_KEY_FORM) === "true";
+    let currentView = isFormEnabled && !hasSubmittedForm ? "form" : "chat";
 
     const renderView = () => {
-      const body = shadow.getElementById('chatBody');
-      const footer = shadow.getElementById('chatFooter');
-      body.innerHTML = '';
+      const body = shadow.getElementById("chatBody");
+      const footer = shadow.getElementById("chatFooter");
+      body.innerHTML = "";
 
       // Re-add typing indicator to body (it gets cleared)
       body.innerHTML = `
@@ -2796,32 +3066,34 @@
         </div>
       `;
 
-      if (currentView === 'form') {
-        footer.classList.add('hidden');
+      if (currentView === "form") {
+        footer.classList.add("hidden");
 
         const fieldsHtml = settings.preChatForm.fields
           .map((f) => {
-            let inputHtml = '';
-            const isRequired = f.required ? 'required' : '';
+            let inputHtml = "";
+            const isRequired = f.required ? "required" : "";
 
-            if (f.type === 'textarea') {
+            if (f.type === "textarea") {
               inputHtml = `<textarea class="chat-widget-form-input" name="${f.id}" ${isRequired} placeholder="${f.label}"></textarea>`;
             } else {
-              const inputType = f.type === 'phone' ? 'tel' : f.type;
+              const inputType = f.type === "phone" ? "tel" : f.type;
               inputHtml = `<input class="chat-widget-form-input" type="${inputType}" name="${f.id}" ${isRequired} placeholder="${f.label}">`;
             }
 
             return `
             <div style="margin-bottom: 15px;">
-              <label style="display: block; margin-bottom: 5px;">${f.label}${f.required ? ' <span style="color:red">*</span>' : ''}</label>
+              <label style="display: block; margin-bottom: 5px;">${f.label}${
+              f.required ? ' <span style="color:red">*</span>' : ""
+            }</label>
               ${inputHtml}
             </div>
           `;
           })
-          .join('');
+          .join("");
 
-        const formContainer = document.createElement('div');
-        formContainer.className = 'chat-widget-form-container';
+        const formContainer = document.createElement("div");
+        formContainer.className = "chat-widget-form-container";
         formContainer.innerHTML = `
           <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:16px; color:#111;">Welcome</div>
           <div style="text-align:center; margin-bottom:20px; font-size:14px; color:#666;">Please fill in your details to continue.</div>
@@ -2832,45 +3104,45 @@
         `;
         body.appendChild(formContainer);
 
-        const formEl = formContainer.querySelector('#preChatForm');
-        formEl.addEventListener('submit', (e) => {
+        const formEl = formContainer.querySelector("#preChatForm");
+        formEl.addEventListener("submit", (e) => {
           e.preventDefault();
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
 
-          let capturedName = '';
-          let capturedEmail = '';
+          let capturedName = "";
+          let capturedEmail = "";
 
           settings.preChatForm.fields.forEach((field) => {
             const val = data[field.id];
             if (!val) return;
             if (
-              field.type === 'text' &&
-              (field.label.toLowerCase().includes('name') ||
-                field.id.toLowerCase().includes('name'))
+              field.type === "text" &&
+              (field.label.toLowerCase().includes("name") ||
+                field.id.toLowerCase().includes("name"))
             )
               capturedName = val;
             if (
-              field.type === 'email' ||
-              field.id.toLowerCase().includes('email')
+              field.type === "email" ||
+              field.id.toLowerCase().includes("email")
             )
               capturedEmail = val;
           });
 
           if (!capturedName && capturedEmail) capturedName = capturedEmail;
 
-          sessionStorage.setItem(SESSION_KEY_FORM, 'true');
+          sessionStorage.setItem(SESSION_KEY_FORM, "true");
           if (capturedName)
             sessionStorage.setItem(`${SESSION_KEY_FORM}_name`, capturedName);
           if (capturedEmail)
             sessionStorage.setItem(`${SESSION_KEY_FORM}_email`, capturedEmail);
 
-          currentView = 'chat';
+          currentView = "chat";
           renderView();
         });
       } else {
-        footer.classList.remove('hidden');
-        
+        footer.classList.remove("hidden");
+
         // Re-render file chips if there are selected files
         if (selectedFiles.length > 0) {
           setTimeout(() => renderFileChips(), 50);
@@ -2887,15 +3159,15 @@
             if (!hasMessages) {
               appendMessageToUI(
                 welcomeText,
-                'agent',
+                "agent",
                 `static_welcome_${Date.now()}`,
                 new Date(),
-                'sent',
+                "sent",
                 null,
                 false,
                 null,
-                'text',
-                undefined,
+                "text",
+                undefined
               );
               staticWelcomeShown = true;
             }
@@ -2906,85 +3178,87 @@
 
     renderView();
 
-    // --- 11. EVENTS ---
-    const launcher = shadow.getElementById('launcherBtn');
-    const windowEl = shadow.getElementById('chatWindow');
-    const closeBtn = shadow.getElementById('closeBtn');
-    const sendBtn = shadow.getElementById('sendBtn');
-    const msgInput = shadow.getElementById('msgInput');
-    const attachBtn = shadow.getElementById('attachBtn');
-    const fileInput = shadow.getElementById('fileInput');
+    // --- 12. EVENTS ---
+    const launcher = shadow.getElementById("launcherBtn");
+    const windowEl = shadow.getElementById("chatWindow");
+    const closeBtn = shadow.getElementById("closeBtn");
+    const sendBtn = shadow.getElementById("sendBtn");
+    const msgInput = shadow.getElementById("msgInput");
+    const attachBtn = shadow.getElementById("attachBtn");
+    const fileInput = shadow.getElementById("fileInput");
 
     const toggle = (forceState) => {
-      const isOpen = windowEl.classList.contains('open');
+      const isOpen = windowEl.classList.contains("open");
       const nextState = forceState !== undefined ? forceState : !isOpen;
 
-      if (nextState) windowEl.classList.add('open');
-      else windowEl.classList.remove('open');
+      if (nextState) windowEl.classList.add("open");
+      else windowEl.classList.remove("open");
 
       if (settings.behavior.stickyPlacement) {
         localStorage.setItem(STORAGE_KEY_OPEN, nextState);
       }
     };
 
-    launcher.addEventListener('click', () => toggle());
-    closeBtn.addEventListener('click', () => toggle(false));
+    launcher.addEventListener("click", () => toggle());
+    closeBtn.addEventListener("click", () => toggle(false));
 
     const handleSend = () => {
       const text = msgInput.value.trim();
-      
+
       // If there are selected files, send them with caption
       if (selectedFiles.length > 0) {
         sendSelectedFiles(text || undefined).catch((err) => {
-          console.error('UniBox: Failed to send media', err);
+          console.error("UniBox: Failed to send media", err);
         });
-        msgInput.value = '';
+        msgInput.value = "";
         return;
       }
 
       // Otherwise send text message
       if (!text) return;
 
-      msgInput.value = '';
+      msgInput.value = "";
 
-      const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const messageId = `msg_${Date.now()}_${Math.random()
+        .toString(36)
+        .substr(2, 9)}`;
       appendMessageToUI(
         text,
-        'user',
+        "user",
         messageId,
         new Date(),
-        'sent',
+        "sent",
         null,
         false,
         null,
-        'text',
-        null,
+        "text",
+        null
       );
 
       sendMessageToApi(text).catch((err) => {
-        console.error('UniBox: Failed to send message', err);
+        console.error("UniBox: Failed to send message", err);
       });
     };
 
-    attachBtn.addEventListener('click', () => {
+    attachBtn.addEventListener("click", () => {
       fileInput.click();
     });
 
-    fileInput.addEventListener('change', (e) => {
+    fileInput.addEventListener("change", (e) => {
       const files = Array.from(e.target.files || []);
       if (files.length > 0) {
         files.forEach((file) => {
           sendMediaMessage(file).catch((err) => {
-            console.error('UniBox: Failed to add media file', err);
+            console.error("UniBox: Failed to add media file", err);
           });
         });
-        fileInput.value = ''; // Reset input
+        fileInput.value = ""; // Reset input
       }
     });
 
-    sendBtn.addEventListener('click', handleSend);
-    msgInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
+    sendBtn.addEventListener("click", handleSend);
+    msgInput.addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
         if (isTyping) {
           isTyping = false;
           emitTypingStatus(false);
@@ -2998,19 +3272,19 @@
         handleUserTyping();
       }
     });
-    
+
     // Update send button state based on selected files or text
     const updateSendButtonState = () => {
       const hasText = msgInput.value.trim().length > 0;
       const hasFiles = selectedFiles.length > 0;
       sendBtn.disabled = !hasText && !hasFiles;
-      sendBtn.style.opacity = (hasText || hasFiles) ? '1' : '0.5';
-      sendBtn.style.cursor = (hasText || hasFiles) ? 'pointer' : 'not-allowed';
+      sendBtn.style.opacity = hasText || hasFiles ? "1" : "0.5";
+      sendBtn.style.cursor = hasText || hasFiles ? "pointer" : "not-allowed";
     };
-    
-    msgInput.addEventListener('input', updateSendButtonState);
+
+    msgInput.addEventListener("input", updateSendButtonState);
     updateSendButtonState();
-    
+
     // Re-render chips when footer becomes visible (in case it was hidden)
     const observer = new MutationObserver(() => {
       if (selectedFiles.length > 0) {
@@ -3018,7 +3292,7 @@
         updateSendButtonState();
       }
     });
-    
+
     if (footer) {
       observer.observe(footer, { childList: true, subtree: true });
     }
@@ -3044,19 +3318,19 @@
       if (!userId || settings.testMode) return;
       try {
         await fetch(`${API_BASE}/read/${userId}`, {
-          method: 'POST',
+          method: "POST",
           headers: getHeaders(),
         });
       } catch (error) {
-        console.error('UniBox: Failed to mark contact as read', error);
+        console.error("UniBox: Failed to mark contact as read", error);
       }
     }
 
-    const chatWindow = shadow.getElementById('chatWindow');
-    const chatBody = shadow.getElementById('chatBody');
+    const chatWindow = shadow.getElementById("chatWindow");
+    const chatBody = shadow.getElementById("chatBody");
     if (chatBody) {
       let scrollTimeout;
-      chatBody.addEventListener('scroll', () => {
+      chatBody.addEventListener("scroll", () => {
         clearTimeout(scrollTimeout);
         scrollTimeout = setTimeout(() => {
           markVisibleMessagesAsRead();
@@ -3064,17 +3338,17 @@
       });
 
       const observer = new MutationObserver(() => {
-        if (chatWindow.classList.contains('open')) {
+        if (chatWindow.classList.contains("open")) {
           markContactAsRead();
           markVisibleMessagesAsRead();
         }
       });
       observer.observe(chatWindow, {
         attributes: true,
-        attributeFilter: ['class'],
+        attributeFilter: ["class"],
       });
 
-      if (chatWindow.classList.contains('open')) {
+      if (chatWindow.classList.contains("open")) {
         setTimeout(() => {
           markContactAsRead();
           markVisibleMessagesAsRead();
@@ -3084,7 +3358,7 @@
 
     if (settings.behavior.autoOpen) {
       const hasHistory = localStorage.getItem(STORAGE_KEY_OPEN);
-      if (hasHistory === null || hasHistory === 'true') {
+      if (hasHistory === null || hasHistory === "true") {
         const delay = settings.behavior.autoOpenDelay || 2000;
         setTimeout(() => toggle(true), delay);
       }
@@ -3103,12 +3377,15 @@
 
   function loadGoogleFont(font) {
     if (!font) return;
-    const family = font.split(',')[0].replace(/['"]/g, '').trim();
-    if (['sans-serif', 'serif', 'system-ui'].includes(family.toLowerCase()))
+    const family = font.split(",")[0].replace(/['"]/g, "").trim();
+    if (["sans-serif", "serif", "system-ui"].includes(family.toLowerCase()))
       return;
-    const link = document.createElement('link');
-    link.href = `https://fonts.googleapis.com/css2?family=${family.replace(/ /g, '+')}:wght@400;500;600&display=swap`;
-    link.rel = 'stylesheet';
+    const link = document.createElement("link");
+    link.href = `https://fonts.googleapis.com/css2?family=${family.replace(
+      / /g,
+      "+"
+    )}:wght@400;500;600&display=swap`;
+    link.rel = "stylesheet";
     document.head.appendChild(link);
   }
 })();

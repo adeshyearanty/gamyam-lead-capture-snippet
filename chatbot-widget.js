@@ -62,7 +62,7 @@
     return;
   }
 
-  const requiredFields = ["tenantId", "apiKey", "chatbotId"];
+  const requiredFields = ["tenantId", "widgetToken", "chatbotId"];
   const missingFields = requiredFields.filter((field) => !userConfig[field]);
 
   if (missingFields.length > 0) {
@@ -125,8 +125,17 @@
   function getConfigApiUrl() {
     try {
       const urlObj = new URL(baseUrl);
-      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, "");
-      const configUrl = `${urlObj.protocol}//${urlObj.host}${basePath}/v1/public/chatbot/config`;
+      let configPath;
+      
+      // If pathname contains /pulse/v1/chat, replace it with /pulse/v1/public/chatbot/config
+      if (urlObj.pathname.match(/\/pulse\/v1\/chat/)) {
+        configPath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, "/pulse/v1/public/chatbot/config");
+      } else {
+        // Otherwise, construct the full path
+        configPath = "/pulse/v1/public/chatbot/config";
+      }
+      
+      const configUrl = `${urlObj.protocol}//${urlObj.host}${configPath}`;
       // Add chatbotId as query parameter
       const urlWithParams = new URL(configUrl);
       urlWithParams.searchParams.set("chatbotId", userConfig.chatbotId);
@@ -134,8 +143,8 @@
     } catch (e) {
       // Fallback if URL parsing fails
       const fallbackUrl =
-        baseUrl.replace(/\/pulse\/v1\/chat\/?$/, "/v1/public/chatbot/config") ||
-        "https://dev-api.salesastra.ai/v1/public/chatbot/config";
+        baseUrl.replace(/\/pulse\/v1\/chat\/?$/, "/pulse/v1/public/chatbot/config") ||
+        "https://dev-api.salesastra.ai/pulse/v1/public/chatbot/config";
       return `${fallbackUrl}?chatbotId=${encodeURIComponent(
         userConfig.chatbotId
       )}`;
@@ -145,6 +154,7 @@
   const defaults = {
     tenantId: "",
     apiKey: "",
+    widgetToken: "",
     testMode: false,
     appearance: {
       primaryColor: "#2563EB",
@@ -202,13 +212,13 @@
       return {
         "Content-Type": "application/json",
         "x-tenant-id": userConfig.tenantId,
-        "x-api-key": userConfig.apiKey,
+        "x-api-key": userConfig.apiKey || userConfig.widgetToken,
       };
     }
     return {
       "Content-Type": "application/json",
       "x-tenant-id": settings.tenantId,
-      "x-api-key": settings.apiKey,
+      "x-api-key": settings.apiKey || settings.widgetToken,
     };
   }
 
@@ -257,7 +267,7 @@
       const response = await fetch(configApiUrl, {
         method: "GET",
         headers: {
-          "x-chatbot-token": userConfig.apiKey,
+          "x-chatbot-token": userConfig.widgetToken,
           "x-tenant-id": userConfig.tenantId,
           origin: origin,
           referer: referer,
@@ -276,7 +286,8 @@
       // Transform API response to match widget structure
       const transformedConfig = {
         tenantId: userConfig.tenantId,
-        apiKey: userConfig.apiKey,
+        widgetToken: userConfig.widgetToken,
+        apiKey: userConfig.apiKey || userConfig.widgetToken, // Use apiKey if provided, otherwise fallback to widgetToken
         testMode: userConfig.testMode || false,
         appearance: apiConfig.widgetAppearance || defaults.appearance,
         behavior: {
@@ -302,7 +313,8 @@
       // Fallback to defaults with user-provided minimal config
       return deepMerge(defaults, {
         tenantId: userConfig.tenantId,
-        apiKey: userConfig.apiKey,
+        widgetToken: userConfig.widgetToken,
+        apiKey: userConfig.apiKey || userConfig.widgetToken, // Use apiKey if provided, otherwise fallback to widgetToken
         chatbotId: userConfig.chatbotId,
         testMode: userConfig.testMode || false,
       });
@@ -654,16 +666,16 @@
       path: SOCKET_CONFIG.path,
       auth: {
         tenantId: settings.tenantId,
-        "x-api-key": settings.apiKey,
+        "x-api-key": settings.apiKey || settings.widgetToken,
       },
       query: {
-        "x-api-key": settings.apiKey,
+        "x-api-key": settings.apiKey || settings.widgetToken,
       },
       transports: ["polling", "websocket"],
       transportOptions: {
         polling: {
           extraHeaders: {
-            "x-api-key": settings.apiKey,
+            "x-api-key": settings.apiKey || settings.widgetToken,
           },
         },
       },

@@ -3168,8 +3168,12 @@
       }
     });
 
-    if (footer) {
-      observer.observe(footer, { childList: true, subtree: true });
+    // NOTE: `footer` is defined inside `renderView` and not in this scope.
+    // To avoid ReferenceError and still react to footer changes, we resolve
+    // the footer element here via the shadow root before observing.
+    const footerEl = shadow.getElementById('chatFooter');
+    if (footerEl) {
+      observer.observe(footerEl, { childList: true, subtree: true });
     }
 
     function handleUserTyping() {

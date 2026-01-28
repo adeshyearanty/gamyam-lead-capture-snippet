@@ -1560,9 +1560,8 @@
 
   /**
    * Fetch and render the latest conversation thread after a user message is sent.
-   * This ensures we always show the most up-to-date state from the backend,
-   * including bot responses, while relying on robust de-duplication in
-   * appendMessageToUI to avoid duplicates.
+   * Clears and re-renders all messages from the server response to ensure correct order
+   * and eliminate any glitches from optimistic updates.
    * 
    * This runs in the background after the message is sent, giving the backend
    * time to process and respond.
@@ -1573,18 +1572,6 @@
     try {
       // Wait a bit for backend to process the message and generate bot response
       await new Promise((resolve) => setTimeout(resolve, 800));
-
-      // Remove static welcome message before fetching real messages
-      if (staticWelcomeShown) {
-        const staticWelcome = Array.from(messages.values()).find(
-          (msg) => msg.id && msg.id.startsWith('static_welcome_'),
-        );
-        if (staticWelcome && staticWelcome.element) {
-          staticWelcome.element.remove();
-          messages.delete(staticWelcome.id);
-        }
-        staticWelcomeShown = false;
-      }
 
       const threadRes = await fetch(`${API_BASE}/thread/${userId}?limit=50`, {
         method: 'GET',
@@ -1597,6 +1584,36 @@
 
       const threadData = await threadRes.json();
       if (threadData.messages && Array.isArray(threadData.messages)) {
+        // Clear all messages to avoid any glitches or ordering issues
+        const host = document.getElementById('unibox-root');
+        if (host && host.shadowRoot) {
+          const body = host.shadowRoot.getElementById('chatBody');
+          if (body) {
+            // Remove all message elements (but preserve typing indicator)
+            const allMessages = body.querySelectorAll('.chat-widget-message');
+            allMessages.forEach((msg) => msg.remove());
+            
+            // Clear the messages map
+            messages.clear();
+            staticWelcomeShown = false;
+            
+            // Make sure typing indicator is still in the body
+            const typingIndicator = body.querySelector('#typingIndicator');
+            if (!typingIndicator) {
+              const newTypingIndicator = document.createElement('div');
+              newTypingIndicator.className = 'chat-widget-typing-indicator hidden';
+              newTypingIndicator.id = 'typingIndicator';
+              newTypingIndicator.innerHTML = `
+                <div class="chat-widget-typing-dot"></div>
+                <div class="chat-widget-typing-dot"></div>
+                <div class="chat-widget-typing-dot"></div>
+              `;
+              body.appendChild(newTypingIndicator);
+            }
+          }
+        }
+
+        // Now render all messages from thread in correct order
         threadData.messages.forEach((msg) => {
           // Normalize text - convert empty string to null
           const textValue = msg.text || msg.text_body;
@@ -1616,7 +1633,8 @@
             msg.media_storage_url,
           );
         });
-        // Ensure ordering and read state are correct
+        
+        // Messages from API should already be in correct order, but sort to be safe
         sortMessagesByTimestamp();
         markVisibleMessagesAsRead();
       }

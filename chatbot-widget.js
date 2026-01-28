@@ -91,18 +91,16 @@
   let SOCKET_CONFIG = { namespaceUrl: '', path: '' };
 
   // Utility service URL for media (separate from logo S3)
-  // Construct utility base URL from API_BASE: /pulse/v1/chat -> /utility/v1
+  // Construct utility base URL from API_BASE host -> /utilities/v1/s3
+  // This matches the backend S3 client (`S3_CLIENT_URL`)
   function getUtilityBaseUrl() {
     try {
       const urlObj = new URL(API_BASE);
-      const basePath = urlObj.pathname.replace(/\/pulse\/v1\/chat\/?$/, '');
-      return `${urlObj.protocol}//${urlObj.host}${basePath}/utility/v1`;
+      // Always point to the shared utilities service (independent of /pulse path)
+      return `${urlObj.protocol}//${urlObj.host}/utilities/v1/s3`;
     } catch (e) {
-      // Fallback if URL parsing fails
-      return (
-        API_BASE.replace(/\/pulse\/v1\/chat\/?$/, '/utilities/v1') ||
-        'https://dev-api.salesastra.ai/utilities/v1'
-      );
+      // Fallback if URL parsing fails (dev default)
+      return 'https://dev-api.salesastra.ai/utilities/v1/s3';
     }
   }
 
@@ -208,6 +206,7 @@
   let isTyping = false;
   let agentTyping = false;
   let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
+  let previewFile = null; // { file, previewUrl, mediaType, fileName } - for single file upload preview
   let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - for file upload preview
 
   // --- 3. HELPER: HEADERS ---
@@ -347,8 +346,9 @@
       // Now initialize API URLs and socket config with the baseUrl
       API_BASE = baseUrl;
       API_S3_URL = API_BASE.replace(/\/chat\/?$/, '/s3/generate-access-url');
+      // Use utilities S3 client for media access URLs (same as backend S3_CLIENT_URL)
       UTILITY_API_BASE = getUtilityBaseUrl();
-      UTILITY_S3_URL = `${UTILITY_API_BASE}/s3/generate-access-url`;
+      UTILITY_S3_URL = `${UTILITY_API_BASE}/generate-access-url`;
       SOCKET_CONFIG = getSocketConfig(API_BASE);
 
       loadGoogleFont(settings.appearance.fontFamily);
@@ -554,16 +554,21 @@
             if (data.conversation) {
               conversationId = data.conversation.id;
               setLoading(false);
+              
+              // Remove static welcome message before loading real messages
+              if (staticWelcomeShown) {
+                const staticWelcome = Array.from(messages.values()).find(
+                  (msg) => msg.id && msg.id.startsWith('static_welcome_'),
+                );
+                if (staticWelcome && staticWelcome.element) {
+                  staticWelcome.element.remove();
+                  messages.delete(staticWelcome.id);
+                }
+                staticWelcomeShown = false;
+              }
+              
               if (data.messages && Array.isArray(data.messages)) {
                 data.messages.forEach((msg) => {
-                  // Skip static welcome if we're restoring messages (welcome will be in messages)
-                  if (
-                    msg.sender === 'agent' &&
-                    isWelcomeMessage(msg.text || msg.text_body)
-                  ) {
-                    staticWelcomeShown = true;
-                  }
-
                   // Normalize text - convert empty string to null
                   const textValue = msg.text || msg.text_body;
                   const normalizedTextValue =
@@ -612,6 +617,19 @@
       if (!settings.testMode) {
         try {
           await new Promise((resolve) => setTimeout(resolve, 1000));
+          
+          // Remove static welcome message before fetching real messages
+          if (staticWelcomeShown) {
+            const staticWelcome = Array.from(messages.values()).find(
+              (msg) => msg.id && msg.id.startsWith('static_welcome_'),
+            );
+            if (staticWelcome && staticWelcome.element) {
+              staticWelcome.element.remove();
+              messages.delete(staticWelcome.id);
+            }
+            staticWelcomeShown = false;
+          }
+          
           const threadRes = await fetch(
             `${API_BASE}/thread/${userId}?limit=50`,
             {
@@ -999,6 +1017,11 @@
       if (storedEmail) userDetails.userEmail = storedEmail;
     }
 
+    // If no conversation exists, create one first
+    if (!conversationId) {
+      await initializeConversation();
+    }
+
     // Show uploading indicator
     const messageId = `msg_${Date.now()}_${Math.random()
       .toString(36)
@@ -1346,9 +1369,13 @@
       localStorage.setItem(STORAGE_KEY_USER, userId);
     }
 
+    // If no conversation exists, create one first
+    if (!conversationId) {
+      await initializeConversation();
+    }
+
     // Send each file
     const filesToSend = [...selectedFiles];
-    const filesToCleanup = [...selectedFiles];
 
     // Clear selected files immediately
     selectedFiles.forEach((fileData) => {
@@ -1527,6 +1554,12 @@
     }
 
     try {
+      // If no conversation exists, create one first
+      if (!conversationId) {
+        await initializeConversation();
+        // After initialization, conversationId should be set
+      }
+
       if (conversationId && !socket) {
         connectSocket();
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1551,11 +1584,24 @@
 
       const result = await response.json();
 
+      // If conversation was just created, fetch the thread to get all messages including bot responses
       if (result.conversationId && !conversationId) {
         conversationId = result.conversationId;
         connectSocket();
         await new Promise((resolve) => setTimeout(resolve, 500));
         try {
+          // Remove static welcome message before fetching real messages
+          if (staticWelcomeShown) {
+            const staticWelcome = Array.from(messages.values()).find(
+              (msg) => msg.id && msg.id.startsWith('static_welcome_'),
+            );
+            if (staticWelcome && staticWelcome.element) {
+              staticWelcome.element.remove();
+              messages.delete(staticWelcome.id);
+            }
+            staticWelcomeShown = false;
+          }
+
           const threadRes = await fetch(
             `${API_BASE}/thread/${userId}?limit=50`,
             {
@@ -1850,7 +1896,7 @@
     const minutes = date.getMinutes().toString().padStart(2, '0');
     const ampm = hours >= 12 ? 'PM' : 'AM';
     hours = hours % 12;
-    hours = hours ? hours : 12;
+    hours = hours || 12;
     const hoursStr = hours.toString().padStart(2, '0');
     const day = date.getDate();
     const month = date.toLocaleString('default', { month: 'short' });
@@ -2126,7 +2172,7 @@
         captionDiv.style.marginTop = '8px';
         captionDiv.style.fontSize = '14px';
         captionDiv.style.lineHeight = '1.5';
-        captionDiv.style.color = type === 'agent' ? '#18181e' : '#18181e';
+        captionDiv.style.color = '#18181e';
         msgContent.appendChild(captionDiv);
       }
 
@@ -2205,7 +2251,6 @@
       }
     }
 
-    msgDiv.appendChild(msgContent);
     body.appendChild(msgDiv);
     requestAnimationFrame(() => {
       body.scrollTop = body.scrollHeight;

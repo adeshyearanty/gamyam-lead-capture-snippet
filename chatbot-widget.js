@@ -239,6 +239,7 @@
   let wsConnectPromise = null; // Promise that resolves when WebSocket is connected
   let wsConnectResolve = null; // Resolver for the connection promise
   let pendingMessages = []; // Queue of messages to send when connection is ready
+  let isConnecting = false; // Flag to prevent concurrent connection attempts
 
   // --- HELPER: Safe WebSocket Send ---
   /**
@@ -776,24 +777,27 @@ async function initializeConversation(showLoading = false) {
    * @returns {Promise<boolean>} - Resolves to true when connected, false on failure
    */
   async function connectSocket() {
-    // Check if socket exists and is connecting or already open
-    if (socket) {
-      if (socket.readyState === WebSocket.CONNECTING) {
-        console.log('UniBox: WebSocket is still connecting, waiting...');
-        // Return the existing connection promise to await
-        if (wsConnectPromise) {
-          return wsConnectPromise;
-        }
-        return false;
-      }
-      if (socket.readyState === WebSocket.OPEN) {
-        console.log('UniBox: WebSocket already connected');
-        return true;
-      }
-      // Socket exists but is closing or closed, clean it up
+    // Already connected
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      console.log('UniBox: WebSocket already connected');
+      return true;
+    }
+
+    // Connection already in progress - wait for it
+    if (isConnecting && wsConnectPromise) {
+      console.log('UniBox: Connection already in progress, waiting...');
+      return wsConnectPromise;
+    }
+
+    // Socket is connecting - wait for it
+    if (socket && socket.readyState === WebSocket.CONNECTING && wsConnectPromise) {
+      console.log('UniBox: WebSocket is still connecting, waiting...');
+      return wsConnectPromise;
+    }
+
+    // Clean up any stale socket
+    if (socket && (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED)) {
       socket = null;
-      wsConnectPromise = null;
-      wsConnectResolve = null;
     }
 
     if (!conversationId || !WS_URL) {
@@ -801,11 +805,15 @@ async function initializeConversation(showLoading = false) {
       return false;
     }
 
+    // Set connecting flag BEFORE async operations
+    isConnecting = true;
+
     // Get JWT token for WebSocket authentication
     if (!wsToken) {
       wsToken = await getWebSocketToken();
       if (!wsToken) {
         console.error('UniBox: Cannot connect to WebSocket without token');
+        isConnecting = false;
         return false;
       }
     }
@@ -820,20 +828,15 @@ async function initializeConversation(showLoading = false) {
       const wsUrl = `${WS_URL}?token=${wsToken}`;
       console.log('UniBox: Creating new WebSocket connection to:', wsUrl.split('?')[0]);
       
-      // Create the WebSocket and capture in local variable to avoid race conditions
+      // Create the WebSocket
       const ws = new WebSocket(wsUrl);
       socket = ws;
 
       ws.onopen = () => {
-        // Use 'ws' (closure) not 'socket' (global) to avoid race conditions
         console.log('UniBox: WebSocket onopen fired, readyState:', ws.readyState);
 
-        // Verify this is still the active socket
-        if (socket !== ws) {
-          console.warn('UniBox: onopen fired for stale socket, ignoring');
-          ws.close();
-          return;
-        }
+        // Reset connecting flag
+        isConnecting = false;
 
         // Verify connection is actually open
         if (ws.readyState !== WebSocket.OPEN) {
@@ -924,6 +927,7 @@ async function initializeConversation(showLoading = false) {
 
       ws.onerror = (error) => {
         console.error('UniBox: WebSocket error', error);
+        isConnecting = false;
         // Resolve connection promise as failed
         if (wsConnectResolve) {
           wsConnectResolve(false);
@@ -933,6 +937,8 @@ async function initializeConversation(showLoading = false) {
 
       ws.onclose = () => {
         console.log('UniBox: WebSocket disconnected');
+        isConnecting = false;
+        
         // Resolve connection promise as failed if still pending
         if (wsConnectResolve) {
           wsConnectResolve(false);
@@ -953,10 +959,12 @@ async function initializeConversation(showLoading = false) {
           }, 3000);
         }
       };
+      
       // Return the connection promise so callers can await it
       return wsConnectPromise;
     } catch (error) {
       console.error('UniBox: Failed to connect WebSocket', error);
+      isConnecting = false;
       socket = null;
       wsToken = null;
       if (wsConnectResolve) {

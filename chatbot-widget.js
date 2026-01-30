@@ -773,14 +773,14 @@ async function initializeConversation(showLoading = false) {
 
   /**
    * Connect to WebSocket service (replaces Socket.IO)
-   * @returns {Promise<boolean>} - true if connected, false otherwise
+   * @returns {Promise<boolean>} - Resolves to true when connected, false on failure
    */
   async function connectSocket() {
     // Check if socket exists and is connecting or already open
     if (socket) {
       if (socket.readyState === WebSocket.CONNECTING) {
         console.log('UniBox: WebSocket is still connecting, waiting...');
-        // Return the existing connection promise
+        // Return the existing connection promise to await
         if (wsConnectPromise) {
           return wsConnectPromise;
         }
@@ -810,7 +810,7 @@ async function initializeConversation(showLoading = false) {
       }
     }
 
-    // Create connection promise
+    // Create connection promise that will be resolved in onopen/onerror
     wsConnectPromise = new Promise((resolve) => {
       wsConnectResolve = resolve;
     });
@@ -818,37 +818,40 @@ async function initializeConversation(showLoading = false) {
     try {
       // Connect to WebSocket with JWT token
       const wsUrl = `${WS_URL}?token=${wsToken}`;
-      console.log('UniBox: Creating new WebSocket connection...');
+      console.log('UniBox: Creating new WebSocket connection to:', wsUrl.split('?')[0]);
       socket = new WebSocket(wsUrl);
 
       socket.onopen = () => {
-        // Wait a tick to ensure readyState is updated
-        setTimeout(() => {
-          console.log('UniBox: WebSocket connected, readyState:', socket ? socket.readyState : 'null');
+        console.log('UniBox: WebSocket connected, readyState:', socket ? socket.readyState : 'null');
 
-          // Double-check we're actually open before sending
-          if (!socket || socket.readyState !== WebSocket.OPEN) {
-            console.error('UniBox: onopen fired but readyState is not OPEN:', socket ? socket.readyState : 'null');
-            return;
-          }
-
-          // Resolve the connection promise
+        // Verify connection is actually open
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          console.error('UniBox: onopen fired but readyState is not OPEN:', socket ? socket.readyState : 'null');
+          // Still resolve promise so code can proceed (will use HTTP fallback)
           if (wsConnectResolve) {
-            wsConnectResolve(true);
+            wsConnectResolve(false);
             wsConnectResolve = null;
           }
+          return;
+        }
 
-          // Subscribe to conversation
-          wsSend({
-            action: 'subscribe',
-            conversationId: conversationId,
-          });
+        // Resolve the connection promise IMMEDIATELY
+        if (wsConnectResolve) {
+          wsConnectResolve(true);
+          wsConnectResolve = null;
+        }
 
-          // Flush any pending messages
-          flushPendingMessages();
+        // Subscribe to conversation
+        socket.send(JSON.stringify({
+          action: 'subscribe',
+          conversationId: conversationId,
+        }));
 
-          // Fetch message history after connection
-          setTimeout(() => {
+        // Flush any pending messages
+        flushPendingMessages();
+
+        // Fetch message history after connection (delayed to avoid blocking)
+        setTimeout(() => {
           if (userId && conversationId) {
             fetch(`${API_BASE}/thread/${userId}?limit=50`, {
               method: 'GET',
@@ -894,8 +897,7 @@ async function initializeConversation(showLoading = false) {
                 ),
               );
           }
-          }, 500);
-        }, 0); // End of setTimeout wrapper for onopen
+        }, 500);
       };
 
       // Handle incoming WebSocket messages
@@ -935,10 +937,17 @@ async function initializeConversation(showLoading = false) {
           }
         }, 3000);
       };
+      // Return the connection promise so callers can await it
+      return wsConnectPromise;
     } catch (error) {
       console.error('UniBox: Failed to connect WebSocket', error);
       socket = null;
       wsToken = null;
+      if (wsConnectResolve) {
+        wsConnectResolve(false);
+        wsConnectResolve = null;
+      }
+      return false;
     }
   }
 
@@ -1839,11 +1848,16 @@ async function sendMessageToApi(text) {
     if (conversationId) {
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.log('UniBox: Waiting for WebSocket connection before sending...');
-        await connectSocket();
-        // Wait for connection to be fully established
-        const connected = await waitForWsConnection(3000);
-        if (!connected) {
-          console.log('UniBox: WebSocket connection not ready, will use HTTP fallback');
+        const connectResult = await connectSocket();
+        
+        // If connectSocket returned a promise or false, wait for connection
+        if (connectResult !== true) {
+          const connected = await waitForWsConnection(5000);
+          if (!connected) {
+            console.log('UniBox: WebSocket connection not ready, will use HTTP fallback');
+          } else {
+            console.log('UniBox: WebSocket now connected');
+          }
         }
       }
     }

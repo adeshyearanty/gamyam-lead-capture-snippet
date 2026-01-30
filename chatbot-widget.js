@@ -237,6 +237,30 @@
   let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - for file upload preview
   let fetchedConfig = null; // Store fetched config for WebSocket URL
 
+  // --- HELPER: Safe WebSocket Send ---
+  /**
+   * Safely send a message via WebSocket, only if connection is open
+   * @param {Object} data - Data to send
+   * @returns {boolean} - true if sent, false if not connected
+   */
+  function wsSend(data) {
+    if (!socket) {
+      console.warn('UniBox: Cannot send - WebSocket not initialized');
+      return false;
+    }
+    if (socket.readyState !== WebSocket.OPEN) {
+      console.warn('UniBox: Cannot send - WebSocket not open, readyState:', socket.readyState);
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(data));
+      return true;
+    } catch (error) {
+      console.error('UniBox: Failed to send WebSocket message:', error);
+      return false;
+    }
+  }
+
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
     if (!settings) {
@@ -693,7 +717,24 @@ async function initializeConversation(showLoading = false) {
    * Connect to WebSocket service (replaces Socket.IO)
    */
   async function connectSocket() {
-    if (socket || !conversationId || !WS_URL) return;
+    // Check if socket exists and is connecting or already open
+    if (socket) {
+      if (socket.readyState === WebSocket.CONNECTING) {
+        console.log('UniBox: WebSocket is still connecting, waiting...');
+        return;
+      }
+      if (socket.readyState === WebSocket.OPEN) {
+        console.log('UniBox: WebSocket already connected');
+        return;
+      }
+      // Socket exists but is closing or closed, clean it up
+      socket = null;
+    }
+
+    if (!conversationId || !WS_URL) {
+      console.log('UniBox: Missing conversationId or WS_URL for WebSocket');
+      return;
+    }
 
     // Get JWT token for WebSocket authentication
     if (!wsToken) {
@@ -707,16 +748,23 @@ async function initializeConversation(showLoading = false) {
     try {
       // Connect to WebSocket with JWT token
       const wsUrl = `${WS_URL}?token=${wsToken}`;
+      console.log('UniBox: Creating new WebSocket connection...');
       socket = new WebSocket(wsUrl);
 
       socket.onopen = () => {
-        console.log('UniBox: WebSocket connected');
+        console.log('UniBox: WebSocket connected, readyState:', socket.readyState);
+
+        // Double-check we're actually open before sending
+        if (socket.readyState !== WebSocket.OPEN) {
+          console.error('UniBox: onopen fired but readyState is not OPEN:', socket.readyState);
+          return;
+        }
 
         // Subscribe to conversation
-        socket.send(JSON.stringify({
+        wsSend({
           action: 'subscribe',
           conversationId: conversationId,
-        }));
+        });
 
         // Fetch message history after connection
         setTimeout(() => {
@@ -1092,13 +1140,17 @@ async function initializeConversation(showLoading = false) {
         socket.addEventListener('message', messageHandler);
 
         // Send request
-        socket.send(JSON.stringify({
+        if (!wsSend({
           action: 'mediaUploadRequest',
           requestId: requestId,
           conversationId: conversationId,
           mime: mimeType,
           size: fileSize,
-        }));
+        })) {
+          socket.removeEventListener('message', messageHandler);
+          reject(new Error('WebSocket not connected'));
+          return;
+        }
 
         // Timeout after 10 seconds
         setTimeout(() => {
@@ -1218,20 +1270,20 @@ async function initializeConversation(showLoading = false) {
       await uploadToS3(uploadUrl, file);
 
       // Step 3: Send message with S3 file URL via WebSocket
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          action: 'sendMessage',
-          conversationId: conversationId,
-          payload: {
-            text: caption || fileName,
-            url: fileUrl,
-            type: mediaType,
-          },
-          userId: userId,
-          userName: userDetails.userName,
-          userEmail: userDetails.userEmail,
-        }));
-      } else {
+      const wsSent = wsSend({
+        action: 'sendMessage',
+        conversationId: conversationId,
+        payload: {
+          text: caption || fileName,
+          url: fileUrl,
+          type: mediaType,
+        },
+        userId: userId,
+        userName: userDetails.userName,
+        userEmail: userDetails.userEmail,
+      });
+      
+      if (!wsSent) {
         // Fallback to HTTP API
         const response = await fetch(`${API_BASE}/messages`, {
           method: 'POST',
@@ -1698,18 +1750,18 @@ async function sendMessageToApi(text) {
     }
 
     // Send via WebSocket if available
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        action: 'sendMessage',
-        conversationId: conversationId,
-        payload: {
-          text: text,
-        },
-        userId: userId,
-        userName: userDetails.userName,
-        userEmail: userDetails.userEmail,
-      }));
+    const wsSent = wsSend({
+      action: 'sendMessage',
+      conversationId: conversationId,
+      payload: {
+        text: text,
+      },
+      userId: userId,
+      userName: userDetails.userName,
+      userEmail: userDetails.userEmail,
+    });
 
+    if (wsSent) {
       // Optimistically add message to UI
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       appendMessageToUI(
@@ -2498,18 +2550,11 @@ async function fetchAndRenderThreadAfterSend() {
     if (!conversationId || !userId || settings.testMode) return;
     
     // Send read receipt via WebSocket if connected
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      try {
-        // Send via WebSocket for real-time delivery
-        socket.send(JSON.stringify({
-          action: 'read',
-          conversationId: conversationId,
-          messageIds: messageIds,
-        }));
-      } catch (error) {
-        console.error('UniBox: Failed to send read receipt via WebSocket', error);
-      }
-    }
+    wsSend({
+      action: 'read',
+      conversationId: conversationId,
+      messageIds: messageIds,
+    });
 
     // Also send via HTTP as fallback
     try {
@@ -2591,20 +2636,13 @@ async function fetchAndRenderThreadAfterSend() {
    * User MUST send typing indicators to agent
    */
   function emitTypingStatus(typing) {
-    if (!socket || !conversationId || !userId) return;
+    if (!conversationId || !userId) return;
     
-    // Check if WebSocket is open
-    if (socket.readyState !== WebSocket.OPEN) return;
-
-    try {
-      socket.send(JSON.stringify({
-        action: 'typing',
-        conversationId: conversationId,
-        isTyping: typing,
-      }));
-    } catch (error) {
-      console.error('UniBox: Failed to send typing status', error);
-    }
+    wsSend({
+      action: 'typing',
+      conversationId: conversationId,
+      isTyping: typing,
+    });
   }
 
   // --- 10. UI RENDERING ---

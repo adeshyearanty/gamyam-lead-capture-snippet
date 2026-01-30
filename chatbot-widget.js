@@ -2712,30 +2712,23 @@ async function fetchAndRenderThreadAfterSend() {
   /**
    * Mark messages as read - User MUST send read receipts to agent
    * User does NOT receive read receipts from agent
+   * ALL status updates go via WebSocket only - no HTTP API calls
    */
-  async function markMessagesAsRead(messageIds) {
+  function markMessagesAsRead(messageIds) {
     if (!conversationId || !userId || settings.testMode) return;
+    if (!messageIds || messageIds.length === 0) return;
     
-    // Send read receipt via WebSocket if connected
-    wsSend({
+    // Send read receipt via WebSocket ONLY
+    const sent = wsSend({
       action: 'read',
       conversationId: conversationId,
       messageIds: messageIds,
     });
-
-    // Also send via HTTP as fallback
-    try {
-      await fetch(`${API_BASE}/messages/read`, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({
-          conversationId: conversationId,
-          userId: userId,
-          messageIds: messageIds,
-        }),
-      });
-    } catch (error) {
-      console.error('UniBox: Failed to mark messages as read', error);
+    
+    if (sent) {
+      console.log('UniBox: Read receipt sent via WebSocket for', messageIds.length, 'messages');
+    } else {
+      console.log('UniBox: Read receipt queued (WebSocket not ready)');
     }
   }
 
@@ -3678,16 +3671,20 @@ async function fetchAndRenderThreadAfterSend() {
       }, 3000);
     }
 
-    async function markContactAsRead() {
+    /**
+     * Mark contact as active/reading - sends presence update via WebSocket
+     * ALL status updates go via WebSocket only - no HTTP API calls
+     */
+    function markContactAsRead() {
       if (!userId || settings.testMode) return;
-      try {
-        await fetch(`${API_BASE}/read/${userId}`, {
-          method: 'POST',
-          headers: getHeaders(),
-        });
-      } catch (error) {
-        console.error('UniBox: Failed to mark contact as read', error);
-      }
+      if (!conversationId) return;
+      
+      // Send presence/activity update via WebSocket ONLY
+      wsSend({
+        action: 'presence',
+        conversationId: conversationId,
+        status: 'active',
+      });
     }
 
     const chatWindow = shadow.getElementById('chatWindow');

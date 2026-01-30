@@ -2565,7 +2565,15 @@ async function fetchAndRenderThreadAfterSend() {
       }
 
       msgDiv.appendChild(msgContent);
-      body.appendChild(msgDiv);
+      
+      // Insert message BEFORE typing indicator (so indicator stays at the end)
+      const typingIndicator = body.querySelector('#typingIndicator');
+      if (typingIndicator) {
+        body.insertBefore(msgDiv, typingIndicator);
+      } else {
+        body.appendChild(msgDiv);
+      }
+      
       requestAnimationFrame(() => {
         body.scrollTop = body.scrollHeight;
       });
@@ -2620,7 +2628,14 @@ async function fetchAndRenderThreadAfterSend() {
       }
     }
 
-    body.appendChild(msgDiv);
+    // Insert message BEFORE typing indicator (so indicator stays at the end)
+    const typingIndicator = body.querySelector('#typingIndicator');
+    if (typingIndicator) {
+      body.insertBefore(msgDiv, typingIndicator);
+    } else {
+      body.appendChild(msgDiv);
+    }
+    
     requestAnimationFrame(() => {
       body.scrollTop = body.scrollHeight;
     });
@@ -2642,9 +2657,22 @@ async function fetchAndRenderThreadAfterSend() {
       return timestampA - timestampB;
     });
 
+    // Get typing indicator to keep it at the end
+    const typingIndicator = body.querySelector('#typingIndicator');
+    
+    // Re-append messages in sorted order BEFORE typing indicator
     messageElements.forEach((element) => {
-      body.appendChild(element);
+      if (typingIndicator) {
+        body.insertBefore(element, typingIndicator);
+      } else {
+        body.appendChild(element);
+      }
     });
+    
+    // Ensure typing indicator is always last
+    if (typingIndicator) {
+      body.appendChild(typingIndicator);
+    }
 
     requestAnimationFrame(() => {
       body.scrollTop = body.scrollHeight;
@@ -3319,11 +3347,8 @@ async function fetchAndRenderThreadAfterSend() {
            <div id="closeBtn" style="cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div>
         </div>
         <div class="chat-widget-body" id="chatBody">
-          <div class="chat-widget-typing-indicator hidden" id="typingIndicator">
-            <div class="chat-widget-typing-dot"></div>
-            <div class="chat-widget-typing-dot"></div>
-            <div class="chat-widget-typing-dot"></div>
-          </div>
+          <!-- Messages will be inserted here -->
+          <!-- Typing indicator is appended at the end dynamically -->
         </div>
         <div class="chat-widget-footer hidden" id="chatFooter">
            <div class="chat-widget-input-wrapper">
@@ -3356,14 +3381,20 @@ async function fetchAndRenderThreadAfterSend() {
       const footer = shadow.getElementById('chatFooter');
       body.innerHTML = '';
 
-      // Re-add typing indicator to body (it gets cleared)
-      body.innerHTML = `
-        <div class="chat-widget-typing-indicator hidden" id="typingIndicator">
-            <div class="chat-widget-typing-dot"></div>
-            <div class="chat-widget-typing-dot"></div>
-            <div class="chat-widget-typing-dot"></div>
-        </div>
+      // Clear body and add typing indicator at the END
+      // Typing indicator should always be the LAST element in chat body
+      body.innerHTML = '';
+      
+      // Create typing indicator (will be appended at the end after messages are loaded)
+      const typingIndicator = document.createElement('div');
+      typingIndicator.className = 'chat-widget-typing-indicator hidden';
+      typingIndicator.id = 'typingIndicator';
+      typingIndicator.innerHTML = `
+        <div class="chat-widget-typing-dot"></div>
+        <div class="chat-widget-typing-dot"></div>
+        <div class="chat-widget-typing-dot"></div>
       `;
+      body.appendChild(typingIndicator);
 
       if (currentView === 'form') {
         footer.classList.add('hidden');

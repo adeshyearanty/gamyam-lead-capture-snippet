@@ -325,6 +325,9 @@
    * Subscribe to a conversation via WebSocket
    * Only subscribes if we have a valid conversationId and socket is open
    */
+  // Track if we've subscribed to avoid duplicate subscriptions
+  let subscribedConversationId = null;
+  
   function subscribeToConversation(convId) {
     if (!convId || convId.startsWith('guest_') || convId.startsWith('user_')) {
       console.log('UniBox: Invalid conversationId for subscription:', convId);
@@ -332,8 +335,14 @@
     }
     
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      console.log('UniBox: Socket not open, cannot subscribe');
+      console.log('UniBox: Socket not open, cannot subscribe. State:', socket?.readyState);
       return false;
+    }
+    
+    // Avoid duplicate subscriptions
+    if (subscribedConversationId === convId) {
+      console.log('UniBox: Already subscribed to conversation:', convId);
+      return true;
     }
     
     console.log('UniBox: Subscribing to conversation:', convId);
@@ -341,6 +350,7 @@
       action: 'subscribe',
       conversationId: convId,
     }));
+    subscribedConversationId = convId;
     return true;
   }
 
@@ -659,7 +669,11 @@
                 markVisibleMessagesAsRead();
             }, 500);
           }
-          connectSocket();
+          // Connect to WebSocket AND subscribe to conversation for real-time updates
+          connectSocket().then(() => {
+            // Subscribe after connection is established
+            subscribeToConversation(conversationId);
+          });
         } else {
           setLoading(false);
         }
@@ -746,7 +760,10 @@ async function initializeConversation(showLoading = false) {
               });
               markVisibleMessagesAsRead();
             }
-            connectSocket();
+            // Connect to WebSocket AND subscribe for real-time updates
+            connectSocket().then(() => {
+              subscribeToConversation(conversationId);
+            });
             return;
           }
         }
@@ -988,11 +1005,15 @@ async function initializeConversation(showLoading = false) {
           socket = null;
           wsToken = null;
           wsConnectPromise = null;
+          subscribedConversationId = null; // Reset subscription state on disconnect
 
           // Attempt to reconnect after 3 seconds
           setTimeout(() => {
             if (conversationId) {
-              connectSocket();
+              connectSocket().then(() => {
+                // Re-subscribe after reconnecting
+                subscribeToConversation(conversationId);
+              });
             }
           }, 3000);
         }
@@ -1018,10 +1039,14 @@ async function initializeConversation(showLoading = false) {
    */
   function handleWebSocketMessage(message) {
     const { type, data } = message;
+    
+    // Debug logging for all incoming messages
+    console.log('UniBox: WebSocket message received:', { type, hasData: !!data });
 
     switch (type) {
       case 'MESSAGE_CREATED':
       case 'message':
+        console.log('UniBox: Processing MESSAGE_CREATED:', data || message);
         handleIncomingMessage(data || message);
         break;
 

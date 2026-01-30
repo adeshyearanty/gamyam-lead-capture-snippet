@@ -819,7 +819,16 @@ async function initializeConversation(showLoading = false) {
 
       case 'READ':
         // User does NOT receive read receipts from agent
-        // This is intentionally ignored
+        // This is intentionally ignored per design
+        break;
+
+      case 'MEDIA_UPLOAD_RESPONSE':
+        // Handled by requestPresignedUrl via addEventListener
+        // No action needed here, just prevent logging unknown type
+        break;
+
+      case 'subscribed':
+        console.log('UniBox: Subscribed to conversation', data || message);
         break;
 
       case 'error':
@@ -827,9 +836,11 @@ async function initializeConversation(showLoading = false) {
         break;
 
       default:
-        // Handle legacy format
+        // Handle legacy format or unknown types
         if (message.messageId || message.text || message.sender) {
           handleIncomingMessage(message);
+        } else {
+          console.log('UniBox: Unknown WebSocket message type:', type, message);
         }
     }
   }

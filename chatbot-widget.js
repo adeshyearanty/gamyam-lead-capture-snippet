@@ -1310,10 +1310,10 @@ async function initializeConversation(showLoading = false) {
   async function generatePresignedUploadUrl(s3Key) {
     try {
       // Use utility API base URL + /generate-presigned-url
-      const uploadUrl = `${UTILITY_API_BASE}/generate-presigned-url`;
-      console.log('UniBox: Requesting presigned URL from:', uploadUrl);
+      const endpoint = `${UTILITY_API_BASE}/generate-presigned-url`;
+      console.log('UniBox: Requesting presigned URL from:', endpoint);
       
-      const response = await fetch(uploadUrl, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1328,12 +1328,36 @@ async function initializeConversation(showLoading = false) {
         throw new Error(`Failed to get presigned URL: ${response.status}`);
       }
 
-      const data = await response.json();
-      // Response should have { url: presignedUrl } or { uploadUrl: presignedUrl }
-      const presignedUrl = data.url || data.uploadUrl;
+      // Response can be plain text URL or JSON object
+      const contentType = response.headers.get('content-type') || '';
+      let presignedUrl;
       
-      if (!presignedUrl) {
+      if (contentType.includes('application/json')) {
+        const data = await response.json();
+        // Response should have { url: presignedUrl } or { uploadUrl: presignedUrl }
+        presignedUrl = data.url || data.uploadUrl || data;
+      } else {
+        // Plain text response - URL directly
+        presignedUrl = await response.text();
+      }
+      
+      // Handle case where presignedUrl is still an object
+      if (typeof presignedUrl === 'object' && presignedUrl !== null) {
+        presignedUrl = presignedUrl.url || presignedUrl.uploadUrl;
+      }
+      
+      // Trim whitespace from text response
+      if (typeof presignedUrl === 'string') {
+        presignedUrl = presignedUrl.trim();
+      }
+      
+      if (!presignedUrl || typeof presignedUrl !== 'string') {
         throw new Error('No presigned URL in response');
+      }
+
+      // Validate it's a URL
+      if (!presignedUrl.startsWith('http')) {
+        throw new Error('Invalid presigned URL format');
       }
 
       console.log('UniBox: Got presigned upload URL');

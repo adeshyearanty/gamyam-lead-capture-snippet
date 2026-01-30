@@ -484,9 +484,21 @@
       // Now initialize API URLs and socket config with the baseUrl
       API_BASE = baseUrl;
       API_S3_URL = API_BASE.replace(/\/chat\/?$/, '/s3/generate-access-url');
-      // Use utilities S3 client for media access URLs (same as backend S3_CLIENT_URL)
-      UTILITY_API_BASE = getUtilityBaseUrl();
+      
+      // Use utilityApiBaseUrl from config if provided, otherwise construct it
+      // utilityApiBaseUrl should be like: https://dev-api.salesastra.ai/utilities/v1/s3
+      if (fetchedConfig && fetchedConfig.utilityApiBaseUrl) {
+        UTILITY_API_BASE = fetchedConfig.utilityApiBaseUrl;
+        console.log('UniBox: Using utility API URL from config:', UTILITY_API_BASE);
+      } else if (userConfig.utilityApiBaseUrl) {
+        UTILITY_API_BASE = userConfig.utilityApiBaseUrl;
+        console.log('UniBox: Using utility API URL from userConfig:', UTILITY_API_BASE);
+      } else {
+        // Fallback: construct from API_BASE
+        UTILITY_API_BASE = getUtilityBaseUrl();
+      }
       UTILITY_S3_URL = `${UTILITY_API_BASE}/generate-access-url`;
+      
       SOCKET_CONFIG = getSocketConfig(API_BASE);
       WS_URL = getWebSocketUrl();
 
@@ -1193,9 +1205,9 @@ async function initializeConversation(showLoading = false) {
   }
 
   /**
+   * @deprecated - Use presigned URL approach via WebSocket instead.
    * Upload a base64-encoded media file to S3 and get the S3 key.
    * This endpoint does NOT send the message - it only uploads to S3.
-   * Use this if you want to upload once and send multiple times.
    */
   async function uploadMediaToS3(file) {
     try {
@@ -1311,22 +1323,8 @@ async function initializeConversation(showLoading = false) {
       });
     }
 
-    // Fallback to HTTP API
-    const response = await fetch(`${API_BASE}/media/upload-request`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({
-        conversationId: conversationId,
-        mime: mimeType,
-        size: fileSize,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to get presigned URL');
-    }
-
-    return await response.json();
+    // WebSocket ONLY - no HTTP fallback for live chat
+    throw new Error('WebSocket not connected - cannot request presigned URL');
   }
 
   /**
@@ -1421,6 +1419,7 @@ async function initializeConversation(showLoading = false) {
       await uploadToS3(uploadUrl, file);
 
       // Step 3: Send message with S3 file URL via WebSocket
+      // Send media message via WebSocket ONLY - no HTTP fallback
       const wsSent = wsSend({
         action: 'sendMessage',
         conversationId: conversationId,
@@ -1435,24 +1434,8 @@ async function initializeConversation(showLoading = false) {
       });
       
       if (!wsSent) {
-        // Fallback to HTTP API
-        const response = await fetch(`${API_BASE}/messages`, {
-          method: 'POST',
-          headers: getHeaders(),
-          body: JSON.stringify({
-            conversationId: conversationId,
-            text: caption || fileName,
-            media_storage_url: fileUrl,
-            media_type: mediaType,
-            userId: userId,
-            userName: userDetails.userName,
-            userEmail: userDetails.userEmail,
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to send message');
-        }
+        // WebSocket not ready - message is queued and will be sent when connected
+        console.log('UniBox: Media message queued for WebSocket delivery');
       }
 
       // Message will be received via WebSocket and added automatically
@@ -1749,37 +1732,37 @@ async function initializeConversation(showLoading = false) {
       );
 
       try {
-        if (conversationId && !socket) {
-          connectSocket();
-          await new Promise((resolve) => setTimeout(resolve, 100));
+        // Ensure WebSocket is connected
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          await connectSocket();
+          await waitForWsConnection(5000);
         }
 
-        // Convert file to base64
-        const mediaBase64 = await fileToBase64(file);
-
-        // Send media message
-        const response = await fetch(`${API_BASE}/media/user`, {
-          method: 'POST',
-          headers: getHeaders(),
-          body: JSON.stringify({
-            conversationId: conversationId || undefined,
-            media_base64: mediaBase64,
-            media_type: mediaType,
-            userId: userId,
-            userName: userDetails.userName,
-            userEmail: userDetails.userEmail,
-          }),
+        // Step 1: Get presigned URL via WebSocket
+        const uploadData = await requestPresignedUrl(file);
+        
+        // Step 2: Upload directly to S3 (this HTTP call is OK - it's direct to S3)
+        await uploadToS3(uploadData.uploadUrl, file);
+        
+        // Step 3: Send message via WebSocket ONLY - no HTTP API
+        const wsSent = wsSend({
+          action: 'sendMessage',
+          conversationId: conversationId,
+          payload: {
+            text: caption || fileName,
+            url: uploadData.fileUrl,
+            type: mediaType,
+          },
+          userId: userId,
+          userName: userDetails.userName,
+          userEmail: userDetails.userEmail,
         });
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(
-            errorData.error?.message ||
-              `Failed to send media: ${response.status}`,
-          );
+        if (wsSent) {
+          console.log('UniBox: Media message sent via WebSocket');
+        } else {
+          console.log('UniBox: Media message queued for WebSocket delivery');
         }
-
-        const result = await response.json();
 
         // Remove uploading message
         const host = document.getElementById('unibox-root');
@@ -1796,27 +1779,20 @@ async function initializeConversation(showLoading = false) {
           }
         }
 
-        // Update conversation ID if this was a new conversation
-        if (result.conversationId && !conversationId) {
-          conversationId = result.conversationId;
-          console.log('UniBox: Conversation created from media upload:', conversationId);
-          await connectSocket();
-          subscribeToConversation(conversationId);
-        }
-
-        // The message will be added via WebSocket, but we can also add it optimistically
-        if (result.media_storage_url) {
+        // The message will be added via WebSocket
+        // Add optimistically with the S3 URL
+        if (uploadData.fileUrl) {
           appendMessageToUI(
             caption || fileName,
             'user',
-            result.messageId || messageId,
-            result.timestamp || new Date(),
-            result.status || 'sent',
+            messageId,
+            new Date(),
+            'sent',
             null,
             false,
             null,
-            result.type || mediaType,
-            result.media_storage_url,
+            mediaType,
+            uploadData.fileUrl,
           );
         }
       } catch (error) {
@@ -1913,7 +1889,25 @@ async function sendMessageToApi(text) {
       }
     }
 
-    // Send via WebSocket if available
+    // Send via WebSocket ONLY - no HTTP fallback for live chat
+    const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Optimistically add message to UI immediately
+    appendMessageToUI(
+      text,
+      'user',
+      messageId,
+      new Date(),
+      'sending',
+      null,
+      false,
+      null,
+      'text',
+      null,
+    );
+    
+    sortMessagesByTimestamp();
+
     const wsSent = wsSend({
       action: 'sendMessage',
       conversationId: conversationId,
@@ -1927,60 +1921,12 @@ async function sendMessageToApi(text) {
 
     if (wsSent) {
       console.log('UniBox: Message sent via WebSocket');
-      // Optimistically add message to UI
-      const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      appendMessageToUI(
-        text,
-        'user',
-        messageId,
-        new Date(),
-        'sending',
-        null,
-        false,
-        null,
-        'text',
-        null,
-      );
-      
-      sortMessagesByTimestamp();
-      return { success: true };
+    } else {
+      // WebSocket not ready - message is queued and will be sent when connected
+      console.log('UniBox: Message queued for WebSocket delivery');
     }
 
-    // Fallback to HTTP API
-    const response = await fetch(`${API_BASE}/message/user`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({
-        conversationId: conversationId || 'new',
-        text: text,
-        userId: userId,
-        userName: userDetails.userName,
-        userEmail: userDetails.userEmail,
-        testMode: settings.testMode,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const result = await response.json();
-
-    // If conversation was just created, store the id and connect socket
-    if (result.conversationId && !conversationId) {
-      conversationId = result.conversationId;
-      console.log('UniBox: Conversation created from message:', conversationId);
-      await connectSocket();
-      subscribeToConversation(conversationId);
-    }
-
-    // Fetch thread in background (don't await - let it happen asynchronously)
-    // This will update the UI with bot responses when they arrive
-    fetchAndRenderThreadAfterSend().catch((e) => {
-      console.error('UniBox: Background thread fetch failed', e);
-    });
-
-    return result;
+    return { success: true, messageId };
   } catch (error) {
     console.error('UniBox: Send Error', error);
     const host = document.getElementById('unibox-root');
@@ -2000,12 +1946,12 @@ async function sendMessageToApi(text) {
 }
 
 /**
+ * @deprecated - Messages now arrive via WebSocket, not HTTP polling.
+ * This function is kept for potential fallback use but is not called.
+ * 
  * Fetch and render the latest conversation thread after a user message is sent.
  * Clears and re-renders all messages from the server response to ensure correct order
  * and eliminate any glitches from optimistic updates.
- * 
- * This runs in the background after the message is sent, giving the backend
- * time to process and respond.
  */
 async function fetchAndRenderThreadAfterSend() {
   if (!userId) return;

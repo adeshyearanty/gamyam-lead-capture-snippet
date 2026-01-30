@@ -233,8 +233,8 @@
   let agentTyping = false;
   let agentTypingTimeout = null; // Timeout for hiding agent typing indicator
   let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
-  let previewFile = null; // { file, previewUrl, mediaType, fileName } - for single file upload preview
-  let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - for file upload preview
+  let previewFile = null; // @deprecated - Not used. Was for single file upload preview modal.
+  let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - ACTIVE file upload flow (shows as chips)
   let fetchedConfig = null; // Store fetched config for WebSocket URL
   let wsConnectPromise = null; // Promise that resolves when WebSocket is connected
   let wsConnectResolve = null; // Resolver for the connection promise
@@ -1255,21 +1255,15 @@ async function initializeConversation(showLoading = false) {
   }
 
   /**
-   * Show file preview before sending
+   * @deprecated - Not used. The widget uses the file chips flow instead.
+   * Show file preview before sending (legacy - kept for reference)
    */
-  function showFilePreview(file) {
-    const mediaType = getMediaTypeFromFile(file);
-    const previewUrl = URL.createObjectURL(file);
-
-    previewFile = {
-      file: file,
-      previewUrl: previewUrl,
-      mediaType: mediaType,
-      fileName: file.name || `file.${mediaType}`,
-    };
-
-    renderPreviewModal();
-  }
+  // function showFilePreview(file) {
+  //   const mediaType = getMediaTypeFromFile(file);
+  //   const previewUrl = URL.createObjectURL(file);
+  //   previewFile = { file, previewUrl, mediaType, fileName: file.name || `file.${mediaType}` };
+  //   renderPreviewModal();
+  // }
 
   /**
    * Request presigned S3 URL for media upload via WebSocket
@@ -1349,42 +1343,22 @@ async function initializeConversation(showLoading = false) {
   /**
    * Generate a presigned access URL from an S3 key
    * Used for rendering media - frontend calls this to get fresh presigned URL
+   * NOTE: This function is an alias for fetchMediaUrl for consistency
    * @param {string} s3Key - The S3 key (e.g., 'live-chat-media/tenant-123/file.jpg')
    * @returns {Promise<string>} - Presigned access URL
    */
   async function generateAccessUrl(s3Key) {
-    if (!s3Key) return null;
-    
-    // If it's already a full URL (presigned or otherwise), return as-is for backward compatibility
-    if (s3Key.startsWith('http://') || s3Key.startsWith('https://')) {
-      return s3Key;
-    }
-    
-    try {
-      const response = await fetch(`${UTILITY_S3_URL}/generate-access-url`, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({ s3Key }),
-      });
-      
-      if (!response.ok) {
-        console.error('UniBox: Failed to generate access URL for', s3Key);
-        return null;
-      }
-      
-      const data = await response.json();
-      return data.accessUrl || data.url || null;
-    } catch (error) {
-      console.error('UniBox: Error generating access URL:', error);
-      return null;
-    }
+    // Use the existing fetchMediaUrl function which already handles this
+    return fetchMediaUrl(s3Key);
   }
 
   /**
-   * Actually send the media message after preview confirmation
-   * Uses WebSocket presigned URL + direct S3 upload + utility API
+   * @deprecated - Not used. The widget uses sendSelectedFiles() instead.
+   * This was designed for single-file preview modal flow which is not implemented.
+   * The current working flow uses: addSelectedFile() → file chips → sendSelectedFiles()
    */
   async function confirmSendMedia(caption) {
+    console.warn('UniBox: confirmSendMedia is deprecated. Use sendSelectedFiles instead.');
     if (!previewFile) return;
 
     const file = previewFile.file;
@@ -1427,9 +1401,11 @@ async function initializeConversation(showLoading = false) {
       .substr(2, 9)}`;
 
     try {
-      if (conversationId && !socket) {
-        connectSocket();
-        await new Promise((resolve) => setTimeout(resolve, 100));
+      // Ensure WebSocket is connected before attempting upload
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        console.log('UniBox: Connecting WebSocket for media upload...');
+        await connectSocket();
+        await waitForWsConnection(5000); // Wait up to 5 seconds for connection
       }
 
       // Show uploading indicator
@@ -1447,10 +1423,22 @@ async function initializeConversation(showLoading = false) {
       );
 
       // Step 1: Request presigned URL (returns uploadUrl, fileUrl, and s3Key)
-      const { uploadUrl, s3Key } = await requestPresignedUrl(file);
+      console.log('UniBox: Requesting presigned URL for media upload...');
+      const uploadData = await requestPresignedUrl(file);
+      console.log('UniBox: Received upload data:', uploadData ? 'success' : 'null');
+      
+      const uploadUrl = uploadData?.uploadUrl;
+      const s3Key = uploadData?.s3Key;
+      
+      if (!uploadUrl || !s3Key) {
+        console.error('UniBox: Missing uploadUrl or s3Key in response:', uploadData);
+        throw new Error('Failed to get upload URL from server');
+      }
 
       // Step 2: Upload directly to S3
+      console.log('UniBox: Uploading file to S3...');
       await uploadToS3(uploadUrl, file);
+      console.log('UniBox: S3 upload complete');
 
       // Step 3: Send message with S3 KEY (not full URL) via WebSocket
       // Frontend will call generate-access-url to render the media
@@ -1471,8 +1459,13 @@ async function initializeConversation(showLoading = false) {
       if (!wsSent) {
         // WebSocket not ready - message is queued and will be sent when connected
         console.log('UniBox: Media message queued for WebSocket delivery');
+      } else {
+        console.log('UniBox: Media message sent successfully via WebSocket');
       }
 
+      // Close preview modal on success
+      closePreviewModal();
+      
       // Message will be received via WebSocket and added automatically
       
     } catch (error) {

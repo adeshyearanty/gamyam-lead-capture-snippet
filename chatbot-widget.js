@@ -1317,6 +1317,7 @@ async function initializeConversation(showLoading = false) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-tenant-id': userConfig.tenantId,
         },
         body: JSON.stringify({
           key: s3Key,

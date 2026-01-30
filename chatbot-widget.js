@@ -228,6 +228,7 @@
   let messages = new Map();
   let isAgentOnline = false;
   let staticWelcomeShown = false;
+  let realWelcomeMessageId = null; // Track the real welcome message ID once it replaces static welcome
   let typingTimeout = null;
   let isTyping = false;
   let agentTyping = false;
@@ -2356,6 +2357,8 @@ async function fetchAndRenderThreadAfterSend() {
           staticWelcome.element.remove();
         }
         messages.delete(staticWelcome.id);
+        // Save the real welcome message ID for read receipts
+        realWelcomeMessageId = messageId;
         console.log('UniBox: Replaced static welcome with real welcome message ID:', messageId);
       }
       staticWelcomeShown = false;

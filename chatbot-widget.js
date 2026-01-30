@@ -1533,30 +1533,47 @@ async function initializeConversation(showLoading = false) {
    * Add file to selected files and show as chip
    */
   function addSelectedFile(file) {
-    const mediaType = getMediaTypeFromFile(file);
-    const previewUrl = URL.createObjectURL(file);
-
-    selectedFiles.push({
-      file: file,
-      previewUrl: previewUrl,
-      mediaType: mediaType,
-      fileName: file.name || `file.${mediaType}`,
-    });
-
-    renderFileChips();
-
-    // Update send button state
-    const host = document.getElementById('unibox-root');
-    if (host && host.shadowRoot) {
-      const sendBtn = host.shadowRoot.getElementById('sendBtn');
-      if (sendBtn) {
-        const msgInput = host.shadowRoot.getElementById('msgInput');
-        const hasText = msgInput && msgInput.value.trim().length > 0;
-        const hasFiles = selectedFiles.length > 0;
-        sendBtn.disabled = !hasText && !hasFiles;
-        sendBtn.style.opacity = hasText || hasFiles ? '1' : '0.5';
-        sendBtn.style.cursor = hasText || hasFiles ? 'pointer' : 'not-allowed';
+    try {
+      const mediaType = getMediaTypeFromFile(file);
+      let previewUrl = null;
+      
+      try {
+        previewUrl = URL.createObjectURL(file);
+      } catch (err) {
+        console.warn('UniBox: Could not create preview URL for file', err);
       }
+
+      selectedFiles.push({
+        file: file,
+        previewUrl: previewUrl,
+        mediaType: mediaType,
+        fileName: file.name || `file.${mediaType}`,
+      });
+
+      // Use setTimeout to avoid blocking the main thread
+      setTimeout(() => {
+        try {
+          renderFileChips();
+        } catch (err) {
+          console.error('UniBox: Error rendering file chips', err);
+        }
+      }, 0);
+
+      // Update send button state
+      const host = document.getElementById('unibox-root');
+      if (host && host.shadowRoot) {
+        const sendBtn = host.shadowRoot.getElementById('sendBtn');
+        if (sendBtn) {
+          const msgInput = host.shadowRoot.getElementById('msgInput');
+          const hasText = msgInput && msgInput.value.trim().length > 0;
+          const hasFiles = selectedFiles.length > 0;
+          sendBtn.disabled = !hasText && !hasFiles;
+          sendBtn.style.opacity = hasText || hasFiles ? '1' : '0.5';
+          sendBtn.style.cursor = hasText || hasFiles ? 'pointer' : 'not-allowed';
+        }
+      }
+    } catch (err) {
+      console.error('UniBox: Error adding selected file', err);
     }
   }
 
@@ -1585,6 +1602,11 @@ async function initializeConversation(showLoading = false) {
     }
   }
 
+  // Track pending render timeout to prevent multiple concurrent retries
+  let renderChipsTimeout = null;
+  let renderChipsRetryCount = 0;
+  const MAX_RENDER_RETRIES = 10;
+
   /**
    * Render file chips above input field (like MessageInput.tsx)
    */
@@ -1594,9 +1616,26 @@ async function initializeConversation(showLoading = false) {
 
     const footer = host.shadowRoot.getElementById('chatFooter');
     if (!footer) {
-      // Footer might not be ready yet, try again after a short delay
-      setTimeout(renderFileChips, 100);
+      // Footer might not be ready yet, try again after a short delay (with limit)
+      if (renderChipsRetryCount < MAX_RENDER_RETRIES) {
+        renderChipsRetryCount++;
+        // Clear any pending timeout first
+        if (renderChipsTimeout) {
+          clearTimeout(renderChipsTimeout);
+        }
+        renderChipsTimeout = setTimeout(renderFileChips, 100);
+      } else {
+        console.warn('UniBox: Footer not found after max retries, skipping chip render');
+        renderChipsRetryCount = 0;
+      }
       return;
+    }
+    
+    // Reset retry count on success
+    renderChipsRetryCount = 0;
+    if (renderChipsTimeout) {
+      clearTimeout(renderChipsTimeout);
+      renderChipsTimeout = null;
     }
 
     // Ensure footer is visible
@@ -3749,10 +3788,31 @@ async function fetchAndRenderThreadAfterSend() {
     updateSendButtonState();
 
     // Re-render chips when footer becomes visible (in case it was hidden)
+    // Use debounce to prevent excessive calls from MutationObserver
+    let chipRenderDebounce = null;
+    let isRenderingChips = false; // Prevent recursive calls
+    
     const observer = new MutationObserver(() => {
+      // Skip if we're already rendering (prevents infinite loop)
+      if (isRenderingChips) return;
+      
       if (selectedFiles.length > 0) {
-        renderFileChips();
-        updateSendButtonState();
+        // Debounce to prevent excessive calls
+        if (chipRenderDebounce) {
+          clearTimeout(chipRenderDebounce);
+        }
+        chipRenderDebounce = setTimeout(() => {
+          isRenderingChips = true;
+          try {
+            renderFileChips();
+            updateSendButtonState();
+          } finally {
+            // Reset flag after a short delay to allow DOM to settle
+            setTimeout(() => {
+              isRenderingChips = false;
+            }, 50);
+          }
+        }, 100);
       }
     });
 

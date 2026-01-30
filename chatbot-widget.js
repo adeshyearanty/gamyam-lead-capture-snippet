@@ -1347,6 +1347,40 @@ async function initializeConversation(showLoading = false) {
   }
 
   /**
+   * Generate a presigned access URL from an S3 key
+   * Used for rendering media - frontend calls this to get fresh presigned URL
+   * @param {string} s3Key - The S3 key (e.g., 'live-chat-media/tenant-123/file.jpg')
+   * @returns {Promise<string>} - Presigned access URL
+   */
+  async function generateAccessUrl(s3Key) {
+    if (!s3Key) return null;
+    
+    // If it's already a full URL (presigned or otherwise), return as-is for backward compatibility
+    if (s3Key.startsWith('http://') || s3Key.startsWith('https://')) {
+      return s3Key;
+    }
+    
+    try {
+      const response = await fetch(`${UTILITY_S3_URL}/generate-access-url`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ s3Key }),
+      });
+      
+      if (!response.ok) {
+        console.error('UniBox: Failed to generate access URL for', s3Key);
+        return null;
+      }
+      
+      const data = await response.json();
+      return data.accessUrl || data.url || null;
+    } catch (error) {
+      console.error('UniBox: Error generating access URL:', error);
+      return null;
+    }
+  }
+
+  /**
    * Actually send the media message after preview confirmation
    * Uses WebSocket presigned URL + direct S3 upload + utility API
    */
@@ -1412,20 +1446,21 @@ async function initializeConversation(showLoading = false) {
         null,
       );
 
-      // Step 1: Request presigned URL
-      const { uploadUrl, fileUrl } = await requestPresignedUrl(file);
+      // Step 1: Request presigned URL (returns uploadUrl, fileUrl, and s3Key)
+      const { uploadUrl, s3Key } = await requestPresignedUrl(file);
 
       // Step 2: Upload directly to S3
       await uploadToS3(uploadUrl, file);
 
-      // Step 3: Send message with S3 file URL via WebSocket
+      // Step 3: Send message with S3 KEY (not full URL) via WebSocket
+      // Frontend will call generate-access-url to render the media
       // Send media message via WebSocket ONLY - no HTTP fallback
       const wsSent = wsSend({
         action: 'sendMessage',
         conversationId: conversationId,
         payload: {
           text: caption || fileName,
-          url: fileUrl,
+          url: s3Key,  // Send S3 key, not presigned URL
           type: mediaType,
         },
         userId: userId,
@@ -1738,19 +1773,20 @@ async function initializeConversation(showLoading = false) {
           await waitForWsConnection(5000);
         }
 
-        // Step 1: Get presigned URL via WebSocket
+        // Step 1: Get presigned URL via WebSocket (returns uploadUrl, s3Key)
         const uploadData = await requestPresignedUrl(file);
         
         // Step 2: Upload directly to S3 (this HTTP call is OK - it's direct to S3)
         await uploadToS3(uploadData.uploadUrl, file);
         
-        // Step 3: Send message via WebSocket ONLY - no HTTP API
+        // Step 3: Send message via WebSocket with S3 KEY (not full URL)
+        // Frontend will call generate-access-url to render the media
         const wsSent = wsSend({
           action: 'sendMessage',
           conversationId: conversationId,
           payload: {
             text: caption || fileName,
-            url: uploadData.fileUrl,
+            url: uploadData.s3Key,  // Send S3 key, not presigned URL
             type: mediaType,
           },
           userId: userId,
@@ -1759,7 +1795,7 @@ async function initializeConversation(showLoading = false) {
         });
 
         if (wsSent) {
-          console.log('UniBox: Media message sent via WebSocket');
+          console.log('UniBox: Media message sent via WebSocket with S3 key:', uploadData.s3Key);
         } else {
           console.log('UniBox: Media message queued for WebSocket delivery');
         }
@@ -1780,8 +1816,8 @@ async function initializeConversation(showLoading = false) {
         }
 
         // The message will be added via WebSocket
-        // Add optimistically with the S3 URL
-        if (uploadData.fileUrl) {
+        // Add optimistically with the S3 key (will be converted to URL when rendering)
+        if (uploadData.s3Key) {
           appendMessageToUI(
             caption || fileName,
             'user',
@@ -1792,7 +1828,7 @@ async function initializeConversation(showLoading = false) {
             false,
             null,
             mediaType,
-            uploadData.fileUrl,
+            uploadData.s3Key,  // Store S3 key, not presigned URL
           );
         }
       } catch (error) {

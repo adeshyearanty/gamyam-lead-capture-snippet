@@ -1304,6 +1304,47 @@ async function initializeConversation(showLoading = false) {
   // }
 
   /**
+   * Generate presigned URL for S3 upload using utility service
+   * Same approach as agent side - uses /s3/generate-presigned-url endpoint
+   */
+  async function generatePresignedUploadUrl(s3Key) {
+    try {
+      // Use utility API base URL + /generate-presigned-url
+      const uploadUrl = `${UTILITY_API_BASE}/generate-presigned-url`;
+      console.log('UniBox: Requesting presigned URL from:', uploadUrl);
+      
+      const response = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          key: s3Key,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to get presigned URL: ${response.status}`);
+      }
+
+      const data = await response.json();
+      // Response should have { url: presignedUrl } or { uploadUrl: presignedUrl }
+      const presignedUrl = data.url || data.uploadUrl;
+      
+      if (!presignedUrl) {
+        throw new Error('No presigned URL in response');
+      }
+
+      console.log('UniBox: Got presigned upload URL');
+      return presignedUrl;
+    } catch (error) {
+      console.error('UniBox: Error generating presigned URL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * @deprecated - Use generatePresignedUploadUrl instead
    * Request presigned S3 URL for media upload via WebSocket
    */
   async function requestPresignedUrl(file) {
@@ -1821,6 +1862,7 @@ async function initializeConversation(showLoading = false) {
       }
 
       // FAST PATH: Same as agent side
+      // Generate S3 key -> Show chip UI -> Send WebSocket -> Upload in background
       console.log('📤 Widget media upload - FAST PATH...');
 
       // Step 1: Generate random S3 key locally (instant)
@@ -1830,22 +1872,21 @@ async function initializeConversation(showLoading = false) {
       const messageId = `msg_media_${randomId}`;
       console.log('1️⃣ Generated S3 key:', s3Key);
 
-      // Step 2: Show optimistic UI immediately with local preview
-      // Use local blob URL as mediaStorageUrl for instant display
-      // When server echoes back, it will have the real s3Key
+      // Step 2: Show chip UI immediately (no loading state - same as agent side)
+      // Use s3Key as mediaStorageUrl so it shows as a chip, not inline image
       appendMessageToUI(
         caption || '',  // Caption only, NOT filename
         'user',
         messageId,
         new Date(),
-        'sending',
+        'delivered',         // Show as sent immediately (no loading state)
         null,           // readAt
         false,          // readByUs
         null,           // readByUsAt
         mediaType,
-        localPreviewUrl || s3Key,  // Use local preview URL for instant display (blob:...), fallback to s3Key
+        s3Key,          // Use S3 key so it shows as a chip
       );
-      console.log('2️⃣ Optimistic UI shown with localPreviewUrl:', localPreviewUrl);
+      console.log('2️⃣ Chip UI shown');
 
       // Step 3: Send message via WebSocket with S3 KEY (instant)
       const wsSent = wsSend({
@@ -1867,55 +1908,42 @@ async function initializeConversation(showLoading = false) {
         console.log('3️⃣ Message queued for WebSocket delivery');
       }
 
-      // Step 4 & 5: Get presigned URL and upload in background (non-blocking)
-      // Capture localPreviewUrl in closure for cleanup
-      const previewUrlToRevoke = localPreviewUrl;
-      
+      // Cleanup local preview URL immediately (not needed for chip display)
+      if (localPreviewUrl && localPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(localPreviewUrl);
+      }
+
+      // Step 4 & 5: Get presigned URL via utility service and upload in background
       (async () => {
         try {
-          console.log('4️⃣ Requesting presigned URL...');
-          const uploadData = await requestPresignedUrl(file);
+          console.log('4️⃣ Requesting presigned URL via utility service...');
+          const presignedUrl = await generatePresignedUploadUrl(s3Key);
           console.log('✅ Got presigned URL');
 
           console.log('5️⃣ Uploading to S3...');
-          await uploadToS3(uploadData.uploadUrl, file);
+          await uploadToS3(presignedUrl, file);
           console.log('✅ File uploaded to S3');
 
-          // Update message status to sent and update mediaStorageUrl to real s3Key
-          const existingMsg = messages.get(messageId);
-          if (existingMsg) {
-            existingMsg.status = 'sent';
-            existingMsg.mediaStorageUrl = s3Key;  // Update to real S3 key
-            
-            // Re-render message to show sent status
-            const host = document.getElementById('unibox-root');
-            if (host && host.shadowRoot) {
-              const msgEl = host.shadowRoot.querySelector(`[data-message-id="${messageId}"]`);
-              if (msgEl) {
-                const statusEl = msgEl.querySelector('.message-status');
-                if (statusEl) {
-                  statusEl.textContent = '✓';
-                }
-              }
-            }
-          }
-          
-          // Cleanup: Revoke the local preview URL after successful upload
-          if (previewUrlToRevoke && previewUrlToRevoke.startsWith('blob:')) {
-            URL.revokeObjectURL(previewUrlToRevoke);
-            console.log('✅ Local preview URL revoked');
-          }
+          // Upload complete - message already shown with 'sent' status
+          console.log('✅ Media upload complete for:', s3Key);
         } catch (uploadError) {
           console.error('❌ Background upload failed:', uploadError);
           // Update message status to failed
           const existingMsg = messages.get(messageId);
           if (existingMsg) {
             existingMsg.status = 'failed';
-          }
-          
-          // Still cleanup the preview URL
-          if (previewUrlToRevoke && previewUrlToRevoke.startsWith('blob:')) {
-            URL.revokeObjectURL(previewUrlToRevoke);
+            // Update UI to show failed status
+            const host = document.getElementById('unibox-root');
+            if (host && host.shadowRoot) {
+              const msgEl = host.shadowRoot.querySelector(`[data-message-id="${messageId}"]`);
+              if (msgEl) {
+                const chip = msgEl.querySelector('.chat-widget-media-chip');
+                if (chip) {
+                  chip.style.borderColor = '#ef4444';
+                  chip.style.backgroundColor = '#fef2f2';
+                }
+              }
+            }
           }
         }
       })();
@@ -2620,109 +2648,61 @@ async function fetchAndRenderThreadAfterSend() {
         return fileName || labels[type] || 'Media';
       };
 
-      // Check if this is a blob URL (local preview) for images
-      const isBlobUrl = mediaStorageUrl && mediaStorageUrl.startsWith('blob:');
-      const showInlinePreview = isBlobUrl && messageType === 'image';
-
-      if (showInlinePreview) {
-        // For images with blob URLs, show inline image preview
-        const imgContainer = document.createElement('div');
-        imgContainer.className = 'chat-widget-media-preview';
-        imgContainer.style.width = '100%';
-        imgContainer.style.maxWidth = '200px';
-        imgContainer.style.borderRadius = '8px';
-        imgContainer.style.overflow = 'hidden';
-        imgContainer.style.cursor = 'pointer';
-        imgContainer.style.position = 'relative';
-        imgContainer.onclick = () => {
-          showMediaPreview(mediaStorageUrl, messageType, normalizedText);
-        };
-
-        const img = document.createElement('img');
-        img.src = mediaStorageUrl;
-        img.style.width = '100%';
-        img.style.height = 'auto';
-        img.style.display = 'block';
-        img.style.borderRadius = '8px';
-        img.alt = 'Image';
-
-        // Add sending indicator overlay
-        if (status === 'sending') {
-          const overlay = document.createElement('div');
-          overlay.style.position = 'absolute';
-          overlay.style.top = '0';
-          overlay.style.left = '0';
-          overlay.style.right = '0';
-          overlay.style.bottom = '0';
-          overlay.style.backgroundColor = 'rgba(0,0,0,0.3)';
-          overlay.style.display = 'flex';
-          overlay.style.alignItems = 'center';
-          overlay.style.justifyContent = 'center';
-          overlay.style.color = '#fff';
-          overlay.style.fontSize = '12px';
-          overlay.textContent = 'Sending...';
-          imgContainer.appendChild(overlay);
-        }
-
-        imgContainer.appendChild(img);
-        msgContent.appendChild(imgContainer);
-      } else {
-        // For other media types or non-blob URLs, show chip
-        const mediaChip = document.createElement('button');
-        mediaChip.className = 'chat-widget-media-chip';
-        mediaChip.type = 'button';
-        mediaChip.style.display = 'flex';
-        mediaChip.style.alignItems = 'center';
-        mediaChip.style.gap = '8px';
-        mediaChip.style.padding = '10px 12px';
+      // Always show media as a clickable chip (same as agent side)
+      const mediaChip = document.createElement('button');
+      mediaChip.className = 'chat-widget-media-chip';
+      mediaChip.type = 'button';
+      mediaChip.style.display = 'flex';
+      mediaChip.style.alignItems = 'center';
+      mediaChip.style.gap = '8px';
+      mediaChip.style.padding = '10px 12px';
+      mediaChip.style.backgroundColor =
+        type === 'agent' ? '#f5f7f9' : '#f9fafb';
+      mediaChip.style.border = '1px solid #e5e7eb';
+      mediaChip.style.borderRadius = '8px';
+      mediaChip.style.cursor = 'pointer';
+      mediaChip.style.transition = 'all 0.2s';
+      mediaChip.style.width = '100%';
+      mediaChip.style.textAlign = 'left';
+      mediaChip.style.color = '#18181e';
+      mediaChip.style.fontSize = '14px';
+      mediaChip.style.fontFamily = settings.appearance.fontFamily;
+      mediaChip.style.minHeight = '40px'; // Ensure minimum height for visibility
+      mediaChip.onmouseenter = () => {
+        mediaChip.style.backgroundColor =
+          type === 'agent' ? '#e9ecef' : '#f3f4f6';
+        mediaChip.style.transform = 'translateY(-1px)';
+      };
+      mediaChip.onmouseleave = () => {
         mediaChip.style.backgroundColor =
           type === 'agent' ? '#f5f7f9' : '#f9fafb';
-        mediaChip.style.border = '1px solid #e5e7eb';
-        mediaChip.style.borderRadius = '8px';
-        mediaChip.style.cursor = 'pointer';
-        mediaChip.style.transition = 'all 0.2s';
-        mediaChip.style.width = '100%';
-        mediaChip.style.textAlign = 'left';
-        mediaChip.style.color = '#18181e';
-        mediaChip.style.fontSize = '14px';
-        mediaChip.style.fontFamily = settings.appearance.fontFamily;
-        mediaChip.style.minHeight = '40px'; // Ensure minimum height for visibility
-        mediaChip.onmouseenter = () => {
-          mediaChip.style.backgroundColor =
-            type === 'agent' ? '#e9ecef' : '#f3f4f6';
-          mediaChip.style.transform = 'translateY(-1px)';
-        };
-        mediaChip.onmouseleave = () => {
-          mediaChip.style.backgroundColor =
-            type === 'agent' ? '#f5f7f9' : '#f9fafb';
-          mediaChip.style.transform = 'translateY(0)';
-        };
-        mediaChip.onclick = () => {
-          showMediaPreview(mediaStorageUrl, messageType, normalizedText);
-        };
+        mediaChip.style.transform = 'translateY(0)';
+      };
+      mediaChip.onclick = () => {
+        showMediaPreview(mediaStorageUrl, messageType, normalizedText);
+      };
 
-        const iconDiv = document.createElement('div');
-        iconDiv.style.display = 'flex';
-        iconDiv.style.alignItems = 'center';
-        iconDiv.style.justifyContent = 'center';
-        iconDiv.style.color = settings.appearance.primaryColor;
-        iconDiv.style.flexShrink = '0';
-        iconDiv.innerHTML = getMediaIcon(messageType);
+      const iconDiv = document.createElement('div');
+      iconDiv.style.display = 'flex';
+      iconDiv.style.alignItems = 'center';
+      iconDiv.style.justifyContent = 'center';
+      iconDiv.style.color = settings.appearance.primaryColor;
+      iconDiv.style.flexShrink = '0';
+      iconDiv.innerHTML = getMediaIcon(messageType);
 
-        const labelDiv = document.createElement('div');
-        labelDiv.style.flex = '1';
-        labelDiv.style.minWidth = '0';
-        labelDiv.style.wordBreak = 'break-word';
-        labelDiv.textContent = getMediaLabel(
-          messageType,
-          normalizedText,
-          mediaStorageUrl,
-        );
+      const labelDiv = document.createElement('div');
+      labelDiv.style.flex = '1';
+      labelDiv.style.minWidth = '0';
+      labelDiv.style.wordBreak = 'break-word';
+      labelDiv.textContent = getMediaLabel(
+        messageType,
+        normalizedText,
+        mediaStorageUrl,
+      );
 
-        mediaChip.appendChild(iconDiv);
-        mediaChip.appendChild(labelDiv);
-        msgContent.appendChild(mediaChip);
-      }
+      mediaChip.appendChild(iconDiv);
+      mediaChip.appendChild(labelDiv);
+      msgContent.appendChild(mediaChip);
 
       // Add text caption if available and not the file name
       if (

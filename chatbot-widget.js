@@ -1122,6 +1122,18 @@ async function initializeConversation(showLoading = false) {
       const normalizedTextValue =
         textValue && textValue.trim() ? textValue.trim() : null;
 
+      // Debug logging for media messages
+      const isMedia = message.type && ['image', 'video', 'audio', 'document', 'file'].includes(message.type);
+      if (isMedia || message.media_storage_url) {
+        console.log('UniBox: Received media message:', {
+          messageId: message.messageId,
+          type: message.type,
+          media_storage_url: message.media_storage_url,
+          text: normalizedTextValue,
+          sender: message.sender,
+        });
+      }
+
       appendMessageToUI(
         normalizedTextValue,
         message.sender,

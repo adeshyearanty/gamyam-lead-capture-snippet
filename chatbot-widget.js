@@ -2309,14 +2309,28 @@ async function fetchAndRenderThreadAfterSend() {
     // Convert empty string to null for consistent handling
     const normalizedText = text && text.trim() ? text.trim() : null;
 
-    // Prevent duplicate welcome messages: if static welcome is shown and this is a welcome message, skip it
+    // Handle welcome message replacement: if static welcome is shown and this is a real welcome message,
+    // REPLACE the static welcome with the real one (which has a real server message ID)
     if (
       staticWelcomeShown &&
       type === 'agent' &&
       normalizedText &&
-      isWelcomeMessage(normalizedText)
+      isWelcomeMessage(normalizedText) &&
+      messageId && !messageId.startsWith('static_welcome_') // Only replace if this is a REAL message ID
     ) {
-      return;
+      // Find and remove the static welcome message
+      const staticWelcome = Array.from(messages.values()).find(
+        (msg) => msg.id && msg.id.startsWith('static_welcome_'),
+      );
+      if (staticWelcome) {
+        if (staticWelcome.element) {
+          staticWelcome.element.remove();
+        }
+        messages.delete(staticWelcome.id);
+        console.log('UniBox: Replaced static welcome with real welcome message ID:', messageId);
+      }
+      staticWelcomeShown = false;
+      // Continue to add the real welcome message below
     }
 
     const normalizedId = messageId || `msg_${Date.now()}`;
@@ -2692,15 +2706,33 @@ async function fetchAndRenderThreadAfterSend() {
     if (!conversationId || !userId || settings.testMode) return;
     if (!messageIds || messageIds.length === 0) return;
     
+    // Filter out client-side generated IDs (not real server message IDs)
+    // Real message IDs are UUIDs, not prefixed strings
+    const validMessageIds = messageIds.filter((id) => {
+      if (!id || typeof id !== 'string') return false;
+      // Exclude client-side generated IDs
+      if (id.startsWith('static_welcome_')) return false;
+      if (id.startsWith('guest_')) return false;
+      if (id.startsWith('user_')) return false;
+      if (id.startsWith('temp_')) return false;
+      if (id.startsWith('optimistic_')) return false;
+      return true;
+    });
+    
+    if (validMessageIds.length === 0) {
+      console.log('UniBox: No valid message IDs to mark as read');
+      return;
+    }
+    
     // Send read receipt via WebSocket ONLY
     const sent = wsSend({
       action: 'read',
       conversationId: conversationId,
-      messageIds: messageIds,
+      messageIds: validMessageIds,
     });
     
     if (sent) {
-      console.log('UniBox: Read receipt sent via WebSocket for', messageIds.length, 'messages');
+      console.log('UniBox: Read receipt sent via WebSocket for', validMessageIds.length, 'messages');
     } else {
       console.log('UniBox: Read receipt queued (WebSocket not ready)');
     }
@@ -2718,7 +2750,12 @@ async function fetchAndRenderThreadAfterSend() {
         return msg.sender === 'agent' && (msg.status !== 'read' || !msg.readAt);
       })
       .map((msg) => msg.id || msg.messageId)
-      .filter((id) => id);
+      .filter((id) => {
+        // Filter out null/undefined IDs and client-side static welcome message IDs
+        if (!id) return false;
+        if (typeof id === 'string' && id.startsWith('static_welcome_')) return false;
+        return true;
+      });
 
     if (unreadAgentMessages.length > 0) {
       markMessagesAsRead(unreadAgentMessages);

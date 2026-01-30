@@ -2406,6 +2406,15 @@ async function fetchAndRenderThreadAfterSend() {
     const normalizedTimestamp = timestamp
       ? new Date(timestamp).getTime()
       : Date.now();
+    
+    // Debug: Log message being added
+    console.log('UniBox: appendMessageToUI called:', {
+      id: normalizedId,
+      text: normalizedText?.substring(0, 30),
+      sender: type,
+      timestamp: normalizedTimestamp,
+      timestampDate: new Date(normalizedTimestamp).toISOString()
+    });
 
     // --- FIX: Robust Deduplication Logic ---
     const existingInMap =
@@ -2437,11 +2446,14 @@ async function fetchAndRenderThreadAfterSend() {
                 m.id = messageId;
                 m.messageId = messageId;
                 m.status = status || m.status;
+                m.timestamp = timestamp || m.timestamp; // Update timestamp to server's timestamp
                 messages.set(messageId, m);
 
-                // Update DOM attribute
+                // Update DOM attributes for proper sorting
                 if (m.element) {
                     m.element.setAttribute('data-message-id', messageId);
+                    // CRITICAL: Update data-timestamp to server's timestamp for correct sorting
+                    m.element.setAttribute('data-timestamp', normalizedTimestamp.toString());
                 }
              }
              return true;
@@ -2456,6 +2468,12 @@ async function fetchAndRenderThreadAfterSend() {
       existingInMap.readByUs =
         readByUs !== undefined ? readByUs : existingInMap.readByUs;
       existingInMap.readByUsAt = readByUsAt || existingInMap.readByUsAt;
+      
+      // CRITICAL: Update timestamp if server provided one (for correct sorting)
+      if (timestamp && existingInMap.element) {
+        existingInMap.timestamp = timestamp;
+        existingInMap.element.setAttribute('data-timestamp', normalizedTimestamp.toString());
+      }
       return;
     }
 
@@ -2733,6 +2751,15 @@ async function fetchAndRenderThreadAfterSend() {
     const messageElements = Array.from(body.children).filter((child) => {
       return child.hasAttribute('data-timestamp');
     });
+
+    // Debug: Log timestamps before sorting
+    if (messageElements.length > 0) {
+      console.log('UniBox: Sorting messages by timestamp:', messageElements.map(el => ({
+        id: el.getAttribute('data-message-id'),
+        timestamp: el.getAttribute('data-timestamp'),
+        text: el.querySelector('.chat-widget-message-content')?.textContent?.substring(0, 30)
+      })));
+    }
 
     messageElements.sort((a, b) => {
       const timestampA = parseInt(a.getAttribute('data-timestamp') || '0');

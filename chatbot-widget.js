@@ -106,20 +106,24 @@
     }
   }
 
-  // Get WebSocket URL from API base
+  // Get WebSocket URL from config or construct from API base
   function getWebSocketUrl() {
     try {
-      // Check if websocketUrl is provided in fetched config
+      // Check if websocketUrl is provided in fetched config (passed from embed script)
       if (fetchedConfig && fetchedConfig.websocketUrl) {
+        console.log('UniBox: Using WebSocket URL from config:', fetchedConfig.websocketUrl);
         return fetchedConfig.websocketUrl;
       }
 
-      // Otherwise construct from API_BASE
+      // Fallback: construct from API_BASE (not recommended, use config)
+      console.warn('UniBox: websocketUrl not found in config, constructing from API_BASE');
       const urlObj = new URL(API_BASE);
       // Convert https:// to wss:// and http:// to ws://
       const wsProtocol = urlObj.protocol === 'https:' ? 'wss:' : 'ws:';
       // WebSocket service endpoint
-      return `${wsProtocol}//${urlObj.host}/ws`;
+      const constructedUrl = `${wsProtocol}//${urlObj.host}/ws`;
+      console.log('UniBox: Constructed WebSocket URL:', constructedUrl);
+      return constructedUrl;
     } catch (e) {
       console.error('UniBox: Failed to construct WebSocket URL', e);
       return null;
@@ -320,6 +324,8 @@
         widgetToken: userConfig.widgetToken,
         apiKey: userConfig.apiKey || userConfig.widgetToken, // Use apiKey if provided, otherwise fallback to widgetToken
         testMode: userConfig.testMode || false,
+        // Preserve websocketUrl from userConfig (passed from embed script)
+        websocketUrl: userConfig.websocketUrl,
         appearance: apiConfig.widgetAppearance || defaults.appearance,
         behavior: {
           ...defaults.behavior,
@@ -348,6 +354,8 @@
         apiKey: userConfig.apiKey || userConfig.widgetToken, // Use apiKey if provided, otherwise fallback to widgetToken
         chatbotId: userConfig.chatbotId,
         testMode: userConfig.testMode || false,
+        // Preserve websocketUrl from userConfig (passed from embed script)
+        websocketUrl: userConfig.websocketUrl,
       });
     }
   }

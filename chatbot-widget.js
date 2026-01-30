@@ -320,6 +320,29 @@
     });
   }
 
+  /**
+   * Subscribe to a conversation via WebSocket
+   * Only subscribes if we have a valid conversationId and socket is open
+   */
+  function subscribeToConversation(convId) {
+    if (!convId || convId.startsWith('guest_') || convId.startsWith('user_')) {
+      console.log('UniBox: Invalid conversationId for subscription:', convId);
+      return false;
+    }
+    
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      console.log('UniBox: Socket not open, cannot subscribe');
+      return false;
+    }
+    
+    console.log('UniBox: Subscribing to conversation:', convId);
+    socket.send(JSON.stringify({
+      action: 'subscribe',
+      conversationId: convId,
+    }));
+    return true;
+  }
+
   // --- 3. HELPER: HEADERS ---
   function getHeaders() {
     if (!settings) {
@@ -731,8 +754,11 @@ async function initializeConversation(showLoading = false) {
     if (!res.ok) throw new Error('Failed to start conversation');
     const data = await res.json();
     conversationId = data.conversationId;
+    console.log('UniBox: Conversation created:', conversationId);
 
-    connectSocket();
+    // Connect to WebSocket and subscribe
+    await connectSocket();
+    subscribeToConversation(conversationId);
 
     // Don't fetch thread here - it will be fetched by fetchAndRenderThreadAfterSend
     if (showLoading) {
@@ -856,11 +882,10 @@ async function initializeConversation(showLoading = false) {
           wsConnectResolve = null;
         }
 
-        // Subscribe to conversation
-        ws.send(JSON.stringify({
-          action: 'subscribe',
-          conversationId: conversationId,
-        }));
+        // Subscribe to conversation if we have a valid conversationId
+        if (!subscribeToConversation(conversationId)) {
+          console.log('UniBox: Will subscribe later when conversation is created');
+        }
 
         // Flush any pending messages
         flushPendingMessages();
@@ -1774,7 +1799,9 @@ async function initializeConversation(showLoading = false) {
         // Update conversation ID if this was a new conversation
         if (result.conversationId && !conversationId) {
           conversationId = result.conversationId;
-          connectSocket();
+          console.log('UniBox: Conversation created from media upload:', conversationId);
+          await connectSocket();
+          subscribeToConversation(conversationId);
         }
 
         // The message will be added via WebSocket, but we can also add it optimistically
@@ -1942,7 +1969,9 @@ async function sendMessageToApi(text) {
     // If conversation was just created, store the id and connect socket
     if (result.conversationId && !conversationId) {
       conversationId = result.conversationId;
-      connectSocket();
+      console.log('UniBox: Conversation created from message:', conversationId);
+      await connectSocket();
+      subscribeToConversation(conversationId);
     }
 
     // Fetch thread in background (don't await - let it happen asynchronously)

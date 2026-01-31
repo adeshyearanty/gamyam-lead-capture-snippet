@@ -1315,10 +1315,7 @@ async function initializeConversation(showLoading = false) {
       
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-tenant-id': userConfig.tenantId,
-        },
+        headers: getHeaders(),
         body: JSON.stringify({
           key: s3Key,
         }),

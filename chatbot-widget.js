@@ -1832,9 +1832,6 @@ async function initializeConversation(showLoading = false) {
     selectedFiles = [];
     renderFileChips();
 
-    // Get tenantId from config
-    const tenantId = fetchedConfig?.tenantId || 'unknown';
-
     for (const fileData of filesToSend) {
       const file = fileData.file;
       const mediaType = fileData.mediaType;
@@ -1850,15 +1847,22 @@ async function initializeConversation(showLoading = false) {
         continue;
       }
 
-      // FAST PATH: Same as agent side
-      console.log('📤 Widget media upload - FAST PATH...');
+      // Request presigned URL FIRST so we use the REAL S3 key everywhere
+      console.log('📤 Widget media upload - requesting presigned URL...');
+      let uploadData;
+      try {
+        uploadData = await requestPresignedUrl(file);
+      } catch (err) {
+        console.error('UniBox: Failed to get presigned URL for media', err);
+        alert('Failed to prepare media upload. Please try again.');
+        continue;
+      }
 
-      // Step 1: Generate random S3 key locally (instant)
-      const fileExt = fileName.split('.').pop() || 'bin';
+      const s3Key = uploadData.s3Key;
+      const uploadUrl = uploadData.uploadUrl;
       const randomId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-      const s3Key = `live-chat-media/${tenantId}/${conversationId}/${randomId}.${fileExt}`;
       const messageId = `msg_media_${randomId}`;
-      console.log('1️⃣ Generated S3 key:', s3Key);
+      console.log('1️⃣ Using backend S3 key for message:', s3Key);
 
       // Step 2: Show optimistic UI immediately with local preview
       // Use local blob URL as mediaStorageUrl for instant display
@@ -1897,25 +1901,21 @@ async function initializeConversation(showLoading = false) {
         console.log('3️⃣ Message queued for WebSocket delivery');
       }
 
-      // Step 4 & 5: Get presigned URL and upload in background (non-blocking)
+      // Step 4: Upload in background (non-blocking) using the same uploadUrl/s3Key
       // Capture localPreviewUrl in closure for cleanup
       const previewUrlToRevoke = localPreviewUrl;
-      
+
       (async () => {
         try {
-          console.log('4️⃣ Requesting presigned URL...');
-          const uploadData = await requestPresignedUrl(file);
-          console.log('✅ Got presigned URL');
-
-          console.log('5️⃣ Uploading to S3...');
-          await uploadToS3(uploadData.uploadUrl, file);
+          console.log('4️⃣ Uploading to S3...');
+          await uploadToS3(uploadUrl, file);
           console.log('✅ File uploaded to S3');
 
           // Update message status to sent and update mediaStorageUrl to real s3Key
           const existingMsg = messages.get(messageId);
           if (existingMsg) {
             existingMsg.status = 'sent';
-            existingMsg.mediaStorageUrl = s3Key;  // Update to real S3 key
+            existingMsg.mediaStorageUrl = s3Key;  // Ensure we keep the REAL S3 key
             
             // Re-render message to show sent status
             const host = document.getElementById('unibox-root');
@@ -1925,6 +1925,11 @@ async function initializeConversation(showLoading = false) {
                 const statusEl = msgEl.querySelector('.message-status');
                 if (statusEl) {
                   statusEl.textContent = '✓';
+                }
+                // Also remove any sending overlay on inline previews
+                const overlay = msgEl.querySelector('.chat-widget-media-preview-overlay');
+                if (overlay) {
+                  overlay.remove();
                 }
               }
             }
@@ -2679,6 +2684,7 @@ async function fetchAndRenderThreadAfterSend() {
         // Add sending indicator overlay
         if (status === 'sending') {
           const overlay = document.createElement('div');
+          overlay.className = 'chat-widget-media-preview-overlay';
           overlay.style.position = 'absolute';
           overlay.style.top = '0';
           overlay.style.left = '0';

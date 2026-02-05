@@ -66,7 +66,7 @@
     // If endpoint is null, it'll be derived from baseUrl + endpointPath
     endpoint: null,
     tenantId: "",
-    // Default field mappings to your DTO
+    // Default field mappings to your DTO (aligned with LeadDocument)
     fieldMappings: {
       leadOwner: ["leadOwner", "owner"],
       fullName: ["fullName", "name", "full_name"],
@@ -84,15 +84,12 @@
       companySize: ["companySize", "employees"],
       industryType: ["industryType", "industry"],
       status: ["status", "leadStatus"],
-      source: ["source", "leadSource", "origin"],
-      score: ["score", "leadScore"],
-      scoreTrend: ["scoreTrend", "trend"],
       preferredChannel: ["preferredChannel", "contactMethod"],
       description: ["description", "message", "comments", "notes"],
       linkedinUrl: ["linkedinUrl", "linkedin"],
       twitterUrl: ["twitterUrl", "twitter"],
       annualRevenue: ["annualRevenue", "revenue"],
-      // Additional fields from CreateLeadDto
+      // Additional fields from CreateLeadDto / LeadDocument
       createdDate: ["createdDate", "created_at", "createdOn"],
       createdBy: ["createdBy", "created_by"],
       lastActivityDate: ["lastActivityDate", "last_activity_date"],
@@ -101,7 +98,7 @@
     // Default values for required fields
     defaultValues: {
       status: "New",
-      source: "Website",
+      // source is always forced to "Website" in prepareLeadData
       createdDate: () => new Date().toISOString(),
     },
     buttonClass: "crm-capture-btn",
@@ -304,6 +301,11 @@
             typeof defaultValue === "function" ? defaultValue() : defaultValue;
         }
       }
+
+      // Always set status, source and createdBy regardless of field mapping
+      leadData.status = "New";
+      leadData.source = "Website";
+      leadData.createdBy = "snippet";
 
       // Default leadOwner
       if (!leadData.leadOwner) {

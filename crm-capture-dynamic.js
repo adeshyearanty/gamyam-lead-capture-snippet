@@ -6,11 +6,66 @@
 (function () {
   "use strict";
 
+  // Shared secret used to derive the AES-GCM key.
+  // IMPORTANT: keep this in sync with whatever you use on the UI to encrypt.
+  const ENCRYPTION_PASSPHRASE = "capture-widget-encryption-key-2026";
+
+  // --- Encryption helpers (decrypt only, UI does encrypt) ---
+  function base64Decode(str) {
+    const binary = atob(str);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  async function getEncryptionKey(passphrase) {
+    const encoder = new TextEncoder();
+    const passphraseBytes = encoder.encode(passphrase);
+    const hash = await crypto.subtle.digest("SHA-256", passphraseBytes);
+    return crypto.subtle.importKey(
+      "raw",
+      hash,
+      { name: "AES-GCM" },
+      false,
+      ["encrypt", "decrypt"]
+    );
+  }
+
+  async function decryptConfig(encryptedBase64, passphrase) {
+    if (!encryptedBase64 || !passphrase || !window.crypto?.subtle) {
+      throw new Error("Decryption not available");
+    }
+
+    const combined = base64Decode(encryptedBase64);
+    const iv = combined.slice(0, 12);
+    const ciphertext = combined.slice(12);
+
+    const key = await getEncryptionKey(passphrase);
+
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      ciphertext
+    );
+
+    const decoder = new TextDecoder();
+    const json = decoder.decode(plaintext);
+    return JSON.parse(json);
+  }
+
   // Configuration defaults
   const defaults = {
     siteId: "",
     apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
-    endpoint: "https://dev-api.salesastra.ai/leads/v1/leads",
+    // Base URL and endpoint for public lead creation
+    baseUrl: "https://dev-api.salesastra.ai/leads/v1",
+    endpointPath: "/leads/public",
+    // If endpoint is null, it'll be derived from baseUrl + endpointPath
+    endpoint: null,
+    tenantId: "",
     // Default field mappings to your DTO
     fieldMappings: {
       leadOwner: ["leadOwner", "owner"],
@@ -37,6 +92,11 @@
       linkedinUrl: ["linkedinUrl", "linkedin"],
       twitterUrl: ["twitterUrl", "twitter"],
       annualRevenue: ["annualRevenue", "revenue"],
+      // Additional fields from CreateLeadDto
+      createdDate: ["createdDate", "created_at", "createdOn"],
+      createdBy: ["createdBy", "created_by"],
+      lastActivityDate: ["lastActivityDate", "last_activity_date"],
+      organizationId: ["organizationId", "orgId", "organization_id"],
     },
     // Default values for required fields
     defaultValues: {
@@ -52,6 +112,13 @@
   class CRMLeadCapture {
     constructor(options) {
       this.config = { ...defaults, ...options };
+
+      // Derive endpoint from baseUrl + endpointPath if not explicitly provided
+      if (!this.config.endpoint && this.config.baseUrl && this.config.endpointPath) {
+        const trimmedBase = this.config.baseUrl.replace(/\/+$/, "");
+        this.config.endpoint = `${trimmedBase}${this.config.endpointPath}`;
+      }
+
       this.initialize();
     }
 
@@ -61,7 +128,7 @@
       } else {
         this.bindEvents();
       }
-      this.log("Initialized for Lead Capturing");
+      this.log("Initialized for React/Next.js");
     }
 
     setupReactListener() {
@@ -299,13 +366,20 @@
 
       const { site_id, api_token, ...payload } = leadData;
 
+      const headers = {
+        "Content-Type": "application/json",
+        "x-api-key":
+          this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
+      };
+
+      // x-tenant-id is required for the public lead creation API
+      if (this.config.tenantId) {
+        headers["x-tenant-id"] = this.config.tenantId;
+      }
+
       fetch(this.config.endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key":
-            this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
-        },
+        headers,
         body: JSON.stringify(payload),
       })
         .then((response) => {
@@ -343,15 +417,24 @@
   // Expose to global scope
   window.CRMLeadCapture = CRMLeadCapture;
 
-  // Auto-initialize if options are provided in data attributes
+  // Auto-initialize if options are provided in data attributes or encrypted config
   document.addEventListener("DOMContentLoaded", () => {
-    const scriptEl = document.querySelector("script[data-crm-api-token]");
-    if (scriptEl) {
-      const options = {
-        endpoint:
-          scriptEl.getAttribute("data-crm-endpoint") || defaults.endpoint,
+    (async () => {
+      const scriptEl = document.querySelector("script[data-crm-api-token]");
+      if (!scriptEl) return;
+
+      // Base options from data-* attributes
+      const baseOptions = {
+        // Allow passing either a full endpoint or base URL + endpoint path
+        endpoint: scriptEl.getAttribute("data-crm-endpoint") || null,
+        baseUrl:
+          scriptEl.getAttribute("data-crm-base-url") || defaults.baseUrl,
+        endpointPath:
+          scriptEl.getAttribute("data-crm-endpoint-path") ||
+          defaults.endpointPath,
         apiToken:
           scriptEl.getAttribute("data-crm-api-token") || defaults.apiToken,
+        tenantId: scriptEl.getAttribute("data-crm-tenant-id") || "",
         debug: scriptEl.hasAttribute("data-crm-debug"),
         buttonClass:
           scriptEl.getAttribute("data-crm-button-class") ||
@@ -371,14 +454,38 @@
       const rawMappings = scriptEl.getAttribute("data-crm-field-mappings");
       if (rawMappings) {
         try {
-          options.fieldMappings = JSON.parse(rawMappings);
+          baseOptions.fieldMappings = JSON.parse(rawMappings);
         } catch (e) {
           console.error("[Gamyam CRM] Invalid JSON in data-crm-field-mappings");
         }
       }
 
-      new CRMLeadCapture(options);
-    }
+      let finalOptions = { ...baseOptions };
+
+      // If an encrypted config is present (UniBox-style), decrypt and merge
+      try {
+        const globalCfg =
+          window.UniBoxEmbedConfig || window.CRMLeadCaptureConfig || null;
+        const encryptedConfig = globalCfg?.encryptedConfig;
+
+        if (encryptedConfig) {
+          const decrypted = await decryptConfig(
+            encryptedConfig,
+            ENCRYPTION_PASSPHRASE
+          );
+          // Decrypted values override baseOptions, but data-* can still act as fallback
+          finalOptions = { ...baseOptions, ...decrypted };
+        } else if (globalCfg && typeof globalCfg === "object") {
+          // Allow passing plain config via global as well
+          const { encryptedConfig: _ignored, ...plain } = globalCfg;
+          finalOptions = { ...baseOptions, ...plain };
+        }
+      } catch (e) {
+        console.error("[Gamyam CRM] Failed to decrypt config", e);
+      }
+
+      new CRMLeadCapture(finalOptions);
+    })();
   });
 })();
 

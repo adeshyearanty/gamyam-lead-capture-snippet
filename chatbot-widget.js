@@ -651,11 +651,22 @@
               const normalizedTextValue =
                 textValue && textValue.trim() ? textValue.trim() : null;
 
+              const canonicalTimestamp =
+                // Prefer canonical millisecond timestamp if present
+                (typeof msg.timestamp === 'number' && msg.timestamp) ||
+                // Then prefer ISO timestamp string if available
+                (msg.timestamp_iso
+                  ? msg.timestamp_iso
+                  : // Fallback: derive from legacy seconds-based field
+                    (typeof msg.timestamp_meta === 'number'
+                      ? msg.timestamp_meta * 1000
+                      : undefined));
+
               appendMessageToUI(
                 normalizedTextValue,
                 msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
                 msg.id || msg.messageId,
-                msg.timestamp || msg.timestamp_meta,
+                canonicalTimestamp,
                 msg.status,
                 msg.readAt,
                 msg.readByUs,
@@ -744,12 +755,20 @@ async function initializeConversation(showLoading = false) {
                 const normalizedTextValue =
                   textValue && textValue.trim() ? textValue.trim() : null;
 
+                const canonicalTimestamp =
+                  (typeof msg.timestamp === 'number' && msg.timestamp) ||
+                  (msg.timestamp_iso
+                    ? msg.timestamp_iso
+                    : (typeof msg.timestamp_meta === 'number'
+                        ? msg.timestamp_meta * 1000
+                        : undefined));
+
                 appendMessageToUI(
                   normalizedTextValue,
                   msg.sender ||
                     (msg.direction === 'inbound' ? 'user' : 'agent'),
                   msg.id || msg.messageId,
-                  msg.timestamp || msg.timestamp_meta,
+                  canonicalTimestamp,
                   msg.status,
                   msg.readAt,
                   msg.readByUs,
@@ -940,12 +959,20 @@ async function initializeConversation(showLoading = false) {
                     const normalizedTextValue =
                       textValue && textValue.trim() ? textValue.trim() : null;
 
+                    const canonicalTimestamp =
+                      (typeof msg.timestamp === 'number' && msg.timestamp) ||
+                      (msg.timestamp_iso
+                        ? msg.timestamp_iso
+                        : (typeof msg.timestamp_meta === 'number'
+                            ? msg.timestamp_meta * 1000
+                            : undefined));
+
                     appendMessageToUI(
                       normalizedTextValue,
                       msg.sender ||
                         (msg.direction === 'inbound' ? 'user' : 'agent'),
                       msg.id || msg.messageId,
-                      msg.timestamp || msg.timestamp_meta,
+                      canonicalTimestamp,
                       msg.status,
                       msg.readAt,
                       msg.readByUs,
@@ -1036,93 +1063,63 @@ async function initializeConversation(showLoading = false) {
 
   /**
    * Handle incoming WebSocket messages
-   * Supports: { type, data } (fanout format) and flat message (legacy)
    */
   function handleWebSocketMessage(message) {
-    if (!message || typeof message !== 'object') {
-      console.warn('UniBox: Invalid WebSocket message (not an object)', message);
-      return;
-    }
-
-    // Normalize: server may send { type, data } or flat { type: 'MESSAGE_CREATED', messageId, sender, ... }
-    const type = message.type;
-    const data = message.data;
-
-    // If message has nested data, use it; otherwise treat whole message as payload
-    const payload = data != null ? data : message;
-
-    // Debug logging (avoid logging full payload in production)
-    console.log('UniBox: WebSocket message received:', {
-      type: type || '(no type)',
-      hasData: !!data,
-      hasMessageId: !!(payload.messageId || payload.id),
-      sender: payload.sender,
-    });
+    const { type, data } = message;
+    
+    // Debug logging for all incoming messages
+    console.log('UniBox: WebSocket message received:', { type, hasData: !!data });
 
     switch (type) {
       case 'MESSAGE_CREATED':
       case 'message':
-        console.log('UniBox: Processing MESSAGE_CREATED');
-        handleIncomingMessage(payload);
+        console.log('UniBox: Processing MESSAGE_CREATED:', data || message);
+        handleIncomingMessage(data || message);
         break;
 
       case 'TYPING':
-        handleTypingIndicator(payload);
+        handleTypingIndicator(data || message);
         break;
 
       case 'READ':
         // User does NOT receive read receipts from agent
+        // This is intentionally ignored per design
         break;
 
       case 'MEDIA_UPLOAD_RESPONSE':
         // Handled by requestPresignedUrl via addEventListener
+        // No action needed here, just prevent logging unknown type
         break;
 
       case 'subscribed':
-      case 'subscribe_ack':
-        console.log('UniBox: Subscribed to conversation', payload?.conversationId || conversationId);
+        console.log('UniBox: Subscribed to conversation', data || message);
         break;
 
       case 'error':
-        console.error('UniBox: WebSocket error:', payload);
+        console.error('UniBox: WebSocket error:', data || message);
         break;
 
       default:
-        // Flat message or legacy: has message content
-        if (payload.messageId || payload.id || (payload.text !== undefined && payload.sender !== undefined)) {
-          handleIncomingMessage(payload);
-        } else if (type) {
-          console.log('UniBox: Unknown WebSocket message type:', type);
+        // Handle legacy format or unknown types
+        if (message.messageId || message.text || message.sender) {
+          handleIncomingMessage(message);
+        } else {
+          console.log('UniBox: Unknown WebSocket message type:', type, message);
         }
     }
   }
 
   /**
    * Handle incoming message from WebSocket
-   * Normalizes messageId (id vs messageId), timestamp, and filters by conversationId
    */
   function handleIncomingMessage(message) {
-    if (!message) return;
-
-    // Normalize: backend may send messageId or id
-    const messageId = message.messageId || message.id;
-    const timestamp = message.timestamp || message.createdAt;
-
-    // Only process if for current conversation (ignore if from another conversation)
-    if (message.conversationId && conversationId && message.conversationId !== conversationId) {
-      console.log('UniBox: Ignoring message for other conversation', message.conversationId);
-      return;
-    }
-
-    const isUserMessage = (message.sender || '').toLowerCase() === 'user';
+    const isUserMessage = message.sender === 'user';
 
     const existingMessage =
-      messageId && (
-        messages.get(messageId) ||
-        Array.from(messages.values()).find(
-          (msg) =>
-            msg.messageId === messageId || msg.id === messageId,
-        )
+      messages.get(message.messageId) ||
+      Array.from(messages.values()).find(
+        (msg) =>
+          msg.messageId === message.messageId || msg.id === message.messageId,
       );
 
     if (existingMessage && existingMessage.element) {
@@ -1143,15 +1140,15 @@ async function initializeConversation(showLoading = false) {
         // RELAXED TIMING: Allow up to 30 seconds diff to account for network/server delay
         return (
           msg.text === message.text &&
-          Math.abs(new Date(msg.timestamp) - new Date(timestamp)) <
+          Math.abs(new Date(msg.timestamp) - new Date(message.timestamp)) <
             30000
         );
       });
 
       if (optimisticMessage && optimisticMessage.element) {
         const oldId = optimisticMessage.id || optimisticMessage.messageId;
-        optimisticMessage.id = messageId;
-        optimisticMessage.messageId = messageId;
+        optimisticMessage.id = message.messageId;
+        optimisticMessage.messageId = message.messageId;
         optimisticMessage.status = message.status || optimisticMessage.status;
         optimisticMessage.readAt = message.readAt || optimisticMessage.readAt;
         optimisticMessage.readByUs =
@@ -1162,12 +1159,12 @@ async function initializeConversation(showLoading = false) {
             message.readByUsAt || optimisticMessage.readByUsAt;
           optimisticMessage.element.setAttribute(
             'data-message-id',
-            messageId,
+            message.messageId,
           );
-          if (oldId && oldId !== messageId) {
+          if (oldId && oldId !== message.messageId) {
             messages.delete(oldId);
           }
-          messages.set(messageId, optimisticMessage);
+          messages.set(message.messageId, optimisticMessage);
           return;
         }
       }
@@ -1181,7 +1178,7 @@ async function initializeConversation(showLoading = false) {
       const isMedia = message.type && ['image', 'video', 'audio', 'document', 'file'].includes(message.type);
       if (isMedia || message.media_storage_url) {
         console.log('UniBox: Received media message:', {
-          messageId,
+          messageId: message.messageId,
           type: message.type,
           media_storage_url: message.media_storage_url,
           text: normalizedTextValue,
@@ -1192,8 +1189,8 @@ async function initializeConversation(showLoading = false) {
       appendMessageToUI(
         normalizedTextValue,
         message.sender,
-        messageId,
-        timestamp,
+        message.messageId,
+        message.timestamp,
         message.status,
         message.readAt,
         message.readByUs,
@@ -1334,6 +1331,69 @@ async function initializeConversation(showLoading = false) {
   // }
 
   /**
+   * Generate presigned URL for S3 upload using utility service
+   * Same approach as agent side - uses /s3/generate-presigned-url endpoint
+   */
+  async function generatePresignedUploadUrl(s3Key) {
+    try {
+      // Use utility API base URL + /generate-presigned-url
+      const endpoint = `${UTILITY_API_BASE}/generate-presigned-url`;
+      console.log('UniBox: Requesting presigned URL from:', endpoint);
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          key: s3Key,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to get presigned URL: ${response.status}`);
+      }
+
+      // Response can be plain text URL or JSON object
+      const contentType = response.headers.get('content-type') || '';
+      let presignedUrl;
+      
+      if (contentType.includes('application/json')) {
+        const data = await response.json();
+        // Response should have { url: presignedUrl } or { uploadUrl: presignedUrl }
+        presignedUrl = data.url || data.uploadUrl || data;
+      } else {
+        // Plain text response - URL directly
+        presignedUrl = await response.text();
+      }
+      
+      // Handle case where presignedUrl is still an object
+      if (typeof presignedUrl === 'object' && presignedUrl !== null) {
+        presignedUrl = presignedUrl.url || presignedUrl.uploadUrl;
+      }
+      
+      // Trim whitespace from text response
+      if (typeof presignedUrl === 'string') {
+        presignedUrl = presignedUrl.trim();
+      }
+      
+      if (!presignedUrl || typeof presignedUrl !== 'string') {
+        throw new Error('No presigned URL in response');
+      }
+
+      // Validate it's a URL
+      if (!presignedUrl.startsWith('http')) {
+        throw new Error('Invalid presigned URL format');
+      }
+
+      console.log('UniBox: Got presigned upload URL');
+      return presignedUrl;
+    } catch (error) {
+      console.error('UniBox: Error generating presigned URL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * @deprecated - Use generatePresignedUploadUrl instead
    * Request presigned S3 URL for media upload via WebSocket
    */
   async function requestPresignedUrl(file) {
@@ -1832,6 +1892,9 @@ async function initializeConversation(showLoading = false) {
     selectedFiles = [];
     renderFileChips();
 
+    // Get tenantId from config
+    const tenantId = fetchedConfig?.tenantId || 'unknown';
+
     for (const fileData of filesToSend) {
       const file = fileData.file;
       const mediaType = fileData.mediaType;
@@ -1847,39 +1910,32 @@ async function initializeConversation(showLoading = false) {
         continue;
       }
 
-      // Request presigned URL FIRST so we use the REAL S3 key everywhere
-      console.log('📤 Widget media upload - requesting presigned URL...');
-      let uploadData;
-      try {
-        uploadData = await requestPresignedUrl(file);
-      } catch (err) {
-        console.error('UniBox: Failed to get presigned URL for media', err);
-        alert('Failed to prepare media upload. Please try again.');
-        continue;
-      }
+      // FAST PATH: Same as agent side
+      // Generate S3 key -> Show chip UI -> Send WebSocket -> Upload in background
+      console.log('📤 Widget media upload - FAST PATH...');
 
-      const s3Key = uploadData.s3Key;
-      const uploadUrl = uploadData.uploadUrl;
+      // Step 1: Generate random S3 key locally (instant)
+      const fileExt = fileName.split('.').pop() || 'bin';
       const randomId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      const s3Key = `live-chat-media/${tenantId}/${conversationId}/${randomId}.${fileExt}`;
       const messageId = `msg_media_${randomId}`;
-      console.log('1️⃣ Using backend S3 key for message:', s3Key);
+      console.log('1️⃣ Generated S3 key:', s3Key);
 
-      // Step 2: Show optimistic UI immediately with local preview
-      // Use local blob URL as mediaStorageUrl for instant display
-      // When server echoes back, it will have the real s3Key
+      // Step 2: Show chip UI immediately (no loading state - same as agent side)
+      // Use s3Key as mediaStorageUrl so it shows as a chip, not inline image
       appendMessageToUI(
         caption || '',  // Caption only, NOT filename
         'user',
         messageId,
         new Date(),
-        'sending',
+        'delivered',         // Show as sent immediately (no loading state)
         null,           // readAt
         false,          // readByUs
         null,           // readByUsAt
         mediaType,
-        localPreviewUrl || s3Key,  // Use local preview URL for instant display (blob:...), fallback to s3Key
+        s3Key,          // Use S3 key so it shows as a chip
       );
-      console.log('2️⃣ Optimistic UI shown with localPreviewUrl:', localPreviewUrl);
+      console.log('2️⃣ Chip UI shown');
 
       // Step 3: Send message via WebSocket with S3 KEY (instant)
       const wsSent = wsSend({
@@ -1901,56 +1957,42 @@ async function initializeConversation(showLoading = false) {
         console.log('3️⃣ Message queued for WebSocket delivery');
       }
 
-      // Step 4: Upload in background (non-blocking) using the same uploadUrl/s3Key
-      // Capture localPreviewUrl in closure for cleanup
-      const previewUrlToRevoke = localPreviewUrl;
+      // Cleanup local preview URL immediately (not needed for chip display)
+      if (localPreviewUrl && localPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(localPreviewUrl);
+      }
 
+      // Step 4 & 5: Get presigned URL via utility service and upload in background
       (async () => {
         try {
-          console.log('4️⃣ Uploading to S3...');
-          await uploadToS3(uploadUrl, file);
+          console.log('4️⃣ Requesting presigned URL via utility service...');
+          const presignedUrl = await generatePresignedUploadUrl(s3Key);
+          console.log('✅ Got presigned URL');
+
+          console.log('5️⃣ Uploading to S3...');
+          await uploadToS3(presignedUrl, file);
           console.log('✅ File uploaded to S3');
 
-          // Update message status to sent and update mediaStorageUrl to real s3Key
-          const existingMsg = messages.get(messageId);
-          if (existingMsg) {
-            existingMsg.status = 'sent';
-            existingMsg.mediaStorageUrl = s3Key;  // Ensure we keep the REAL S3 key
-            
-            // Re-render message to show sent status
-            const host = document.getElementById('unibox-root');
-            if (host && host.shadowRoot) {
-              const msgEl = host.shadowRoot.querySelector(`[data-message-id="${messageId}"]`);
-              if (msgEl) {
-                const statusEl = msgEl.querySelector('.message-status');
-                if (statusEl) {
-                  statusEl.textContent = '✓';
-                }
-                // Also remove any sending overlay on inline previews
-                const overlay = msgEl.querySelector('.chat-widget-media-preview-overlay');
-                if (overlay) {
-                  overlay.remove();
-                }
-              }
-            }
-          }
-          
-          // Cleanup: Revoke the local preview URL after successful upload
-          if (previewUrlToRevoke && previewUrlToRevoke.startsWith('blob:')) {
-            URL.revokeObjectURL(previewUrlToRevoke);
-            console.log('✅ Local preview URL revoked');
-          }
+          // Upload complete - message already shown with 'sent' status
+          console.log('✅ Media upload complete for:', s3Key);
         } catch (uploadError) {
           console.error('❌ Background upload failed:', uploadError);
           // Update message status to failed
           const existingMsg = messages.get(messageId);
           if (existingMsg) {
             existingMsg.status = 'failed';
-          }
-          
-          // Still cleanup the preview URL
-          if (previewUrlToRevoke && previewUrlToRevoke.startsWith('blob:')) {
-            URL.revokeObjectURL(previewUrlToRevoke);
+            // Update UI to show failed status
+            const host = document.getElementById('unibox-root');
+            if (host && host.shadowRoot) {
+              const msgEl = host.shadowRoot.querySelector(`[data-message-id="${messageId}"]`);
+              if (msgEl) {
+                const chip = msgEl.querySelector('.chat-widget-media-chip');
+                if (chip) {
+                  chip.style.borderColor = '#ef4444';
+                  chip.style.backgroundColor = '#fef2f2';
+                }
+              }
+            }
           }
         }
       })();
@@ -2137,11 +2179,19 @@ async function fetchAndRenderThreadAfterSend() {
         const normalizedTextValue =
           textValue && textValue.trim() ? textValue.trim() : null;
 
+        const canonicalTimestamp =
+          (typeof msg.timestamp === 'number' && msg.timestamp) ||
+          (msg.timestamp_iso
+            ? msg.timestamp_iso
+            : (typeof msg.timestamp_meta === 'number'
+                ? msg.timestamp_meta * 1000
+                : undefined));
+
         appendMessageToUI(
           normalizedTextValue,
           msg.sender || (msg.direction === 'inbound' ? 'user' : 'agent'),
           msg.id || msg.messageId,
-          msg.timestamp || msg.timestamp_meta,
+          canonicalTimestamp,
           msg.status,
           msg.readAt,
           msg.readByUs,
@@ -2655,110 +2705,61 @@ async function fetchAndRenderThreadAfterSend() {
         return fileName || labels[type] || 'Media';
       };
 
-      // Check if this is a blob URL (local preview) for images
-      const isBlobUrl = mediaStorageUrl && mediaStorageUrl.startsWith('blob:');
-      const showInlinePreview = isBlobUrl && messageType === 'image';
-
-      if (showInlinePreview) {
-        // For images with blob URLs, show inline image preview
-        const imgContainer = document.createElement('div');
-        imgContainer.className = 'chat-widget-media-preview';
-        imgContainer.style.width = '100%';
-        imgContainer.style.maxWidth = '200px';
-        imgContainer.style.borderRadius = '8px';
-        imgContainer.style.overflow = 'hidden';
-        imgContainer.style.cursor = 'pointer';
-        imgContainer.style.position = 'relative';
-        imgContainer.onclick = () => {
-          showMediaPreview(mediaStorageUrl, messageType, normalizedText);
-        };
-
-        const img = document.createElement('img');
-        img.src = mediaStorageUrl;
-        img.style.width = '100%';
-        img.style.height = 'auto';
-        img.style.display = 'block';
-        img.style.borderRadius = '8px';
-        img.alt = 'Image';
-
-        // Add sending indicator overlay
-        if (status === 'sending') {
-          const overlay = document.createElement('div');
-          overlay.className = 'chat-widget-media-preview-overlay';
-          overlay.style.position = 'absolute';
-          overlay.style.top = '0';
-          overlay.style.left = '0';
-          overlay.style.right = '0';
-          overlay.style.bottom = '0';
-          overlay.style.backgroundColor = 'rgba(0,0,0,0.3)';
-          overlay.style.display = 'flex';
-          overlay.style.alignItems = 'center';
-          overlay.style.justifyContent = 'center';
-          overlay.style.color = '#fff';
-          overlay.style.fontSize = '12px';
-          overlay.textContent = 'Sending...';
-          imgContainer.appendChild(overlay);
-        }
-
-        imgContainer.appendChild(img);
-        msgContent.appendChild(imgContainer);
-      } else {
-        // For other media types or non-blob URLs, show chip
-        const mediaChip = document.createElement('button');
-        mediaChip.className = 'chat-widget-media-chip';
-        mediaChip.type = 'button';
-        mediaChip.style.display = 'flex';
-        mediaChip.style.alignItems = 'center';
-        mediaChip.style.gap = '8px';
-        mediaChip.style.padding = '10px 12px';
+      // Always show media as a clickable chip (same as agent side)
+      const mediaChip = document.createElement('button');
+      mediaChip.className = 'chat-widget-media-chip';
+      mediaChip.type = 'button';
+      mediaChip.style.display = 'flex';
+      mediaChip.style.alignItems = 'center';
+      mediaChip.style.gap = '8px';
+      mediaChip.style.padding = '10px 12px';
+      mediaChip.style.backgroundColor =
+        type === 'agent' ? '#f5f7f9' : '#f9fafb';
+      mediaChip.style.border = '1px solid #e5e7eb';
+      mediaChip.style.borderRadius = '8px';
+      mediaChip.style.cursor = 'pointer';
+      mediaChip.style.transition = 'all 0.2s';
+      mediaChip.style.width = '100%';
+      mediaChip.style.textAlign = 'left';
+      mediaChip.style.color = '#18181e';
+      mediaChip.style.fontSize = '14px';
+      mediaChip.style.fontFamily = settings.appearance.fontFamily;
+      mediaChip.style.minHeight = '40px'; // Ensure minimum height for visibility
+      mediaChip.onmouseenter = () => {
+        mediaChip.style.backgroundColor =
+          type === 'agent' ? '#e9ecef' : '#f3f4f6';
+        mediaChip.style.transform = 'translateY(-1px)';
+      };
+      mediaChip.onmouseleave = () => {
         mediaChip.style.backgroundColor =
           type === 'agent' ? '#f5f7f9' : '#f9fafb';
-        mediaChip.style.border = '1px solid #e5e7eb';
-        mediaChip.style.borderRadius = '8px';
-        mediaChip.style.cursor = 'pointer';
-        mediaChip.style.transition = 'all 0.2s';
-        mediaChip.style.width = '100%';
-        mediaChip.style.textAlign = 'left';
-        mediaChip.style.color = '#18181e';
-        mediaChip.style.fontSize = '14px';
-        mediaChip.style.fontFamily = settings.appearance.fontFamily;
-        mediaChip.style.minHeight = '40px'; // Ensure minimum height for visibility
-        mediaChip.onmouseenter = () => {
-          mediaChip.style.backgroundColor =
-            type === 'agent' ? '#e9ecef' : '#f3f4f6';
-          mediaChip.style.transform = 'translateY(-1px)';
-        };
-        mediaChip.onmouseleave = () => {
-          mediaChip.style.backgroundColor =
-            type === 'agent' ? '#f5f7f9' : '#f9fafb';
-          mediaChip.style.transform = 'translateY(0)';
-        };
-        mediaChip.onclick = () => {
-          showMediaPreview(mediaStorageUrl, messageType, normalizedText);
-        };
+        mediaChip.style.transform = 'translateY(0)';
+      };
+      mediaChip.onclick = () => {
+        showMediaPreview(mediaStorageUrl, messageType, normalizedText);
+      };
 
-        const iconDiv = document.createElement('div');
-        iconDiv.style.display = 'flex';
-        iconDiv.style.alignItems = 'center';
-        iconDiv.style.justifyContent = 'center';
-        iconDiv.style.color = settings.appearance.primaryColor;
-        iconDiv.style.flexShrink = '0';
-        iconDiv.innerHTML = getMediaIcon(messageType);
+      const iconDiv = document.createElement('div');
+      iconDiv.style.display = 'flex';
+      iconDiv.style.alignItems = 'center';
+      iconDiv.style.justifyContent = 'center';
+      iconDiv.style.color = settings.appearance.primaryColor;
+      iconDiv.style.flexShrink = '0';
+      iconDiv.innerHTML = getMediaIcon(messageType);
 
-        const labelDiv = document.createElement('div');
-        labelDiv.style.flex = '1';
-        labelDiv.style.minWidth = '0';
-        labelDiv.style.wordBreak = 'break-word';
-        labelDiv.textContent = getMediaLabel(
-          messageType,
-          normalizedText,
-          mediaStorageUrl,
-        );
+      const labelDiv = document.createElement('div');
+      labelDiv.style.flex = '1';
+      labelDiv.style.minWidth = '0';
+      labelDiv.style.wordBreak = 'break-word';
+      labelDiv.textContent = getMediaLabel(
+        messageType,
+        normalizedText,
+        mediaStorageUrl,
+      );
 
-        mediaChip.appendChild(iconDiv);
-        mediaChip.appendChild(labelDiv);
-        msgContent.appendChild(mediaChip);
-      }
+      mediaChip.appendChild(iconDiv);
+      mediaChip.appendChild(labelDiv);
+      msgContent.appendChild(mediaChip);
 
       // Add text caption if available and not the file name
       if (

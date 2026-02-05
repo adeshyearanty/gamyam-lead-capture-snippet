@@ -422,7 +422,10 @@
   // Auto-initialize if options are provided in data attributes or encrypted config
   document.addEventListener("DOMContentLoaded", () => {
     (async () => {
-      const scriptEl = document.querySelector("script[data-crm-api-token]");
+      // Prefer the current script tag; fall back to matching by src
+      const scriptEl =
+        document.currentScript ||
+        document.querySelector('script[src*="crm-capture-dynamic.js"]');
       if (!scriptEl) return;
 
       // Base options from data-* attributes

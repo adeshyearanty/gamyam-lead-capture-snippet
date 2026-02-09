@@ -131,16 +131,7 @@
     }
 
     setupReactListener() {
-      // Listen for clicks anywhere in document
-      document.addEventListener("click", (e) => {
-        const btn = e.target.closest(".crm-capture-btn");
-        if (btn) {
-          const form = btn.closest("form");
-          if (form) this.handleReactForm(form);
-        }
-      });
-
-      // Alternative mutation observer for dynamic forms
+      // Mutation observer for dynamic forms; attach submit handlers
       if (typeof MutationObserver !== "undefined") {
         const observer = new MutationObserver((mutations) => {
           mutations.forEach((mutation) => {
@@ -153,6 +144,9 @@
                 forms.forEach((form) => {
                   if (form.querySelector(".crm-capture-btn")) {
                     form.addEventListener("submit", (e) => {
+                      if (this.config.blockNativeSubmit) {
+                        e.preventDefault();
+                      }
                       this.handleReactForm(form);
                     });
                   }
@@ -198,17 +192,10 @@
           form.classList.contains(this.config.formClass) ||
           form.querySelector(".crm-capture-btn")
         ) {
-          this.handleFormSubmit(form);
-        }
-      });
-
-      // Handle button clicks
-      document.addEventListener("click", (e) => {
-        if (e.target.classList.contains(this.config.buttonClass)) {
-          const form = this.findParentForm(e.target);
-          if (form) {
-            this.handleFormSubmit(form);
+          if (this.config.blockNativeSubmit) {
+            e.preventDefault();
           }
+          this.handleFormSubmit(form);
         }
       });
     }

@@ -66,6 +66,8 @@
     // If endpoint is null, it'll be derived from baseUrl + endpointPath
     endpoint: null,
     tenantId: "",
+    // When true, snippet prevents native submit; default false so we don't break existing flows
+    blockNativeSubmit: false,
     // Default field mappings to your DTO (aligned with LeadDocument)
     fieldMappings: {
       leadOwner: ["leadOwner", "owner"],
@@ -133,7 +135,6 @@
       document.addEventListener("click", (e) => {
         const btn = e.target.closest(".crm-capture-btn");
         if (btn) {
-          e.preventDefault();
           const form = btn.closest("form");
           if (form) this.handleReactForm(form);
         }
@@ -152,7 +153,6 @@
                 forms.forEach((form) => {
                   if (form.querySelector(".crm-capture-btn")) {
                     form.addEventListener("submit", (e) => {
-                      e.preventDefault();
                       this.handleReactForm(form);
                     });
                   }
@@ -198,7 +198,6 @@
           form.classList.contains(this.config.formClass) ||
           form.querySelector(".crm-capture-btn")
         ) {
-          e.preventDefault();
           this.handleFormSubmit(form);
         }
       });
@@ -208,7 +207,6 @@
         if (e.target.classList.contains(this.config.buttonClass)) {
           const form = this.findParentForm(e.target);
           if (form) {
-            e.preventDefault();
             this.handleFormSubmit(form);
           }
         }
@@ -309,7 +307,7 @@
 
       // Default leadOwner
       if (!leadData.leadOwner) {
-        leadData.leadOwner = "adeshyearanty";
+        leadData.leadOwner = "system";
       }
 
       // Format phone numbers if we have components

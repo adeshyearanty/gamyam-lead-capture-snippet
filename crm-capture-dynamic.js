@@ -173,15 +173,13 @@
       });
 
       const leadData = this.prepareLeadData(data);
-      if (this.validateLeadData(leadData)) {
-        this.submitLead(leadData).then(() => {
-          // Trigger React's state update if needed
-          if (form._reactRootContainer) {
-            const event = new Event("crmLeadSuccess");
-            form.dispatchEvent(event);
-          }
-        });
-      }
+      this.submitLead(leadData).then(() => {
+        // Trigger React's state update if needed
+        if (form._reactRootContainer) {
+          const event = new Event("crmLeadSuccess");
+          form.dispatchEvent(event);
+        }
+      });
     }
 
     bindEvents() {
@@ -210,12 +208,7 @@
     handleFormSubmit(form) {
       const formData = this.extractFormData(form);
       const leadData = this.prepareLeadData(formData);
-
-      if (this.validateLeadData(leadData)) {
-        this.submitLead(leadData);
-      } else {
-        this.log("Validation failed", "error");
-      }
+      this.submitLead(leadData);
     }
 
     extractFormData(form) {
@@ -318,34 +311,6 @@
       // Match country code like +91 at start of string
       const match = phone.match(/^(\+\d{1,3})/);
       return match ? match[1] : null;
-    }
-
-    validateLeadData(leadData) {
-      // Required fields validation
-      if (!leadData.email) {
-        this.log("Email is required", "error");
-        return false;
-      }
-
-      if (!leadData.fullName) {
-        this.log("Full name is required", "error");
-        return false;
-      }
-
-      // Email format validation
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(leadData.email)) {
-        this.log("Invalid email format", "error");
-        return false;
-      }
-
-      // Phone number validation if provided
-      if (leadData.contactNumber && !/^\d{10}$/.test(leadData.contactNumber)) {
-        this.log("Contact number must be exactly 10 digits", "error");
-        return false;
-      }
-
-      return true;
     }
 
     submitLead(leadData) {

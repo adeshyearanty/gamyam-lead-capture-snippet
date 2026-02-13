@@ -2735,14 +2735,10 @@
     msgDiv.setAttribute("data-message-id", normalizedId);
     msgDiv.setAttribute("data-timestamp", normalizedTimestamp.toString());
 
-    const headerTitle =
-      settings.appearance?.header?.title ||
-      settings.appearance?.headerName ||
-      "Pulse AI";
     if (type === "agent") {
       const labelEl = document.createElement("div");
       labelEl.className = "chat-widget-message-label";
-      labelEl.textContent = headerTitle;
+      labelEl.textContent = "Pulse AI";
       msgDiv.appendChild(labelEl);
     }
 
@@ -3359,6 +3355,8 @@
           background-color: #ffffff;
           position: relative;
           top: -24px;
+          display: flex;
+          flex-direction: column;
         }
 
         .chat-widget-loader {

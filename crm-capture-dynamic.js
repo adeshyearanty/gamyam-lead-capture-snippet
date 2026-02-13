@@ -173,13 +173,15 @@
       });
 
       const leadData = this.prepareLeadData(data);
-      this.submitLead(leadData).then(() => {
-        // Trigger React's state update if needed
-        if (form._reactRootContainer) {
-          const event = new Event("crmLeadSuccess");
-          form.dispatchEvent(event);
-        }
-      });
+      if (this.validateLeadData(leadData)) {
+        this.submitLead(leadData).then(() => {
+          // Trigger React's state update if needed
+          if (form._reactRootContainer) {
+            const event = new Event("crmLeadSuccess");
+            form.dispatchEvent(event);
+          }
+        });
+      }
     }
 
     bindEvents() {
@@ -208,7 +210,12 @@
     handleFormSubmit(form) {
       const formData = this.extractFormData(form);
       const leadData = this.prepareLeadData(formData);
-      this.submitLead(leadData);
+
+      if (this.validateLeadData(leadData)) {
+        this.submitLead(leadData);
+      } else {
+        this.log("Validation failed", "error");
+      }
     }
 
     extractFormData(form) {
@@ -270,20 +277,39 @@
         ...formData,
       };
 
-      // Apply default values
+      // Apply default values (but skip status/source/createdBy as they come from config)
       for (const [field, defaultValue] of Object.entries(
         this.config.defaultValues
       )) {
+        // Skip status, source, createdBy - these come from config.defaultStatus/defaultSource/defaultCreatedBy
+        if (field === "status" || field === "source" || field === "createdBy") {
+          continue;
+        }
         if (!leadData[field]) {
           leadData[field] =
             typeof defaultValue === "function" ? defaultValue() : defaultValue;
         }
       }
 
-      // Always set status, source and createdBy regardless of field mapping
-      leadData.status = "New";
-      leadData.source = "Website";
-      leadData.createdBy = "snippet";
+      // Use config values for status, source and createdBy (from encrypted config)
+      // These override any form values and fall back to defaults if not in config
+      if (this.config.defaultStatus) {
+        leadData.status = this.config.defaultStatus;
+      } else if (!leadData.status) {
+        leadData.status = "New";
+      }
+
+      if (this.config.defaultSource) {
+        leadData.source = this.config.defaultSource;
+      } else if (!leadData.source) {
+        leadData.source = "Website";
+      }
+
+      if (this.config.defaultCreatedBy) {
+        leadData.createdBy = this.config.defaultCreatedBy;
+      } else if (!leadData.createdBy) {
+        leadData.createdBy = "snippet";
+      }
 
       // Default leadOwner
       if (!leadData.leadOwner) {
@@ -311,6 +337,34 @@
       // Match country code like +91 at start of string
       const match = phone.match(/^(\+\d{1,3})/);
       return match ? match[1] : null;
+    }
+
+    validateLeadData(leadData) {
+      // Required fields validation
+      if (!leadData.email) {
+        this.log("Email is required", "error");
+        return false;
+      }
+
+      if (!leadData.fullName) {
+        this.log("Full name is required", "error");
+        return false;
+      }
+
+      // Email format validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(leadData.email)) {
+        this.log("Invalid email format", "error");
+        return false;
+      }
+
+      // Phone number validation if provided
+      if (leadData.contactNumber && !/^\d{10}$/.test(leadData.contactNumber)) {
+        this.log("Contact number must be exactly 10 digits", "error");
+        return false;
+      }
+
+      return true;
     }
 
     submitLead(leadData) {

@@ -191,9 +191,9 @@
     widgetToken: "",
     testMode: false,
     appearance: {
-      primaryColor: "#2563EB",
-      secondaryColor: "#F3F4F6",
-      backgroundColor: "#FFFFFF",
+      gradientColor1: "#912FF5",
+      gradientColor2: "#EF32D4",
+      gradientColor3: "#7DBCFE",
       fontFamily: "Inter, sans-serif",
       iconStyle: "rounded",
       logoUrl: "",
@@ -205,7 +205,6 @@
       headerName: "Support",
       welcomeMessage: "Hi there! How can we help?",
       chatToggleIcon: {
-        backgroundColor: "#2563EB",
         style: "rounded",
       },
     },
@@ -1876,14 +1875,20 @@
           <line x1="16" y1="13" x2="8" y2="13"></line>
           <line x1="16" y1="17" x2="8" y2="17"></line>
         </svg>`;
-        iconDiv.style.color = settings.appearance.primaryColor;
+        iconDiv.style.color =
+          (settings.appearance.gradientColor1 ||
+            settings.appearance.primaryColor ||
+            "#912FF5");
       } else {
         iconDiv.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
           <circle cx="8.5" cy="8.5" r="1.5"></circle>
           <polyline points="21 15 16 10 5 21"></polyline>
         </svg>`;
-        iconDiv.style.color = settings.appearance.primaryColor;
+        iconDiv.style.color =
+          (settings.appearance.gradientColor1 ||
+            settings.appearance.primaryColor ||
+            "#912FF5");
       }
 
       // File name
@@ -2429,7 +2434,7 @@
         loadingDiv.style.padding = "40px";
         loadingDiv.style.textAlign = "center";
         loadingDiv.innerHTML = `
-          <div style="width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.primaryColor}; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px;"></div>
+          <div style="width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.gradientColor1 || settings.appearance.primaryColor || "#912FF5"}; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px;"></div>
           <div style="color: #6b7280; font-size: 14px;">Loading media...</div>
         `;
         previewContainer.appendChild(loadingDiv);
@@ -2471,7 +2476,10 @@
           fileLink.target = "_blank";
           fileLink.style.display = "inline-block";
           fileLink.style.padding = "12px 20px";
-          fileLink.style.backgroundColor = settings.appearance.primaryColor;
+          fileLink.style.backgroundColor =
+            settings.appearance.gradientColor1 ||
+            settings.appearance.primaryColor ||
+            "#912FF5";
           fileLink.style.color = "#ffffff";
           fileLink.style.borderRadius = "6px";
           fileLink.style.textDecoration = "none";
@@ -2857,7 +2865,10 @@
       iconDiv.style.display = "flex";
       iconDiv.style.alignItems = "center";
       iconDiv.style.justifyContent = "center";
-      iconDiv.style.color = settings.appearance.primaryColor;
+      iconDiv.style.color =
+          (settings.appearance.gradientColor1 ||
+            settings.appearance.primaryColor ||
+            "#912FF5");
       iconDiv.style.flexShrink = "0";
       iconDiv.innerHTML = getMediaIcon(messageType);
 
@@ -3176,21 +3187,18 @@
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // Styles variables calculation
-    // Force white background if a logo image is used
-    let launcherBg =
-      settings.appearance.chatToggleIcon.backgroundColor ||
-      settings.appearance.primaryColor;
-
-    if (resolvedLogoUrl) {
-      launcherBg = "#FFFFFF";
-    }
-
-    const launcherIconColor =
-      launcherBg.toLowerCase() === "#ffffff" ||
-      launcherBg.toLowerCase() === "#fff"
-        ? settings.appearance.primaryColor
-        : "#FFFFFF";
+    // Styles variables: 3-colour gradient (backward compat: fallback to primaryColor if set)
+    const fallback = settings.appearance.primaryColor;
+    const c1 =
+      settings.appearance.gradientColor1 || fallback || "#912FF5";
+    const c2 =
+      settings.appearance.gradientColor2 || fallback || "#EF32D4";
+    const c3 =
+      settings.appearance.gradientColor3 || fallback || "#7DBCFE";
+    const gradientCss = `linear-gradient(272.16deg, ${c1} 0.45%, ${c2} 45.12%, ${c3} 99.8%)`;
+    const accentColor = c1;
+    const launcherBg = resolvedLogoUrl ? "#FFFFFF" : gradientCss;
+    const launcherIconColor = resolvedLogoUrl ? accentColor : "#FFFFFF";
 
     const placement = settings.behavior.stickyPlacement || "bottom-right";
     const isTop = placement.includes("top");
@@ -3265,7 +3273,7 @@
         }
 
         .chat-widget-launcher.open {
-          background: linear-gradient(272.16deg, #EF32D4 0.45%, #912FF5 45.12%, #7DBCFE 99.8%) !important;
+          background: ${gradientCss} !important;
         }
 
         .chat-widget-window {
@@ -3297,7 +3305,7 @@
         }
 
         .chat-widget-header {
-          background: linear-gradient(272.16deg, #EF32D4 0.45%, #912FF5 45.12%, #7DBCFE 99.8%);
+          background: ${gradientCss};
           padding: 8px;
           height: 72px;
           color: #fff;
@@ -3368,7 +3376,7 @@
 
         .chat-widget-loader-spinner {
           border: 3px solid #f3f3f3;
-          border-top: 3px solid ${settings.appearance.primaryColor};
+          border-top: 3px solid ${accentColor};
           border-radius: 50%;
           width: 24px;
           height: 24px;
@@ -3585,13 +3593,13 @@
 
         .chat-widget-form-input:focus {
           outline: none;
-          border-color: ${settings.appearance.primaryColor};
+          border-color: ${accentColor};
         }
 
         .chat-widget-form-btn {
           width: 100%;
           padding: 12px;
-          background: ${settings.appearance.primaryColor};
+          background: ${accentColor};
           color: white;
           border: none;
           border-radius: 6px;

@@ -3197,8 +3197,7 @@
       settings.appearance.gradientColor3 || fallback || "#7DBCFE";
     const gradientCss = `linear-gradient(272.16deg, ${c1} 0.45%, ${c2} 45.12%, ${c3} 99.8%)`;
     const accentColor = c1;
-    const launcherBg = resolvedLogoUrl ? "#FFFFFF" : gradientCss;
-    const launcherIconColor = resolvedLogoUrl ? accentColor : "#FFFFFF";
+    const launcherBg = "#FFFFFF";
 
     const placement = settings.behavior.stickyPlacement || "bottom-right";
     const isTop = placement.includes("top");
@@ -3255,8 +3254,8 @@
           position: fixed; ${verticalCss} ${horizontalLauncherCss}
           width: 48px;
           height: 48px;
+          padding: 0;
           background: ${launcherBg};
-          color: ${launcherIconColor};
           border-radius: ${launcherRadius};
           box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
           cursor: pointer;
@@ -3266,6 +3265,16 @@
           transition: transform 0.2s;
           overflow: hidden;
           z-index: 2147483647;
+        }
+        .chat-widget-launcher svg,
+        .chat-widget-launcher img {
+          width: 100%;
+          height: 100%;
+          display: block;
+          flex-shrink: 0;
+        }
+        .chat-widget-launcher img {
+          object-fit: cover;
         }
 
         .chat-widget-launcher:hover {
@@ -3810,7 +3819,35 @@
         }
     `;
 
-    const chatIcon = `<svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>`;
+    const chatIcon = `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="32" height="32" rx="16" transform="matrix(-1 0 0 1 32 0)" fill="white"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M16.0005 2.5625C23.4233 2.5625 29.4405 8.57979 29.4405 16.0025C29.4405 23.4252 23.4233 29.4425 16.0005 29.4425C8.57784 29.4425 2.56055 23.4252 2.56055 16.0025C2.56055 8.57979 8.57784 2.5625 16.0005 2.5625ZM16.0005 3.60977C9.15623 3.60977 3.60782 9.15819 3.60782 16.0025C3.60782 22.8468 9.15623 28.3952 16.0005 28.3952C22.8449 28.3952 28.3933 22.8468 28.3933 16.0025C28.3933 9.15819 22.8449 3.60977 16.0005 3.60977Z" fill="url(#paint0_linear_3454_252289)"/>
+<path d="M24.6986 11.5066C24.5218 10.9089 24.2263 10.4429 23.8319 10.1327C23.4154 9.80523 22.9049 9.65744 22.3206 9.71547C21.7937 9.76761 21.2089 9.99373 20.5868 10.4152L20.5573 10.4363C20.5511 10.441 17.8236 12.7353 17.8236 12.7353L18.5602 13.5205C18.5602 13.5205 21.0756 11.3966 21.2081 11.2935C21.6673 10.9851 22.0769 10.8219 22.4265 10.7872C22.7205 10.7582 22.9702 10.8269 23.1664 10.9811C23.3845 11.1525 23.5548 11.4338 23.6664 11.8107C23.8519 12.4379 23.8695 13.2938 23.6793 14.3285L23.6772 14.3413C23.6745 14.3579 23.0611 18.2028 22.8752 18.9969C22.6901 19.7877 22.4053 20.3927 22.0206 20.7699C21.821 20.9654 21.5915 21.0993 21.3319 21.164C21.0581 21.2324 20.742 21.2278 20.383 21.1436C19.329 20.8963 17.9725 19.9953 16.3004 18.2859L16.2898 18.2753L15.8948 17.8965L15.1465 18.6702L15.5418 19.05C17.3621 20.909 18.8947 21.9023 20.1382 22.194C20.6666 22.318 21.1503 22.3197 21.5887 22.2103C22.0413 22.0971 22.4364 21.8691 22.7748 21.5374C23.3106 21.0123 23.6929 20.23 23.9245 19.2412C24.1077 18.4592 24.707 14.711 24.7377 14.5182C24.959 13.3127 24.9295 12.2869 24.6986 11.5067V11.5066Z" fill="url(#paint1_linear_3454_252289)"/>
+<path d="M13.6479 18.4093L14.2517 17.8029L15.0115 17.0405L16.9154 15.1311L17.1276 15.343L17.5651 13.7132L15.9324 14.1499L16.1535 14.3706L13.4742 17.0585L12.8921 17.6429L12.1719 18.3656L12.0675 18.4706L12.0611 18.477C11.4621 19.0968 10.8194 19.6911 10.2697 19.8292C9.86458 19.931 9.45724 19.6888 9.08324 18.7817C9.00007 18.4673 8.4387 16.3472 8.27409 15.7593C8.10887 15.103 8.12019 14.6058 8.2629 14.2716C8.34286 14.0844 8.46798 13.9532 8.62607 13.8814C8.80594 13.7993 9.04313 13.7816 9.32265 13.8313C9.95673 13.9444 10.7398 14.3931 11.5464 15.2108L11.5569 15.2214L12.5811 16.2023L13.3918 15.4877L12.3043 14.4465C11.3339 13.4657 10.3449 12.9186 9.5083 12.7696C9.01557 12.682 8.56247 12.7289 8.17875 12.9037C7.7735 13.0884 7.46027 13.4065 7.27093 13.8504C7.03915 14.3931 7.00151 15.1242 7.22726 16.0206L7.23144 16.0353C7.41143 16.6754 8.04945 19.0883 8.05117 19.0953L8.0615 19.1341L8.07245 19.1605C8.71231 20.7359 9.5842 21.1126 10.5314 20.8745C11.3379 20.6716 12.1259 19.9595 12.838 19.223L12.9219 19.1385L13.6481 18.4097L13.6479 18.4093Z" fill="url(#paint2_linear_3454_252289)"/>
+<path d="M13.6514 18.4178L14.2546 17.8121L15.0136 17.0504L16.9153 15.143L17.1273 15.3546L17.5643 13.7266L15.9334 14.1628L16.1543 14.3833L13.4779 17.0684L12.8965 17.6522L12.1771 18.3742L12.0728 18.4791L12.0664 18.4854C11.468 19.1046 10.8244 19.6918 10.2769 19.8362C10.156 19.8681 10.0035 19.8724 9.84375 19.7988C9.84375 19.7988 9.26947 20.7471 9.31839 20.774C9.66642 20.9653 10.1114 20.9876 10.5381 20.8802C11.3438 20.6775 12.1309 19.9661 12.8422 19.2305L12.926 19.1461L13.6514 18.418V18.4178Z" fill="url(#paint3_linear_3454_252289)"/>
+<defs>
+<linearGradient id="paint0_linear_3454_252289" x1="29.4407" y1="26.0825" x2="1.76989" y2="25.0397" gradientUnits="userSpaceOnUse">
+<stop stop-color="#EF32D4"/>
+<stop offset="0.449646" stop-color="#912FF5"/>
+<stop offset="1" stop-color="#7DBCFE"/>
+</linearGradient>
+<linearGradient id="paint1_linear_3454_252289" x1="7.84806" y1="19.7277" x2="24.6921" y2="15.2184" gradientUnits="userSpaceOnUse">
+<stop stop-color="#7DBCFE"/>
+<stop offset="0.6" stop-color="#912FF5"/>
+<stop offset="1" stop-color="#EF32D4"/>
+</linearGradient>
+<linearGradient id="paint2_linear_3454_252289" x1="7.58231" y1="17.3497" x2="27.1331" y2="12.1016" gradientUnits="userSpaceOnUse">
+<stop stop-color="#7DBCFE"/>
+<stop offset="0.34" stop-color="#912FF5"/>
+<stop offset="1" stop-color="#EF32D4"/>
+</linearGradient>
+<linearGradient id="paint3_linear_3454_252289" x1="8.76488" y1="18.7173" x2="26.8533" y2="13.8621" gradientUnits="userSpaceOnUse">
+<stop stop-color="#21C8FF" stop-opacity="0"/>
+<stop offset="0.09" stop-color="#21C8FF" stop-opacity="0.71"/>
+<stop offset="0.14" stop-color="#21C8FF"/>
+</linearGradient>
+</defs>
+</svg>`;
 
     const closeIcon = `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M24 8L8 24" stroke="white" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8L24 24" stroke="white" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
@@ -3824,7 +3861,7 @@
       : `<div class="chat-widget-header-logo" style="display:flex;align-items:center;justify-content:center;color:#7c3aed"><svg class="chat-widget-header-logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/><path d="M18 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg></div>`;
 
     const launcherContent = resolvedLogoUrl
-      ? `<img src="${resolvedLogoUrl}" style="width: 100%; height: 100%; object-fit: cover;" alt="Chat" />`
+      ? `<img src="${resolvedLogoUrl}" alt="Chat" />`
       : chatIcon;
 
     container.innerHTML = `

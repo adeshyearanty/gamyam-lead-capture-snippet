@@ -1269,13 +1269,30 @@
     sortMessagesByTimestamp();
 
     if (!isUserMessage) {
+      // AI/agent replied - hide typing indicator
+      if (agentTypingTimeout) {
+        clearTimeout(agentTypingTimeout);
+        agentTypingTimeout = null;
+      }
+      agentTyping = false;
+      showTypingIndicator(false);
       markVisibleMessagesAsRead();
     }
   }
 
   /**
-   * Handle typing indicator from agent
-   * User ONLY sees typing indicators from AGENT (not from other users)
+   * Whether AI replies are enabled for this chat (bot flow or explicit aiEnabled).
+   */
+  function isAiEnabled() {
+    return !!(
+      settings &&
+      (settings.botFlow || settings.behavior?.aiEnabled === true)
+    );
+  }
+
+  /**
+   * Handle typing indicator from agent or AI
+   * User sees typing from AGENT; when AI is enabled, also from AI.
    */
   function handleTypingIndicator(data) {
     // Validate conversation matches
@@ -1283,14 +1300,20 @@
       return;
     }
 
-    // User ONLY receives typing indicators FROM agent
-    // Check isAgent flag (preferred) or check if principalId starts with 'agent'
+    // Typing from agent: isAgent flag or principalId starts with 'agent'
     const isFromAgent =
       data.isAgent === true ||
-      (data.from && data.from.toLowerCase().startsWith("agent"));
+      (data.from && String(data.from).toLowerCase().startsWith("agent"));
 
-    if (!isFromAgent) {
-      // Ignore typing from non-agents (shouldn't happen but safety check)
+    // Typing from AI when AI is enabled
+    const isFromAi =
+      data.isAi === true ||
+      (data.from && String(data.from).toLowerCase() === "ai");
+
+    const showTyping =
+      isFromAgent || (isAiEnabled() && isFromAi);
+
+    if (!showTyping) {
       return;
     }
 
@@ -2188,6 +2211,21 @@
 
       if (wsSent) {
         console.log("UniBox: Message sent via WebSocket");
+        // When AI is enabled, show typing until AI reply arrives (or server TYPING is received)
+        if (isAiEnabled()) {
+          if (agentTypingTimeout) {
+            clearTimeout(agentTypingTimeout);
+            agentTypingTimeout = null;
+          }
+          agentTyping = true;
+          showTypingIndicator(true);
+          // Safety: hide after 15s if no reply (e.g. AI disabled on server)
+          agentTypingTimeout = setTimeout(() => {
+            agentTyping = false;
+            showTypingIndicator(false);
+            agentTypingTimeout = null;
+          }, 15000);
+        }
       } else {
         // WebSocket not ready - message is queued and will be sent when connected
         console.log("UniBox: Message queued for WebSocket delivery");

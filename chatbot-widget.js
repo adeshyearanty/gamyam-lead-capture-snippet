@@ -3475,6 +3475,9 @@
         .chat-widget-message.user .chat-widget-message-content {
           background: #ECE1FF;
           color: #18181E;
+          font-size: 14px;
+          line-height: 20px;
+          font-weight: 400;
           border-radius: 10px;
           border-bottom-right-radius: 0;
         }
@@ -4002,7 +4005,7 @@
         const formContainer = document.createElement("div");
         formContainer.className = "chat-widget-form-container";
         formContainer.innerHTML = `
-          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:16px; color:#111;">Welcome</div>
+          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:14px; color:#111;">Welcome</div>
           <div style="text-align:center; margin-bottom:20px; font-size:14px; color:#666;">Please fill in your details to continue.</div>
           <form id="preChatForm">
             ${fieldsHtml}

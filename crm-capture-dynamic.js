@@ -53,7 +53,6 @@
 
     const decoder = new TextDecoder();
     const json = decoder.decode(plaintext);
-    console.log("decrypted config json", json);
     return JSON.parse(json);
   }
 
@@ -371,18 +370,24 @@
     submitLead(leadData) {
       this.log("Submitting lead: ", leadData);
 
+      if (!this.config.tenantId) {
+        const err = new Error(
+          "x-tenant-id is not configured. Add data-crm-tenant-id to your script tag or include tenantId in the encrypted config."
+        );
+        this.log("Error submitting lead:", err, "error");
+        this.dispatchEvent("crmLeadError", err);
+        if (this.config.onError) this.config.onError(err);
+        return Promise.reject(err);
+      }
+
       const { site_id, api_token, ...payload } = leadData;
 
       const headers = {
         "Content-Type": "application/json",
         "x-api-key":
           this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
+        "x-tenant-id": this.config.tenantId,
       };
-
-      // x-tenant-id is required for the public lead creation API
-      if (this.config.tenantId) {
-        headers["x-tenant-id"] = this.config.tenantId;
-      }
 
       fetch(this.config.endpoint, {
         method: "POST",

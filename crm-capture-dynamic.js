@@ -25,13 +25,10 @@
     const encoder = new TextEncoder();
     const passphraseBytes = encoder.encode(passphrase);
     const hash = await crypto.subtle.digest("SHA-256", passphraseBytes);
-    return crypto.subtle.importKey(
-      "raw",
-      hash,
-      { name: "AES-GCM" },
-      false,
-      ["encrypt", "decrypt"]
-    );
+    return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, [
+      "encrypt",
+      "decrypt",
+    ]);
   }
 
   async function decryptConfig(encryptedBase64, passphrase) {
@@ -48,7 +45,7 @@
     const plaintext = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv },
       key,
-      ciphertext
+      ciphertext,
     );
 
     const decoder = new TextDecoder();
@@ -70,7 +67,7 @@
     blockNativeSubmit: false,
     // Default field mappings to your DTO (aligned with LeadDocument)
     fieldMappings: {
-      leadOwner: ["leadOwner", "owner"],
+      // leadOwner: ["leadOwner", "owner"],
       fullName: ["fullName", "name", "full_name"],
       salutation: ["salutation", "title"],
       email: ["email", "email_address"],
@@ -113,7 +110,11 @@
       this.config = { ...defaults, ...options };
 
       // Derive endpoint from baseUrl + endpointPath if not explicitly provided
-      if (!this.config.endpoint && this.config.baseUrl && this.config.endpointPath) {
+      if (
+        !this.config.endpoint &&
+        this.config.baseUrl &&
+        this.config.endpointPath
+      ) {
         const trimmedBase = this.config.baseUrl.replace(/\/+$/, "");
         this.config.endpoint = `${trimmedBase}${this.config.endpointPath}`;
       }
@@ -244,13 +245,13 @@
 
       // Fall back to default field mappings
       for (const [field, mapping] of Object.entries(
-        this.config.fieldMappings
+        this.config.fieldMappings,
       )) {
         if (!formData[field]) {
           if (typeof mapping === "object" && mapping.combine) {
             const parts = mapping.combine.map((fieldName) => {
               const el = form.querySelector(
-                `[name="${fieldName}"], #${fieldName}`
+                `[name="${fieldName}"], #${fieldName}`,
               );
               return el?.value?.trim() || "";
             });
@@ -261,7 +262,7 @@
             const selectors = Array.isArray(mapping) ? mapping : [mapping];
             for (const selector of selectors) {
               const element = form.querySelector(
-                `[name="${selector}"], #${selector}`
+                `[name="${selector}"], #${selector}`,
               );
               if (element && element.value) {
                 formData[field] = this.sanitizeInput(element.value);
@@ -291,7 +292,7 @@
 
       // Apply default values (but skip status/source/createdBy as they come from config)
       for (const [field, defaultValue] of Object.entries(
-        this.config.defaultValues
+        this.config.defaultValues,
       )) {
         // Skip status, source, createdBy - these come from config.defaultStatus/defaultSource/defaultCreatedBy
         if (field === "status" || field === "source" || field === "createdBy") {
@@ -329,9 +330,9 @@
       }
 
       // Default leadOwner
-      if (!leadData.leadOwner) {
-        leadData.leadOwner = "system";
-      }
+      // if (!leadData.leadOwner) {
+      //   leadData.leadOwner = "system";
+      // }
 
       // Format phone numbers if we have components
       if (!leadData.contactNumber && formData.phone) {
@@ -389,7 +390,7 @@
 
       if (!this.config.tenantId) {
         const err = new Error(
-          "x-tenant-id is not configured. Add data-crm-tenant-id to your script tag or include tenantId in the encrypted config."
+          "x-tenant-id is not configured. Add data-crm-tenant-id to your script tag or include tenantId in the encrypted config.",
         );
         this.log("Error submitting lead:", err, "error");
         this.dispatchEvent("crmLeadError", err);
@@ -397,7 +398,7 @@
         return Promise.reject(err);
       }
 
-      const { site_id, api_token, ...payload } = leadData;
+      const { site_id, api_token, leadOwner, ...payload } = leadData;
 
       const headers = {
         "Content-Type": "application/json",
@@ -459,8 +460,7 @@
       const baseOptions = {
         // Allow passing either a full endpoint or base URL + endpoint path
         endpoint: scriptEl.getAttribute("data-crm-endpoint") || null,
-        baseUrl:
-          scriptEl.getAttribute("data-crm-base-url") || defaults.baseUrl,
+        baseUrl: scriptEl.getAttribute("data-crm-base-url") || defaults.baseUrl,
         endpointPath:
           scriptEl.getAttribute("data-crm-endpoint-path") ||
           defaults.endpointPath,
@@ -503,7 +503,7 @@
         if (encryptedConfig) {
           const decrypted = await decryptConfig(
             encryptedConfig,
-            ENCRYPTION_PASSPHRASE
+            ENCRYPTION_PASSPHRASE,
           );
           // Decrypted values override baseOptions, but data-* can still act as fallback
           finalOptions = { ...baseOptions, ...decrypted };

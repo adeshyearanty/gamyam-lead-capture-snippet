@@ -172,6 +172,12 @@
         data[key] = value;
       });
 
+      // Capture per-form overrides from data attributes on the <form> element
+      const formSource = form.getAttribute("data-crm-source");
+      const formStatus = form.getAttribute("data-crm-status");
+      if (formSource) data._formSource = formSource;
+      if (formStatus) data._formStatus = formStatus;
+
       const leadData = this.prepareLeadData(data);
       if (this.validateLeadData(leadData)) {
         this.submitLead(leadData).then(() => {
@@ -221,6 +227,12 @@
     extractFormData(form) {
       const formData = {};
       const elements = form.elements;
+
+      // Capture per-form overrides from data attributes on the <form> element itself
+      const formSource = form.getAttribute("data-crm-source");
+      const formStatus = form.getAttribute("data-crm-status");
+      if (formSource) formData._formSource = this.sanitizeInput(formSource);
+      if (formStatus) formData._formStatus = this.sanitizeInput(formStatus);
 
       // Check for data-crm-field attributes first
       for (let element of elements) {
@@ -291,19 +303,24 @@
         }
       }
 
-      // Use config values for status, source and createdBy (from encrypted config)
-      // These override any form values and fall back to defaults if not in config
-      if (this.config.defaultStatus) {
+      // Priority: per-form data attribute > config default > hardcoded fallback
+      if (leadData._formStatus) {
+        leadData.status = leadData._formStatus;
+      } else if (this.config.defaultStatus) {
         leadData.status = this.config.defaultStatus;
       } else if (!leadData.status) {
         leadData.status = "New";
       }
+      delete leadData._formStatus;
 
-      if (this.config.defaultSource) {
+      if (leadData._formSource) {
+        leadData.source = leadData._formSource;
+      } else if (this.config.defaultSource) {
         leadData.source = this.config.defaultSource;
       } else if (!leadData.source) {
         leadData.source = "Website";
       }
+      delete leadData._formSource;
 
       if (this.config.defaultCreatedBy) {
         leadData.createdBy = this.config.defaultCreatedBy;

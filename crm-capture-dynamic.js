@@ -53,6 +53,7 @@
 
     const decoder = new TextDecoder();
     const json = decoder.decode(plaintext);
+    console.log("decrypted config json", json);
     return JSON.parse(json);
   }
 

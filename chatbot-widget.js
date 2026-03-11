@@ -774,10 +774,8 @@
           if (restoreRes.ok) {
             const data = await restoreRes.json();
             if (data.conversation) {
-              conversationId = data.conversation.id;
-              if (showLoading) {
-                setLoading(false);
-              }
+              const latestStatus = data.conversation.status || "active";
+              const isEndedSession = latestStatus !== "active";
 
               // Remove static welcome message before loading real messages
               if (staticWelcomeShown) {
@@ -791,6 +789,7 @@
                 staticWelcomeShown = false;
               }
 
+              // Render historical messages for this user (even if the last session is ended)
               if (data.messages && Array.isArray(data.messages)) {
                 data.messages.forEach((msg) => {
                   // Normalize text - convert empty string to null
@@ -822,6 +821,39 @@
                 });
                 markVisibleMessagesAsRead();
               }
+
+              if (isEndedSession) {
+                // Last session is already resolved/expired – rotate guest id so that
+                // the next outbound message starts a completely new session/contact.
+                if (typeof userId === "string" && userId.startsWith("guest_")) {
+                  userId = `guest_${Date.now()}_${Math.random()
+                    .toString(36)
+                    .substr(2, 9)}`;
+                  try {
+                    localStorage.setItem(STORAGE_KEY_USER, userId);
+                  } catch (e) {
+                    console.warn(
+                      "UniBox: Failed to persist rotated guest id after restore",
+                      e,
+                    );
+                  }
+                }
+
+                // Do NOT reuse old conversationId – leave it null so that the next
+                // sendMessageToApi()/sendSelectedFiles() call creates a fresh session.
+                conversationId = null;
+
+                if (showLoading) {
+                  setLoading(false);
+                }
+                return;
+              }
+
+              conversationId = data.conversation.id;
+              if (showLoading) {
+                setLoading(false);
+              }
+
               // Connect to WebSocket AND subscribe for real-time updates
               connectSocket().then(() => {
                 subscribeToConversation(conversationId);
@@ -1155,6 +1187,48 @@
         // Handled by requestPresignedUrl via addEventListener
         // No action needed here, just prevent logging unknown type
         break;
+
+      case "session_status_change": {
+        const evt = data || message;
+        try {
+          // Only handle live_chat session lifecycle events for this widget.
+          const platform = evt && (evt.platform || evt.channel || "live_chat");
+          const status = evt && evt.status;
+          const endedStatus =
+            status && (status === "resolved" || status === "expired");
+
+          if (platform === "live_chat" && endedStatus) {
+            // If this event is for the current conversation, clear it so the
+            // next user message starts a fresh session.
+            if (evt.conversationId && conversationId === evt.conversationId) {
+              conversationId = null;
+              subscribedConversationId = null;
+            }
+
+            // Rotate guest id so that a new live_chat contact/session is created
+            // on the next message, instead of reusing the old userId.
+            if (typeof userId === "string" && userId.startsWith("guest_")) {
+              userId = `guest_${Date.now()}_${Math.random()
+                .toString(36)
+                .substr(2, 9)}`;
+              try {
+                localStorage.setItem(STORAGE_KEY_USER, userId);
+              } catch (e) {
+                console.warn(
+                  "UniBox: Failed to persist rotated guest id to localStorage",
+                  e,
+                );
+              }
+            }
+          }
+        } catch (e) {
+          console.error(
+            "UniBox: Failed to handle session_status_change event",
+            e,
+          );
+        }
+        break;
+      }
 
       case "subscribed":
         console.log("UniBox: Subscribed to conversation", data || message);

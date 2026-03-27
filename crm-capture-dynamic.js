@@ -25,10 +25,13 @@
     const encoder = new TextEncoder();
     const passphraseBytes = encoder.encode(passphrase);
     const hash = await crypto.subtle.digest("SHA-256", passphraseBytes);
-    return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, [
-      "encrypt",
-      "decrypt",
-    ]);
+    return crypto.subtle.importKey(
+      "raw",
+      hash,
+      { name: "AES-GCM" },
+      false,
+      ["encrypt", "decrypt"]
+    );
   }
 
   async function decryptConfig(encryptedBase64, passphrase) {
@@ -45,7 +48,7 @@
     const plaintext = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv },
       key,
-      ciphertext,
+      ciphertext
     );
 
     const decoder = new TextDecoder();
@@ -58,8 +61,8 @@
     siteId: "",
     apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
     // Base URL and endpoint for public lead creation
-    baseUrl: "https://dev-api.salesastra.ai/leads/v1",
-    endpointPath: "/leads/public",
+    baseUrl: "https://dev-api.salesastra.ai/pulse/v1",
+    endpointPath: "/leads",
     // If endpoint is null, it'll be derived from baseUrl + endpointPath
     endpoint: null,
     tenantId: "",
@@ -67,7 +70,7 @@
     blockNativeSubmit: false,
     // Default field mappings to your DTO (aligned with LeadDocument)
     fieldMappings: {
-      // leadOwner: ["leadOwner", "owner"],
+      leadOwner: ["leadOwner", "owner"],
       fullName: ["fullName", "name", "full_name"],
       salutation: ["salutation", "title"],
       email: ["email", "email_address"],
@@ -110,11 +113,7 @@
       this.config = { ...defaults, ...options };
 
       // Derive endpoint from baseUrl + endpointPath if not explicitly provided
-      if (
-        !this.config.endpoint &&
-        this.config.baseUrl &&
-        this.config.endpointPath
-      ) {
+      if (!this.config.endpoint && this.config.baseUrl && this.config.endpointPath) {
         const trimmedBase = this.config.baseUrl.replace(/\/+$/, "");
         this.config.endpoint = `${trimmedBase}${this.config.endpointPath}`;
       }
@@ -173,12 +172,6 @@
         data[key] = value;
       });
 
-      // Capture per-form overrides from data attributes on the <form> element
-      const formSource = form.getAttribute("data-crm-source");
-      const formStatus = form.getAttribute("data-crm-status");
-      if (formSource) data._formSource = formSource;
-      if (formStatus) data._formStatus = formStatus;
-
       const leadData = this.prepareLeadData(data);
       if (this.validateLeadData(leadData)) {
         this.submitLead(leadData).then(() => {
@@ -229,12 +222,6 @@
       const formData = {};
       const elements = form.elements;
 
-      // Capture per-form overrides from data attributes on the <form> element itself
-      const formSource = form.getAttribute("data-crm-source");
-      const formStatus = form.getAttribute("data-crm-status");
-      if (formSource) formData._formSource = this.sanitizeInput(formSource);
-      if (formStatus) formData._formStatus = this.sanitizeInput(formStatus);
-
       // Check for data-crm-field attributes first
       for (let element of elements) {
         if (element.hasAttribute("data-crm-field")) {
@@ -245,13 +232,13 @@
 
       // Fall back to default field mappings
       for (const [field, mapping] of Object.entries(
-        this.config.fieldMappings,
+        this.config.fieldMappings
       )) {
         if (!formData[field]) {
           if (typeof mapping === "object" && mapping.combine) {
             const parts = mapping.combine.map((fieldName) => {
               const el = form.querySelector(
-                `[name="${fieldName}"], #${fieldName}`,
+                `[name="${fieldName}"], #${fieldName}`
               );
               return el?.value?.trim() || "";
             });
@@ -262,7 +249,7 @@
             const selectors = Array.isArray(mapping) ? mapping : [mapping];
             for (const selector of selectors) {
               const element = form.querySelector(
-                `[name="${selector}"], #${selector}`,
+                `[name="${selector}"], #${selector}`
               );
               if (element && element.value) {
                 formData[field] = this.sanitizeInput(element.value);
@@ -292,7 +279,7 @@
 
       // Apply default values (but skip status/source/createdBy as they come from config)
       for (const [field, defaultValue] of Object.entries(
-        this.config.defaultValues,
+        this.config.defaultValues
       )) {
         // Skip status, source, createdBy - these come from config.defaultStatus/defaultSource/defaultCreatedBy
         if (field === "status" || field === "source" || field === "createdBy") {
@@ -304,24 +291,19 @@
         }
       }
 
-      // Priority: per-form data attribute > config default > hardcoded fallback
-      if (leadData._formStatus) {
-        leadData.status = leadData._formStatus;
-      } else if (this.config.defaultStatus) {
+      // Use config values for status, source and createdBy (from encrypted config)
+      // These override any form values and fall back to defaults if not in config
+      if (this.config.defaultStatus) {
         leadData.status = this.config.defaultStatus;
       } else if (!leadData.status) {
         leadData.status = "New";
       }
-      delete leadData._formStatus;
 
-      if (leadData._formSource) {
-        leadData.source = leadData._formSource;
-      } else if (this.config.defaultSource) {
+      if (this.config.defaultSource) {
         leadData.source = this.config.defaultSource;
       } else if (!leadData.source) {
         leadData.source = "Website";
       }
-      delete leadData._formSource;
 
       if (this.config.defaultCreatedBy) {
         leadData.createdBy = this.config.defaultCreatedBy;
@@ -330,9 +312,9 @@
       }
 
       // Default leadOwner
-      // if (!leadData.leadOwner) {
-      //   leadData.leadOwner = "system";
-      // }
+      if (!leadData.leadOwner) {
+        leadData.leadOwner = "system";
+      }
 
       // Format phone numbers if we have components
       if (!leadData.contactNumber && formData.phone) {
@@ -388,24 +370,18 @@
     submitLead(leadData) {
       this.log("Submitting lead: ", leadData);
 
-      if (!this.config.tenantId) {
-        const err = new Error(
-          "x-tenant-id is not configured. Add data-crm-tenant-id to your script tag or include tenantId in the encrypted config.",
-        );
-        this.log("Error submitting lead:", err, "error");
-        this.dispatchEvent("crmLeadError", err);
-        if (this.config.onError) this.config.onError(err);
-        return Promise.reject(err);
-      }
-
-      const { site_id, api_token, leadOwner, ...payload } = leadData;
+      const { site_id, api_token, ...payload } = leadData;
 
       const headers = {
         "Content-Type": "application/json",
         "x-api-key":
           this.config.apiToken || "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
-        "x-tenant-id": this.config.tenantId,
       };
+
+      // x-tenant-id is required for the public lead creation API
+      if (this.config.tenantId) {
+        headers["x-tenant-id"] = this.config.tenantId;
+      }
 
       fetch(this.config.endpoint, {
         method: "POST",
@@ -460,7 +436,8 @@
       const baseOptions = {
         // Allow passing either a full endpoint or base URL + endpoint path
         endpoint: scriptEl.getAttribute("data-crm-endpoint") || null,
-        baseUrl: scriptEl.getAttribute("data-crm-base-url") || defaults.baseUrl,
+        baseUrl:
+          scriptEl.getAttribute("data-crm-base-url") || defaults.baseUrl,
         endpointPath:
           scriptEl.getAttribute("data-crm-endpoint-path") ||
           defaults.endpointPath,
@@ -503,7 +480,7 @@
         if (encryptedConfig) {
           const decrypted = await decryptConfig(
             encryptedConfig,
-            ENCRYPTION_PASSPHRASE,
+            ENCRYPTION_PASSPHRASE
           );
           // Decrypted values override baseOptions, but data-* can still act as fallback
           finalOptions = { ...baseOptions, ...decrypted };

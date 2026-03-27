@@ -406,6 +406,13 @@
     }
   }
 
+  function removeWidgetRoot() {
+    const existingHost = document.getElementById("unibox-root");
+    if (existingHost) {
+      existingHost.remove();
+    }
+  }
+
   // --- 5. DEPENDENCY LOADER ---
   function loadSocketScript(callback) {
     if (window.io) {
@@ -466,7 +473,24 @@
         );
       }
 
-      const apiConfig = await response.json();
+      const apiResponse = await response.json();
+
+      // Only load widget when backend explicitly reports success.
+      // Any non-success payload should prevent rendering altogether.
+      if (apiResponse && apiResponse.success === false) {
+        const errorMessage =
+          apiResponse?.message || "Widget config response was not successful";
+        console.warn("UniBox:", errorMessage);
+        return null;
+      }
+
+      const apiConfig =
+        apiResponse &&
+        typeof apiResponse === "object" &&
+        apiResponse.data &&
+        typeof apiResponse.data === "object"
+          ? apiResponse.data
+          : apiResponse;
 
       // Transform API response to match widget structure
       const transformedConfig = {
@@ -497,16 +521,7 @@
       return transformedConfig;
     } catch (error) {
       console.error("UniBox: Failed to fetch widget configuration:", error);
-      // Fallback to defaults with user-provided minimal config
-      return deepMerge(defaults, {
-        tenantId: userConfig.tenantId,
-        widgetToken: userConfig.widgetToken,
-        apiKey: userConfig.apiKey || userConfig.widgetToken, // Use apiKey if provided, otherwise fallback to widgetToken
-        chatbotId: userConfig.chatbotId,
-        testMode: userConfig.testMode || false,
-        // Preserve websocketUrl from userConfig (passed from embed script)
-        websocketUrl: userConfig.websocketUrl,
-      });
+      return null;
     }
   }
 
@@ -523,6 +538,7 @@
       fetchedConfig = await fetchWidgetConfig();
 
       if (fetchedConfig === null) {
+        removeWidgetRoot();
         return;
       }
 
@@ -583,6 +599,7 @@
       });
     } catch (error) {
       console.error("UniBox: Initialization failed:", error);
+      removeWidgetRoot();
     }
   }
 

@@ -60,9 +60,9 @@
   const defaults = {
     siteId: "",
     apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
-    // Base URL and endpoint for public lead creation
-    baseUrl: "https://dev-api.salesastra.ai/pulse/v1",
-    endpointPath: "/leads",
+    // Canonical endpoint for public lead creation
+    baseUrl: "https://dev-api.salesastra.ai/pulse/v1/leads",
+    endpointPath: "",
     // If endpoint is null, it'll be derived from baseUrl + endpointPath
     endpoint: null,
     tenantId: "",
@@ -113,9 +113,14 @@
       this.config = { ...defaults, ...options };
 
       // Derive endpoint from baseUrl + endpointPath if not explicitly provided
-      if (!this.config.endpoint && this.config.baseUrl && this.config.endpointPath) {
+      if (!this.config.endpoint && this.config.baseUrl) {
         const trimmedBase = this.config.baseUrl.replace(/\/+$/, "");
-        this.config.endpoint = `${trimmedBase}${this.config.endpointPath}`;
+        const normalizedPath = this.config.endpointPath
+          ? this.config.endpointPath.startsWith("/")
+            ? this.config.endpointPath
+            : `/${this.config.endpointPath}`
+          : "";
+        this.config.endpoint = `${trimmedBase}${normalizedPath}`;
       }
 
       this.initialize();

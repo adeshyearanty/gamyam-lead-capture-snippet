@@ -4057,11 +4057,14 @@
     const chatOpen = windowEl?.classList.contains("open");
     const wsLive = socket && socket.readyState === WebSocket.OPEN;
 
+    if (!liveAgentDisplayName) {
+      headerOnlineDot.className = "chat-widget-online-dot hidden";
+      return;
+    }
+
     let dotClass = "offline";
     if (liveAgentDisplayName) {
       dotClass = isAgentOnline ? "online" : "offline";
-    } else if (isAiEnabled()) {
-      dotClass = wsLive ? "online" : "offline";
     } else if (chatOpen && !wsLive) {
       dotClass = "connecting";
     }
@@ -4398,7 +4401,6 @@
             isTop ? "translateY(-20px)" : "translateY(20px)"
           } scale(0.95);
           transition: all 0.25s ease;
-          border: 1px solid rgba(0, 0, 0, 0.05);
           z-index: ${zWindow};
         }
 
@@ -4448,15 +4450,6 @@
           justify-content: center;
         }
 
-        .chat-widget-header-logo-fallback {
-          background: linear-gradient(135deg, #7dbcfe 0%, #912ff5 55%, #ef32d4 100%);
-          color: #ffffff;
-          font-size: 14px;
-          font-weight: 700;
-          line-height: 1;
-          font-family: ${settings.appearance.fontFamily} !important;
-        }
-
         .chat-widget-online-dot {
           position: absolute;
           right: -1px;
@@ -4467,6 +4460,10 @@
           border: 2px solid #ffffff;
           background: #9ca3af;
           z-index: 2;
+        }
+
+        .chat-widget-online-dot.hidden {
+          display: none;
         }
 
         .chat-widget-online-dot.online {
@@ -5213,9 +5210,13 @@
     container.className = "chat-widget-container";
 
     const headerTitle = resolveChatWindowTitleForUi();
+    const headerFallbackSvg = chatIcon.replace(
+      /class="chat-widget-launcher-default-icon"\s+/,
+      "",
+    );
     const headerLogoImg = resolvedHeaderLogoUrl
       ? `<img src="${resolvedHeaderLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
-      : `<div class="chat-widget-header-logo chat-widget-header-logo-fallback" aria-hidden="true">P</div>`;
+      : `<div class="chat-widget-header-logo" style="display:flex;align-items:center;justify-content:center;color:#7c3aed">${headerFallbackSvg}</div>`;
     const headerSubtitleHtml = subtitle
       ? `<div class="chat-widget-header-subtitle" style="font-size:${fontSizes.meta};opacity:0.9">${escapeHtmlWidget(subtitle)}</div>`
       : "";
@@ -5285,7 +5286,7 @@
           <div class="chat-widget-header-content">
             <div class="chat-widget-header-logo-wrap">
               ${headerLogoImg}
-              <span class="chat-widget-online-dot offline" id="headerOnlineDot" aria-hidden="true"></span>
+              <span class="chat-widget-online-dot hidden" id="headerOnlineDot" aria-hidden="true"></span>
             </div>
             <div class="chat-widget-header-text">
               <div class="chat-widget-header-title" id="chatHeaderTitle">${escapeHtmlWidget(headerTitle)}</div>

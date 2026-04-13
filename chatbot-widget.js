@@ -5,9 +5,9 @@
   let userConfig = null;
 
   // Check for new encrypted embed config
-  if (window.UniBoxEmbedConfig) {
+  if (globalThis.UniBoxEmbedConfig) {
     try {
-      const embedConfig = window.UniBoxEmbedConfig;
+      const embedConfig = globalThis.UniBoxEmbedConfig;
       const encryptedConfig = embedConfig.encryptedConfig;
 
       if (!encryptedConfig) {
@@ -20,13 +20,12 @@
         try {
           // Decode from base64
           const decoded = atob(encryptedData);
-          // XOR decrypt
+          const keyStr = String(key);
+          // XOR decrypt (key bytes cycled)
           let decrypted = "";
           for (let i = 0; i < decoded.length; i++) {
-            const keyChar = key[i % key.length];
-            decrypted += String.fromCharCode(
-              decoded.charCodeAt(i) ^ keyChar.charCodeAt(0),
-            );
+            const k = keyStr.codePointAt(i % keyStr.length);
+            decrypted += String.fromCodePoint(decoded.codePointAt(i) ^ k);
           }
           // Decode from base64 to UTF-8 string
           const jsonString = decodeURIComponent(escape(atob(decrypted)));
@@ -82,6 +81,7 @@
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
+  const STORAGE_KEY_ENGAGEMENT = `unibox_engagement_${userConfig.tenantId}`;
 
   // API URLs - will be set after we get the full config
   let API_BASE = baseUrl;
@@ -197,6 +197,8 @@
       fontFamily: "Inter, sans-serif",
       iconStyle: "rounded",
       logoUrl: "",
+      headerLogoUrl: "",
+      brandLogoUrl: "",
       header: {
         title: "Support",
         welcomeMessage: "Hi there! How can we help?",
@@ -207,6 +209,8 @@
       chatToggleIcon: {
         style: "rounded",
       },
+      bubbleAnimation: "none",
+      bubbleSize: "small",
     },
     behavior: {
       botDelayMs: 600,
@@ -218,7 +222,37 @@
     preChatForm: {
       enabled: false,
       fields: [],
+      consentCheckbox: false,
+      consentText: "I agree to be contacted.",
     },
+    engagementTriggers: {
+      proactiveMessage: "",
+      triggerCondition: "time",
+      triggerValue: 5,
+      showOncePerSession: true,
+    },
+    mobileExperience: {
+      mobileWidgetEnabled: true,
+      mobileWindowStyle: "fullscreen",
+      autoOpenOnMobile: false,
+    },
+    soundNotifications: {
+      newMessageSoundEnabled: false,
+      soundType: "ping",
+      browserNotificationEnabled: false,
+    },
+    advancedSettings: {
+      persistentChat: true,
+      visitorTrackingEnabled: true,
+      hideOnPages: [],
+      showOnlyOnPages: [],
+    },
+    installation: {
+      allowedDomains: [],
+      displayRules: null,
+    },
+    windowUi: {},
+    preview: {},
   };
 
   // Settings will be initialized after fetching config
@@ -228,8 +262,12 @@
   let conversationId = null;
   let socket = null;
   let userId = localStorage.getItem(STORAGE_KEY_USER);
-  let resolvedLogoUrl = "";
+  let resolvedHeaderLogoUrl = "";
+  let resolvedBrandLogoUrl = "";
+  let resolvedLauncherCustomUrl = "";
+  let resolvedAvatarUrl = "";
   let messages = new Map();
+  /** Peer (human agent) online — driven by assignment + presence events */
   let isAgentOnline = false;
   let staticWelcomeShown = false;
   let realWelcomeMessageId = null; // Track the real welcome message ID once it replaces static welcome
@@ -237,6 +275,8 @@
   let isTyping = false;
   let agentTyping = false;
   let agentTypingTimeout = null; // Timeout for hiding agent typing indicator
+  /** Fires after botDelayMs so "Pulse AI" typing only shows once the AI path is likely active */
+  let optimisticAiTypingTimer = null;
   let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
   let previewFile = null; // @deprecated - Not used. Was for single file upload preview modal.
   let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - ACTIVE file upload flow (shows as chips)
@@ -245,6 +285,273 @@
   let wsConnectResolve = null; // Resolver for the connection promise
   let pendingMessages = []; // Queue of messages to send when connection is ready
   let isConnecting = false; // Flag to prevent concurrent connection attempts
+
+  function parsePathRuleList(input) {
+    if (Array.isArray(input)) {
+      return input
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+    }
+    return String(input || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function normalizePathRule(path) {
+    if (!path) return "/";
+    let normalized = String(path).trim();
+    if (!normalized.startsWith("/")) normalized = `/${normalized}`;
+    if (normalized.length > 1 && normalized.endsWith("/")) {
+      normalized = normalized.slice(0, -1);
+    }
+    return normalized || "/";
+  }
+
+  function pathMatchesRule(currentPath, rule) {
+    const normalizedPath = normalizePathRule(currentPath);
+    const normalizedRule = normalizePathRule(rule);
+    if (normalizedRule === "/") return normalizedPath === "/";
+    return (
+      normalizedPath === normalizedRule ||
+      normalizedPath.startsWith(`${normalizedRule}/`)
+    );
+  }
+
+  function getAdvancedSettingsConfig() {
+    const preview = settings?.preview || {};
+    const advanced =
+      settings?.advancedSettings ||
+      settings?.windowUi?.advancedSettings ||
+      settings?.windowUi?.advanced ||
+      {};
+
+    const hideOnPages = parsePathRuleList(
+      advanced.hideOnPages ?? preview.hideOnPages ?? preview.hideChatOnPages,
+    );
+    const showOnlyOnPages = parsePathRuleList(
+      advanced.showOnlyOnPages ??
+        preview.showOnlyOnPages ??
+        preview.showChatOnPagesOnly,
+    );
+
+    return {
+      persistentChat:
+        advanced.persistentChat ?? preview.persistentChat ?? true,
+      visitorTrackingEnabled:
+        advanced.visitorTrackingEnabled ??
+        preview.visitorTrackingEnabled ??
+        true,
+      hideOnPages,
+      showOnlyOnPages,
+    };
+  }
+
+  function shouldRenderOnCurrentPath() {
+    const currentPath = window.location.pathname || "/";
+    const advanced = getAdvancedSettingsConfig();
+    if (advanced.showOnlyOnPages.length > 0) {
+      return advanced.showOnlyOnPages.some((rule) =>
+        pathMatchesRule(currentPath, rule),
+      );
+    }
+    if (advanced.hideOnPages.length > 0) {
+      return !advanced.hideOnPages.some((rule) =>
+        pathMatchesRule(currentPath, rule),
+      );
+    }
+    return true;
+  }
+
+  function resolveAutoTriggerMode() {
+    const behavior = settings?.behavior || {};
+    const showOnExitIntent = Boolean(behavior.showOnExitIntent);
+    const showOnlyAfterScrollPercent = Number(
+      behavior.showOnlyAfterScrollPercent ?? 0,
+    );
+    const autoOpenEnabled = Boolean(behavior.autoOpen);
+    const autoOpenDelayMs = Math.max(0, Number(behavior.autoOpenDelay ?? 0));
+
+    if (showOnExitIntent) return "exit-intent";
+    if (showOnlyAfterScrollPercent > 0) return "on-scroll";
+    if (autoOpenEnabled && autoOpenDelayMs > 0) return "after-delay";
+    if (autoOpenEnabled) return "immediately";
+    return "none";
+  }
+
+  function isMobileViewport() {
+    if (typeof window.matchMedia === "function") {
+      return window.matchMedia("(max-width: 768px)").matches;
+    }
+    return window.innerWidth <= 768;
+  }
+
+  function getMobileExperienceConfig() {
+    const preview = settings?.preview || {};
+    const mobile =
+      settings?.mobileExperience || settings?.windowUi?.mobileExperience || {};
+    return {
+      isMobile: isMobileViewport(),
+      mobileWidgetEnabled:
+        mobile.mobileWidgetEnabled ?? preview.mobileWidgetEnabled ?? true,
+      mobileWindowStyle: String(
+        mobile.mobileWindowStyle ?? preview.mobileWindowStyle ?? "fullscreen",
+      ),
+      autoOpenOnMobile:
+        mobile.autoOpenOnMobile ?? preview.autoOpenOnMobile ?? false,
+    };
+  }
+
+  function getEngagementTriggerConfig() {
+    const preview = settings?.preview || {};
+    const engagement =
+      settings?.engagementTriggers ||
+      settings?.windowUi?.engagementTriggers ||
+      {};
+    return {
+      proactiveMessage: String(
+        engagement.proactiveMessage ?? preview.proactiveMessage ?? "",
+      ).trim(),
+      triggerCondition: String(
+        engagement.triggerCondition ?? preview.triggerCondition ?? "time",
+      )
+        .trim()
+        .toLowerCase(),
+      triggerValue: Number(engagement.triggerValue ?? preview.triggerValue ?? 0),
+      showOncePerSession:
+        engagement.showOncePerSession ?? preview.showOncePerSession ?? true,
+    };
+  }
+
+  function shouldRenderByInstallationRules() {
+    const preview = settings?.preview || {};
+    const installation =
+      settings?.installation || settings?.windowUi?.installation || {};
+    const allowedDomainsRaw =
+      installation.allowedDomains ?? preview.allowedDomains ?? [];
+    const allowedDomains = parsePathRuleList(allowedDomainsRaw).map((domain) =>
+      String(domain).toLowerCase().replace(/^https?:\/\//, ""),
+    );
+
+    if (allowedDomains.length > 0) {
+      const host = String(window.location.hostname || "").toLowerCase();
+      const isAllowed = allowedDomains.some((rule) => {
+        const normalizedRule = rule.split("/")[0];
+        return host === normalizedRule || host.endsWith(`.${normalizedRule}`);
+      });
+      if (!isAllowed) return false;
+    }
+
+    const displayRules = installation.displayRules ?? preview.displayRules;
+    if (!displayRules) return true;
+
+    let showOnly = [];
+    let hide = [];
+    if (Array.isArray(displayRules)) {
+      showOnly = parsePathRuleList(displayRules);
+    } else if (typeof displayRules === "object") {
+      showOnly = parsePathRuleList(
+        displayRules.showOnlyOnPages ??
+          displayRules.showOnPagesOnly ??
+          displayRules.includePaths,
+      );
+      hide = parsePathRuleList(
+        displayRules.hideOnPages ?? displayRules.excludePaths,
+      );
+    }
+
+    const currentPath = window.location.pathname || "/";
+    if (showOnly.length > 0) {
+      const matchedShow = showOnly.some((rule) =>
+        pathMatchesRule(currentPath, rule),
+      );
+      if (!matchedShow) return false;
+    }
+    if (hide.length > 0) {
+      const matchedHide = hide.some((rule) => pathMatchesRule(currentPath, rule));
+      if (matchedHide) return false;
+    }
+    return true;
+  }
+
+  function getSoundNotificationConfig() {
+    const preview = settings?.preview || {};
+    const sound =
+      settings?.soundNotifications ||
+      settings?.windowUi?.soundNotifications ||
+      settings?.windowUi?.sound ||
+      {};
+    return {
+      newMessageSoundEnabled:
+        sound.newMessageSoundEnabled ?? preview.newMessageSoundEnabled ?? false,
+      soundType: String(sound.soundType ?? preview.soundType ?? "ping"),
+      browserNotificationEnabled:
+        sound.browserNotificationEnabled ??
+        preview.browserNotificationEnabled ??
+        false,
+    };
+  }
+
+  let audioCtx = null;
+  function getAudioContext() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!audioCtx) audioCtx = new Ctx();
+    return audioCtx;
+  }
+
+  function playSystemSound(soundType) {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+    const now = ctx.currentTime;
+    const beep = (freq, duration, offset, gain = 0.03) => {
+      const osc = ctx.createOscillator();
+      const amp = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      amp.gain.setValueAtTime(gain, now + offset);
+      amp.gain.exponentialRampToValueAtTime(0.0001, now + offset + duration);
+      osc.connect(amp);
+      amp.connect(ctx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + duration);
+    };
+    if (soundType === "none") return;
+    if (soundType === "chime") {
+      beep(1046, 0.16, 0);
+      beep(1318, 0.22, 0.12);
+    } else {
+      beep(880, 0.12, 0);
+    }
+  }
+
+  function maybeRequestNotificationPermission() {
+    const cfg = getSoundNotificationConfig();
+    if (!cfg.browserNotificationEnabled) return;
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+
+  function maybeNotifyIncomingMessage(title, bodyText) {
+    const cfg = getSoundNotificationConfig();
+    if (!cfg.browserNotificationEnabled) return;
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    if (!document.hidden) return;
+    try {
+      new Notification(title || "New message", {
+        body: bodyText || "You have a new message",
+        tag: `unibox-${userConfig.chatbotId || "chat"}`,
+      });
+    } catch (e) {
+      // no-op
+    }
+  }
 
   // --- HELPER: Safe WebSocket Send ---
   /**
@@ -336,6 +643,197 @@
    */
   // Track if we've subscribed to avoid duplicate subscriptions
   let subscribedConversationId = null;
+
+  /**
+   * Dedupes in-thread handoff banners per conversation + agent (or generic placeholder).
+   * Reset when the live session clears (see clearLiveAgentDisplayName).
+   */
+  let lastAgentHandoffNoticeKey = null;
+
+  /** After live handoff, virtual agent display name from WebSocket; cleared on new/ended session. */
+  let liveAgentDisplayName = null;
+
+  /**
+   * Chat window title from appearance (embed / API), not the live agent name.
+   */
+  function resolveChatWindowTitleForUi() {
+    const a = settings && settings.appearance;
+    if (!a) return "Support Chat";
+    const t = String(a.headerName || a.header?.title || "").trim();
+    return t || "Support Chat";
+  }
+
+  /**
+   * Agent row label: assigned virtual agent after handoff, otherwise "Pulse AI".
+   */
+  function resolveAgentTitleForUi() {
+    return liveAgentDisplayName || "Pulse AI";
+  }
+
+  function clearLiveAgentDisplayName() {
+    liveAgentDisplayName = null;
+    lastAgentHandoffNoticeKey = null;
+    isAgentOnline = false;
+    syncAgentTitleUi();
+  }
+
+  function setLiveAgentDisplayName(name) {
+    if (!name || typeof name !== "string") return;
+    const t = name.trim();
+    if (!t) return;
+    liveAgentDisplayName = t;
+    syncAgentTitleUi();
+  }
+
+  function extractVirtualAgentDisplayName(evt) {
+    if (!evt || typeof evt !== "object") return null;
+    const flat =
+      evt.payload && typeof evt.payload === "object"
+        ? Object.assign({}, evt, evt.payload)
+        : evt;
+    const n =
+      flat.agentName ??
+      flat.displayName ??
+      flat.agent_display_name ??
+      flat.virtualAgentName ??
+      flat.assignedAgentName ??
+      flat.virtual_agent_name ??
+      flat.userName ??
+      flat.fullName ??
+      flat.full_name ??
+      flat.profileName ??
+      flat.profile_name ??
+      flat.principalName ??
+      flat.principal_name ??
+      (flat.user && (flat.user.name || flat.user.displayName)) ??
+      (flat.profile && (flat.profile.name || flat.profile.displayName)) ??
+      (flat.agent && (flat.agent.name || flat.agent.displayName)) ??
+      (flat.assignedAgent &&
+        (flat.assignedAgent.name || flat.assignedAgent.displayName)) ??
+      (flat.assigned_to &&
+        (typeof flat.assigned_to === "string"
+          ? flat.assigned_to
+          : flat.assigned_to.name || flat.assigned_to.displayName));
+    if (typeof n !== "string") return null;
+    const t = n.trim();
+    return t.length ? t : null;
+  }
+
+  /**
+   * Apply agent identity when the payload targets the active conversation (or omits conversation id).
+   */
+  function maybeApplyVirtualAgentFromEvent(evt, eventConversationId) {
+    const name = extractVirtualAgentDisplayName(evt);
+    if (!name) return;
+    if (
+      eventConversationId &&
+      conversationId &&
+      String(eventConversationId) !== String(conversationId)
+    ) {
+      return;
+    }
+    setLiveAgentDisplayName(name);
+  }
+
+  /**
+   * Live agent assignment: update bot message labels (Pulse AI → agent name) and insert a
+   * centered status line in the thread. Safe to call from dedicated WS events or the first
+   * non-AI agent message if no assignment event was received.
+   */
+  function handleAgentAssignmentHandshake(evt, rawEnvelope) {
+    const convId =
+      evt?.conversationId ??
+      evt?.conversation_id ??
+      rawEnvelope?.conversationId ??
+      rawEnvelope?.conversation_id;
+
+    if (
+      convId &&
+      conversationId &&
+      String(convId) !== String(conversationId)
+    ) {
+      return;
+    }
+
+    const name = extractVirtualAgentDisplayName(evt);
+
+    maybeApplyVirtualAgentFromEvent(evt, convId);
+
+    const convStr = String(conversationId || convId || "");
+    const noticeKey = name
+      ? `${convStr}::${name.toLowerCase()}`
+      : `${convStr}::__agent__`;
+
+    if (noticeKey === lastAgentHandoffNoticeKey) {
+      isAgentOnline = true;
+      refreshHeaderPresence();
+      return;
+    }
+
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const body = host.shadowRoot.getElementById("chatBody");
+    if (!body) return;
+
+    if (name) {
+      body
+        .querySelectorAll(
+          '.chat-widget-handoff-notice[data-handoff-tier="generic"]',
+        )
+        .forEach((el) => el.remove());
+    }
+
+    lastAgentHandoffNoticeKey = noticeKey;
+
+    const ts = Date.now();
+    const wrap = document.createElement("div");
+    wrap.className = "chat-widget-handoff-notice";
+    wrap.setAttribute(
+      "data-message-id",
+      `handoff_notice_${ts}_${Math.random().toString(36).slice(2, 11)}`,
+    );
+    wrap.setAttribute("data-timestamp", String(ts));
+    wrap.setAttribute("role", "status");
+    wrap.setAttribute("data-handoff-tier", name ? "named" : "generic");
+
+    const inner = document.createElement("div");
+    inner.className = "chat-widget-handoff-notice-inner";
+    inner.textContent = name
+      ? `You're now connected with ${name}.`
+      : "You're now connected with a live agent.";
+
+    wrap.appendChild(inner);
+
+    const typingIndicator = body.querySelector("#typingIndicator");
+    if (typingIndicator) {
+      body.insertBefore(wrap, typingIndicator);
+    } else {
+      body.appendChild(wrap);
+    }
+
+    sortMessagesByTimestamp();
+    requestAnimationFrame(() => {
+      body.scrollTop = body.scrollHeight;
+    });
+
+    isAgentOnline = true;
+    refreshHeaderPresence();
+  }
+
+  function syncAgentTitleUi() {
+    const windowTitle = resolveChatWindowTitleForUi();
+    const agentLabel = resolveAgentTitleForUi();
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const headerEl = host.shadowRoot.getElementById("chatHeaderTitle");
+    if (headerEl) headerEl.textContent = windowTitle;
+    host.shadowRoot
+      .querySelectorAll(".chat-widget-message.bot .chat-widget-message-label")
+      .forEach((el) => {
+        el.textContent = agentLabel;
+      });
+    refreshHeaderPresence();
+  }
 
   function subscribeToConversation(convId) {
     if (!convId || convId.startsWith("guest_") || convId.startsWith("user_")) {
@@ -458,19 +956,22 @@
         const statusCode = response.status;
 
         if (statusCode === 403 && msg.includes("domain is not authorized")) {
-          console.warn("UniBox: This domain is not authorized to load the chatbot widget.");
+          console.warn(
+            "UniBox: This domain is not authorized to load the chatbot widget.",
+          );
           return null;
         }
         if (statusCode === 404) {
-          if (msg.includes("Chatbot is not active") || msg.includes("Chatbot not found")) {
+          if (
+            msg.includes("Chatbot is not active") ||
+            msg.includes("Chatbot not found")
+          ) {
             console.warn("UniBox:", msg);
             return null;
           }
         }
 
-        throw new Error(
-          `Failed to fetch config: ${statusCode} - ${msg}`,
-        );
+        throw new Error(`Failed to fetch config: ${statusCode} - ${msg}`);
       }
 
       const apiResponse = await response.json();
@@ -512,6 +1013,19 @@
             defaults.behavior.autoOpenDelay,
         },
         preChatForm: apiConfig.preChatForm || defaults.preChatForm,
+        engagementTriggers:
+          apiConfig.engagementTriggers || defaults.engagementTriggers,
+        mobileExperience: apiConfig.mobileExperience || defaults.mobileExperience,
+        soundNotifications:
+          apiConfig.soundNotifications || defaults.soundNotifications,
+        advancedSettings: apiConfig.advancedSettings || defaults.advancedSettings,
+        installation: apiConfig.installation || defaults.installation,
+        windowUi: apiConfig.windowUi || {},
+        preview:
+          apiConfig.widgetPreview ||
+          apiConfig.preview ||
+          defaults.preview ||
+          {},
         // Store additional config that might be useful
         botFlow: apiConfig.botFlow,
         defaultLanguage: apiConfig.defaultLanguage,
@@ -545,6 +1059,91 @@
       // Merge fetched config with defaults
       settings = deepMerge(defaults, fetchedConfig);
 
+      if (userConfig && typeof userConfig === "object") {
+        if (userConfig.preview && typeof userConfig.preview === "object") {
+          settings.preview = deepMerge(settings.preview || {}, userConfig.preview);
+        }
+        if (userConfig.behavior && typeof userConfig.behavior === "object") {
+          settings.behavior = deepMerge(
+            settings.behavior || {},
+            userConfig.behavior,
+          );
+        }
+        if (userConfig.appearance && typeof userConfig.appearance === "object") {
+          settings.appearance = deepMerge(
+            settings.appearance || {},
+            userConfig.appearance,
+          );
+        }
+        if (
+          userConfig.preChatForm &&
+          typeof userConfig.preChatForm === "object"
+        ) {
+          settings.preChatForm = deepMerge(
+            settings.preChatForm || {},
+            userConfig.preChatForm,
+          );
+        }
+        if (
+          userConfig.engagementTriggers &&
+          typeof userConfig.engagementTriggers === "object"
+        ) {
+          settings.engagementTriggers = deepMerge(
+            settings.engagementTriggers || {},
+            userConfig.engagementTriggers,
+          );
+        }
+        if (
+          userConfig.mobileExperience &&
+          typeof userConfig.mobileExperience === "object"
+        ) {
+          settings.mobileExperience = deepMerge(
+            settings.mobileExperience || {},
+            userConfig.mobileExperience,
+          );
+        }
+        if (
+          userConfig.soundNotifications &&
+          typeof userConfig.soundNotifications === "object"
+        ) {
+          settings.soundNotifications = deepMerge(
+            settings.soundNotifications || {},
+            userConfig.soundNotifications,
+          );
+        }
+        if (
+          userConfig.advancedSettings &&
+          typeof userConfig.advancedSettings === "object"
+        ) {
+          settings.advancedSettings = deepMerge(
+            settings.advancedSettings || {},
+            userConfig.advancedSettings,
+          );
+        }
+        if (
+          userConfig.installation &&
+          typeof userConfig.installation === "object"
+        ) {
+          settings.installation = deepMerge(
+            settings.installation || {},
+            userConfig.installation,
+          );
+        }
+        if (userConfig.windowUi && typeof userConfig.windowUi === "object") {
+          settings.windowUi = deepMerge(settings.windowUi || {}, userConfig.windowUi);
+        }
+      }
+
+      const app = settings.appearance;
+      if (
+        app &&
+        !String(app.headerLogoUrl || "").trim() &&
+        !String(app.brandLogoUrl || "").trim() &&
+        String(app.logoUrl || "").trim()
+      ) {
+        app.brandLogoUrl = app.logoUrl;
+      }
+
       // Now initialize API URLs and socket config with the baseUrl
       API_BASE = baseUrl;
       API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
@@ -572,14 +1171,75 @@
       SOCKET_CONFIG = getSocketConfig(API_BASE);
       WS_URL = getWebSocketUrl();
 
-      loadGoogleFont(settings.appearance.fontFamily);
+      const mobileConfig = getMobileExperienceConfig();
+      if (mobileConfig.isMobile && !mobileConfig.mobileWidgetEnabled) {
+        console.log("UniBox: Widget disabled for mobile view");
+        removeWidgetRoot();
+        return;
+      }
 
-      if (settings.appearance.logoUrl) {
+      if (!shouldRenderByInstallationRules()) {
+        console.log("UniBox: Widget hidden by installation rules");
+        removeWidgetRoot();
+        return;
+      }
+
+      if (!shouldRenderOnCurrentPath()) {
+        console.log("UniBox: Widget hidden by advanced page rules");
+        removeWidgetRoot();
+        return;
+      }
+
+      loadGoogleFont(settings.appearance.fontFamily);
+      loadGoogleFont("DM Sans");
+
+      resolvedHeaderLogoUrl = "";
+      resolvedBrandLogoUrl = "";
+      resolvedLauncherCustomUrl = "";
+      const appear = settings.appearance || {};
+      const previewSnap = settings.preview || {};
+      const headerLogoKey = String(
+        appear.headerLogoUrl || previewSnap.headerLogoUrl || "",
+      ).trim();
+      if (headerLogoKey) {
         try {
-          resolvedLogoUrl = await fetchLogoUrl(settings.appearance.logoUrl);
+          resolvedHeaderLogoUrl = await fetchLogoUrl(headerLogoKey);
         } catch (err) {
-          console.warn("UniBox: Failed to load logo", err);
+          console.warn("UniBox: Failed to load header logo", err);
         }
+      }
+      const brandLogoKey = String(
+        appear.brandLogoUrl || previewSnap.brandLogoUrl || appear.logoUrl || "",
+      ).trim();
+      if (brandLogoKey) {
+        try {
+          resolvedBrandLogoUrl = await fetchLogoUrl(brandLogoKey);
+        } catch (err) {
+          console.warn("UniBox: Failed to load brand logo", err);
+        }
+      }
+      const launcherCustomKey = String(
+        appear.launcherIconUrl || previewSnap.launcherIconUrl || "",
+      ).trim();
+      if (launcherCustomKey) {
+        try {
+          resolvedLauncherCustomUrl = await fetchLogoUrl(launcherCustomKey);
+        } catch (err) {
+          console.warn("UniBox: Failed to load launcher custom icon", err);
+        }
+      }
+
+      const previewForAvatar = settings.preview || {};
+      if (previewForAvatar.chatAvatarUrl) {
+        try {
+          resolvedAvatarUrl = await fetchLogoUrl(
+            String(previewForAvatar.chatAvatarUrl),
+          );
+        } catch (err) {
+          console.warn("UniBox: Failed to load chat avatar", err);
+        }
+      } else {
+        resolvedAvatarUrl = "";
       }
 
       renderWidget();
@@ -611,12 +1271,14 @@
    * @returns {Promise<string>} - The presigned URL
    */
   async function fetchLogoUrl(fileName) {
-    if (fileName.startsWith("http")) return fileName;
+    if (!fileName || typeof fileName !== "string") return "";
+    const trimmed = fileName.trim();
+    if (/^(https?:|blob:|data:)/i.test(trimmed)) return trimmed;
     try {
       const res = await fetch(API_S3_URL, {
         method: "POST",
         headers: getHeaders(),
-        body: JSON.stringify({ fileName: fileName }),
+        body: JSON.stringify({ fileName: trimmed }),
       });
       if (!res.ok) throw new Error("S3 Sign failed");
       const data = await res.text();
@@ -859,6 +1521,7 @@
                 // Do NOT reuse old conversationId – leave it null so that the next
                 // sendMessageToApi()/sendSelectedFiles() call creates a fresh session.
                 conversationId = null;
+                clearLiveAgentDisplayName();
 
                 if (showLoading) {
                   setLoading(false);
@@ -894,6 +1557,7 @@
 
       if (!res.ok) throw new Error("Failed to start conversation");
       const data = await res.json();
+      clearLiveAgentDisplayName();
       conversationId = data.conversationId;
       console.log("UniBox: Conversation created:", conversationId);
 
@@ -1033,6 +1697,7 @@
         }
 
         console.log("UniBox: WebSocket successfully connected");
+        refreshHeaderPresence();
 
         // Resolve the connection promise IMMEDIATELY
         if (wsConnectResolve) {
@@ -1144,6 +1809,7 @@
           wsToken = null;
           wsConnectPromise = null;
           subscribedConversationId = null; // Reset subscription state on disconnect
+          refreshHeaderPresence();
 
           // Attempt to reconnect after 3 seconds
           setTimeout(() => {
@@ -1175,35 +1841,190 @@
   /**
    * Handle incoming WebSocket messages
    */
+  function normalizeIncomingMessagePayload(payload, envelope) {
+    const source =
+      payload && typeof payload === "object" ? payload : envelope || {};
+    const nested =
+      source.message && typeof source.message === "object"
+        ? source.message
+        : source;
+    const nestedPayload =
+      nested.payload && typeof nested.payload === "object" ? nested.payload : {};
+
+    const attachments = Array.isArray(nested.attachments)
+      ? nested.attachments
+      : Array.isArray(source.attachments)
+        ? source.attachments
+        : Array.isArray(nestedPayload.attachments)
+          ? nestedPayload.attachments
+          : Array.isArray(nested.media_items)
+            ? nested.media_items
+            : Array.isArray(source.media_items)
+              ? source.media_items
+              : [];
+    const firstAttachment =
+      attachments.length > 0 && attachments[0] && typeof attachments[0] === "object"
+        ? attachments[0]
+        : null;
+
+    const senderRaw =
+      nested.sender ??
+      source.sender ??
+      (nested.direction === "inbound" ? "user" : undefined) ??
+      (nested.direction === "outbound" ? "agent" : undefined);
+    let sender = senderRaw != null ? String(senderRaw).toLowerCase() : "";
+    if (sender === "user" || sender === "guest" || sender === "customer") {
+      sender = "user";
+    } else if (sender === "agent" || sender === "bot" || sender === "ai") {
+      sender = "agent";
+    }
+
+    const typeRaw =
+      nested.type ??
+      nested.messageType ??
+      source.type ??
+      firstAttachment?.type ??
+      firstAttachment?.mediaType ??
+      firstAttachment?.mimeType;
+    const typeNorm = typeRaw != null ? String(typeRaw).toLowerCase() : "text";
+    const mappedType =
+      typeNorm === "text"
+        ? "text"
+        : typeNorm.startsWith("image")
+          ? "image"
+          : typeNorm.startsWith("video")
+            ? "video"
+            : typeNorm.startsWith("audio")
+              ? "audio"
+              : typeNorm === "document" ||
+                  typeNorm === "file" ||
+                  typeNorm === "pdf" ||
+                  typeNorm.includes("document") ||
+                  typeNorm.includes("application/")
+                ? "document"
+                : typeNorm;
+
+    const mediaUrlFromAttachment =
+      firstAttachment?.media_storage_url ??
+      firstAttachment?.mediaStorageUrl ??
+      firstAttachment?.url ??
+      firstAttachment?.key ??
+      firstAttachment?.s3Key;
+
+    return {
+      messageId: nested.messageId ?? nested.id ?? source.messageId ?? source.id,
+      conversationId:
+        nested.conversationId ??
+        nested.conversation_id ??
+        source.conversationId ??
+        source.conversation_id,
+      sender: sender || "agent",
+      text:
+        nested.text ??
+        nested.text_body ??
+        nestedPayload.text ??
+        source.text ??
+        source.text_body,
+      timestamp:
+        nested.timestamp ??
+        nested.createdAt ??
+        nested.created_at ??
+        source.timestamp,
+      status: nested.status ?? source.status,
+      readAt: nested.readAt ?? nested.read_at ?? source.readAt,
+      readByUs:
+        nested.readByUs ??
+        nested.read_by_us ??
+        nested.readByUS ??
+        source.readByUs,
+      readByUsAt: nested.readByUsAt ?? nested.read_by_us_at ?? source.readByUsAt,
+      type: mappedType,
+      media_storage_url:
+        nested.media_storage_url ??
+        nested.mediaStorageUrl ??
+        nestedPayload.url ??
+        source.media_storage_url ??
+        source.mediaStorageUrl ??
+        mediaUrlFromAttachment,
+      is_ai_reply:
+        nested.is_ai_reply ??
+        nested.isAiReply ??
+        nestedPayload.is_ai_reply ??
+        source.is_ai_reply,
+      attachments,
+      agentName: nested.agentName ?? source.agentName,
+      displayName: nested.displayName ?? source.displayName,
+      assignedAgentName:
+        nested.assignedAgentName ?? source.assignedAgentName,
+    };
+  }
+
   function handleWebSocketMessage(message) {
-    const { type, data } = message;
+    let type = message.type ?? message.event ?? message.Event;
+    let data = message.data;
+    if (data === undefined && message.payload !== undefined) {
+      data = message.payload;
+    }
+    if (
+      !type &&
+      typeof message.action === "string" &&
+      /^(agent_assigned|handoff|live_agent_connected|virtual_agent_assigned|agent_joined)$/i.test(
+        message.action,
+      )
+    ) {
+      type = message.action;
+    }
+    if (!type && typeof message.action === "string") {
+      const a = message.action.toLowerCase();
+      if (a === "presence" || a === "presence_update") {
+        type = message.action;
+      } else if (a === "typing") {
+        type = "typing";
+      }
+    }
+
+    const normalizedType =
+      type != null ? String(type).toLowerCase().replace(/\./g, "_") : "";
 
     // Debug logging for all incoming messages
     console.log("UniBox: WebSocket message received:", {
       type,
+      normalizedType,
       hasData: !!data,
     });
 
-    switch (type) {
-      case "MESSAGE_CREATED":
+    switch (normalizedType) {
+      case "message_created":
       case "message":
         console.log("UniBox: Processing MESSAGE_CREATED:", data || message);
-        handleIncomingMessage(data || message);
+        handleIncomingMessage(normalizeIncomingMessagePayload(data, message));
         break;
 
-      case "TYPING":
+      case "typing":
         handleTypingIndicator(data || message);
         break;
 
-      case "READ":
+      case "read":
         // User does NOT receive read receipts from agent
         // This is intentionally ignored per design
         break;
 
-      case "MEDIA_UPLOAD_RESPONSE":
+      case "media_upload_response":
         // Handled by requestPresignedUrl via addEventListener
         // No action needed here, just prevent logging unknown type
         break;
+
+      case "agent_assigned":
+      case "handoff":
+      case "live_agent_connected":
+      case "virtual_agent_assigned":
+      case "agent_joined":
+      case "conversation_agent_assigned":
+      case "live_chat_agent_assigned": {
+        const evt = data || message;
+        handleAgentAssignmentHandshake(evt, message);
+        break;
+      }
 
       case "session_status_change": {
         const evt = data || message;
@@ -1220,6 +2041,7 @@
             if (evt.conversationId && conversationId === evt.conversationId) {
               conversationId = null;
               subscribedConversationId = null;
+              clearLiveAgentDisplayName();
             }
 
             // Rotate guest id so that a new live_chat contact/session is created
@@ -1247,6 +2069,62 @@
         break;
       }
 
+      case "presence":
+      case "presence_update":
+      case "peer_presence": {
+        const evt = data || message;
+        const conv =
+          evt.conversationId ??
+          evt.conversation_id ??
+          message.conversationId;
+        if (
+          conv != null &&
+          conversationId != null &&
+          String(conv) !== String(conversationId)
+        ) {
+          break;
+        }
+
+        if (evt.isTyping === false || evt.typing === false) {
+          break;
+        }
+
+        const explicitPeer =
+          evt.peerOnline ?? evt.agentOnline ?? evt.agent_online;
+        if (typeof explicitPeer === "boolean") {
+          if (liveAgentDisplayName) {
+            isAgentOnline = explicitPeer;
+            refreshHeaderPresence();
+          }
+          break;
+        }
+
+        const uid = evt.userId ?? evt.user_id;
+        if (
+          uid != null &&
+          userId != null &&
+          String(uid) === String(userId)
+        ) {
+          refreshHeaderPresence();
+          break;
+        }
+
+        if (
+          evt.isAgent === true ||
+          evt.role === "agent" ||
+          evt.principalType === "agent" ||
+          evt.participant === "agent"
+        ) {
+          const offline =
+            evt.status === "offline" ||
+            evt.isOnline === false ||
+            evt.online === false;
+          isAgentOnline = !offline;
+          refreshHeaderPresence();
+        }
+        break;
+      }
+
       case "subscribed":
         console.log("UniBox: Subscribed to conversation", data || message);
         break;
@@ -1258,9 +2136,13 @@
       default:
         // Handle legacy format or unknown types
         if (message.messageId || message.text || message.sender) {
-          handleIncomingMessage(message);
+          handleIncomingMessage(normalizeIncomingMessagePayload(message, message));
         } else {
-          console.log("UniBox: Unknown WebSocket message type:", type, message);
+          console.log(
+            "UniBox: Unknown WebSocket message type:",
+            normalizedType || type,
+            message,
+          );
         }
     }
   }
@@ -1269,6 +2151,7 @@
    * Handle incoming message from WebSocket
    */
   function handleIncomingMessage(message) {
+    message = normalizeIncomingMessagePayload(message, message);
     const isUserMessage = message.sender === "user";
 
     const existingMessage =
@@ -1360,7 +2243,31 @@
     sortMessagesByTimestamp();
 
     if (!isUserMessage) {
-      // AI/agent replied - hide typing indicator
+      const fromPayload = extractVirtualAgentDisplayName(message);
+      if (fromPayload) {
+        const aiReply =
+          message.is_ai_reply === true || message.isAiReply === true;
+        if (!aiReply) {
+          const convStr = String(conversationId || "");
+          const genericKey = `${convStr}::__agent__`;
+          const hasConvNotice =
+            lastAgentHandoffNoticeKey &&
+            lastAgentHandoffNoticeKey.startsWith(`${convStr}::`);
+          const shouldHandoffNotice =
+            convStr &&
+            (!hasConvNotice || lastAgentHandoffNoticeKey === genericKey);
+          if (shouldHandoffNotice) {
+            handleAgentAssignmentHandshake(message, message);
+          } else {
+            maybeApplyVirtualAgentFromEvent(
+              message,
+              message.conversationId ?? message.conversation_id,
+            );
+          }
+        }
+      }
+      // AI/agent replied — clear all typing UI (optimistic AI + server-driven)
+      clearOptimisticAiTypingSchedule();
       if (agentTypingTimeout) {
         clearTimeout(agentTypingTimeout);
         agentTypingTimeout = null;
@@ -1381,43 +2288,108 @@
     );
   }
 
+  function clearOptimisticAiTypingSchedule() {
+    if (optimisticAiTypingTimer) {
+      clearTimeout(optimisticAiTypingTimer);
+      optimisticAiTypingTimer = null;
+    }
+  }
+
   /**
-   * Handle typing indicator from agent or AI
-   * User sees typing from AGENT; when AI is enabled, also from AI.
+   * After a successful WS send, show "Pulse AI is typing…" only following botDelayMs
+   * and only while no human agent has taken over the thread.
+   */
+  function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
+    if (!wsDelivered || !settings?.behavior?.typingIndicator) return;
+    if (!isAiEnabled() || liveAgentDisplayName) return;
+
+    clearOptimisticAiTypingSchedule();
+    if (agentTypingTimeout) {
+      clearTimeout(agentTypingTimeout);
+      agentTypingTimeout = null;
+    }
+    agentTyping = false;
+    showTypingIndicator(false);
+
+    const delayMs = Math.min(
+      Math.max(200, Number(settings.behavior?.botDelayMs) || 600),
+      2000,
+    );
+
+    optimisticAiTypingTimer = setTimeout(() => {
+      optimisticAiTypingTimer = null;
+      if (!liveAgentDisplayName && isAiEnabled()) {
+        agentTyping = true;
+        showTypingIndicator(true, { kind: "ai" });
+        agentTypingTimeout = setTimeout(() => {
+          agentTyping = false;
+          showTypingIndicator(false);
+          agentTypingTimeout = null;
+        }, 15000);
+      }
+    }, delayMs);
+  }
+
+  /**
+   * Handle typing indicator from agent or AI (explicit roles only — no anonymous dots).
    */
   function handleTypingIndicator(data) {
-    // Validate conversation matches
-    if (!data || data.conversationId !== conversationId) {
+    if (!data) return;
+
+    const dataConv = data.conversationId ?? data.conversation_id;
+    if (
+      dataConv != null &&
+      conversationId != null &&
+      String(dataConv) !== String(conversationId)
+    ) {
       return;
     }
 
-    // Typing from agent: isAgent flag or principalId starts with 'agent'
+    if (data.isTyping === false || data.typing === false) {
+      clearOptimisticAiTypingSchedule();
+      if (agentTypingTimeout) {
+        clearTimeout(agentTypingTimeout);
+        agentTypingTimeout = null;
+      }
+      agentTyping = false;
+      showTypingIndicator(false);
+      return;
+    }
+
     const isFromAgent =
       data.isAgent === true ||
       (data.from && String(data.from).toLowerCase().startsWith("agent"));
 
-    // Typing from AI when AI is enabled
     const isFromAi =
       data.isAi === true ||
       (data.from && String(data.from).toLowerCase() === "ai");
 
-    const showTyping =
-      isFromAgent || (isAiEnabled() && isFromAi);
+    if (liveAgentDisplayName && isFromAi && !isFromAgent) {
+      return;
+    }
+
+    let showTyping = false;
+    let typingKind = "ai";
+    if (isFromAgent) {
+      showTyping = true;
+      typingKind = "agent";
+    } else if (isFromAi && isAiEnabled() && !liveAgentDisplayName) {
+      showTyping = true;
+      typingKind = "ai";
+    }
 
     if (!showTyping) {
       return;
     }
 
-    // Clear existing timeout
+    clearOptimisticAiTypingSchedule();
     if (agentTypingTimeout) {
       clearTimeout(agentTypingTimeout);
     }
 
-    // Agent is typing - show indicator
     agentTyping = true;
-    showTypingIndicator(true);
+    showTypingIndicator(true, { kind: typingKind });
 
-    // Auto-hide after 4 seconds (1s buffer over agent's 3s send interval)
     agentTypingTimeout = setTimeout(() => {
       agentTyping = false;
       showTypingIndicator(false);
@@ -1449,6 +2421,37 @@
     )
       return "document";
     return "file";
+  }
+
+  function getFileChipIconFromName(fileName, mediaType) {
+    const lower = String(fileName || "").toLowerCase();
+    if (lower.endsWith(".pdf") || mediaType === "document") {
+      return "/pulse/fileTypes/pdfFile.svg";
+    }
+    return "/pulse/fileTypes/jpgFile.svg";
+  }
+
+  function getMediaChipMeta(messageType, mediaKey, fallbackText) {
+    const storageKey = String(mediaKey || "").trim();
+    const explicitText = String(fallbackText || "").trim();
+    let filename = storageKey ? storageKey.split("/").pop() || "" : "";
+
+    if (!filename && explicitText && !explicitText.toLowerCase().includes("uploading")) {
+      filename = explicitText;
+    }
+    if (!filename) {
+      filename = "file";
+    }
+
+    const label =
+      filename === "file" && messageType
+        ? `${String(messageType).charAt(0).toUpperCase() + String(messageType).slice(1)} File`
+        : filename;
+
+    return {
+      icon: getFileChipIconFromName(filename, messageType),
+      label,
+    };
   }
 
   /**
@@ -1968,42 +2971,12 @@
       chip.style.lineHeight = "20px";
       chip.style.color = "#18181E";
 
-      // Determine icon based on file type (matching MessageInput.tsx)
-      const lower = fileData.fileName.toLowerCase();
-      const isPdf = lower.endsWith(".pdf");
-
-      // Create icon element (using SVG like MessageInput.tsx uses Image component)
-      const iconDiv = document.createElement("div");
-      iconDiv.style.display = "flex";
-      iconDiv.style.alignItems = "center";
-      iconDiv.style.justifyContent = "center";
-      iconDiv.style.width = "20px";
-      iconDiv.style.height = "20px";
-      iconDiv.style.flexShrink = "0";
-
-      // Use SVG icons (since we can't use Image component in vanilla JS)
-      if (isPdf) {
-        iconDiv.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-          <polyline points="14 2 14 8 20 8"></polyline>
-          <line x1="16" y1="13" x2="8" y2="13"></line>
-          <line x1="16" y1="17" x2="8" y2="17"></line>
-        </svg>`;
-        iconDiv.style.color =
-          (settings.appearance.gradientColor1 ||
-            settings.appearance.primaryColor ||
-            "#912FF5");
-      } else {
-        iconDiv.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <circle cx="8.5" cy="8.5" r="1.5"></circle>
-          <polyline points="21 15 16 10 5 21"></polyline>
-        </svg>`;
-        iconDiv.style.color =
-          (settings.appearance.gradientColor1 ||
-            settings.appearance.primaryColor ||
-            "#912FF5");
-      }
+      const iconImg = document.createElement("img");
+      iconImg.src = getFileChipIconFromName(fileData.fileName, fileData.mediaType);
+      iconImg.alt = "File";
+      iconImg.width = 20;
+      iconImg.height = 20;
+      iconImg.style.flexShrink = "0";
 
       // File name
       const nameSpan = document.createElement("span");
@@ -2033,13 +3006,14 @@
         removeBtn.style.backgroundColor = "transparent";
       };
       removeBtn.onclick = () => removeSelectedFile(index);
-      removeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18"></line>
-        <line x1="6" y1="6" x2="18" y2="18"></line>
-      </svg>`;
-      removeBtn.style.color = "#6b7280";
+      const removeIcon = document.createElement("img");
+      removeIcon.src = "/icons/x.svg";
+      removeIcon.alt = "Remove";
+      removeIcon.width = 14;
+      removeIcon.height = 14;
+      removeBtn.appendChild(removeIcon);
 
-      chip.appendChild(iconDiv);
+      chip.appendChild(iconImg);
       chip.appendChild(nameSpan);
       chip.appendChild(removeBtn);
       chipsContainer.appendChild(chip);
@@ -2099,6 +3073,8 @@
     // Get tenantId from config
     const tenantId = fetchedConfig?.tenantId || "unknown";
 
+    let anyMediaWsSent = false;
+
     for (const fileData of filesToSend) {
       const file = fileData.file;
       const mediaType = fileData.mediaType;
@@ -2156,6 +3132,7 @@
       });
 
       if (wsSent) {
+        anyMediaWsSent = true;
         console.log("3️⃣ Message sent via WebSocket with S3 key:", s3Key);
       } else {
         console.log("3️⃣ Message queued for WebSocket delivery");
@@ -2202,6 +3179,10 @@
           }
         }
       })();
+    }
+
+    if (anyMediaWsSent) {
+      scheduleOptimisticAiTypingAfterSend(true);
     }
   }
 
@@ -2302,21 +3283,7 @@
 
       if (wsSent) {
         console.log("UniBox: Message sent via WebSocket");
-        // When AI is enabled, show typing until AI reply arrives (or server TYPING is received)
-        if (isAiEnabled()) {
-          if (agentTypingTimeout) {
-            clearTimeout(agentTypingTimeout);
-            agentTypingTimeout = null;
-          }
-          agentTyping = true;
-          showTypingIndicator(true);
-          // Safety: hide after 15s if no reply (e.g. AI disabled on server)
-          agentTypingTimeout = setTimeout(() => {
-            agentTyping = false;
-            showTypingIndicator(false);
-            agentTypingTimeout = null;
-          }, 15000);
-        }
+        scheduleOptimisticAiTypingAfterSend(true);
       } else {
         // WebSocket not ready - message is queued and will be sent when connected
         console.log("UniBox: Message queued for WebSocket delivery");
@@ -2388,9 +3355,12 @@
                 "chat-widget-typing-indicator hidden";
               newTypingIndicator.id = "typingIndicator";
               newTypingIndicator.innerHTML = `
-              <div class="chat-widget-typing-dot"></div>
-              <div class="chat-widget-typing-dot"></div>
-              <div class="chat-widget-typing-dot"></div>
+              <div class="chat-widget-typing-label hidden" aria-live="polite"></div>
+              <div class="chat-widget-typing-dots">
+                <div class="chat-widget-typing-dot"></div>
+                <div class="chat-widget-typing-dot"></div>
+                <div class="chat-widget-typing-dot"></div>
+              </div>
             `;
               body.appendChild(newTypingIndicator);
             }
@@ -2864,6 +3834,24 @@
       return;
     }
 
+    const isIncomingAgentMessage =
+      type === "agent" &&
+      !String(normalizedId).startsWith("static_welcome_") &&
+      !String(normalizedId).startsWith("temp_");
+    if (isIncomingAgentMessage) {
+      const msgAgeMs = Math.abs(Date.now() - normalizedTimestamp);
+      const hostRoot = document.getElementById("unibox-root");
+      const chatWindowEl = hostRoot?.shadowRoot?.getElementById("chatWindow");
+      const isOpen = Boolean(chatWindowEl?.classList.contains("open"));
+      const soundCfg = getSoundNotificationConfig();
+      if (soundCfg.newMessageSoundEnabled && !isOpen) {
+        playSystemSound(soundCfg.soundType);
+      }
+      if (msgAgeMs <= 15000) {
+        maybeNotifyIncomingMessage(resolveAgentTitleForUi(), normalizedText || "");
+      }
+    }
+
     // CREATE MESSAGE ELEMENTS WITH NEW CLASSES
     const msgDiv = document.createElement("div");
     msgDiv.className = `chat-widget-message ${
@@ -2873,10 +3861,21 @@
     msgDiv.setAttribute("data-timestamp", normalizedTimestamp.toString());
 
     if (type === "agent") {
+      const topRow = document.createElement("div");
+      topRow.className = "chat-widget-message-bot-top";
+      if (resolvedAvatarUrl) {
+        const av = document.createElement("img");
+        av.className = "chat-widget-message-avatar";
+        av.src = resolvedAvatarUrl;
+        av.alt = "";
+        av.setAttribute("aria-hidden", "true");
+        topRow.appendChild(av);
+      }
       const labelEl = document.createElement("div");
       labelEl.className = "chat-widget-message-label";
-      labelEl.textContent = "Pulse AI";
-      msgDiv.appendChild(labelEl);
+      labelEl.textContent = resolveAgentTitleForUi();
+      topRow.appendChild(labelEl);
+      msgDiv.appendChild(topRow);
     }
 
     const msgContent = document.createElement("div");
@@ -2892,127 +3891,29 @@
 
     // Ensure media messages are always rendered, even with empty/null text
     if (hasMedia) {
-      // Show media as a clickable chip/button instead of loading directly
-      const getMediaIcon = (type) => {
-        if (type === "image") {
-          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-            <circle cx="8.5" cy="8.5" r="1.5"></circle>
-            <polyline points="21 15 16 10 5 21"></polyline>
-          </svg>`;
-        } else if (type === "video") {
-          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="23 7 16 12 23 17 23 7"></polygon>
-            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
-          </svg>`;
-        } else if (type === "audio") {
-          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-          </svg>`;
-        } else {
-          return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <line x1="16" y1="13" x2="8" y2="13"></line>
-            <line x1="16" y1="17" x2="8" y2="17"></line>
-          </svg>`;
-        }
-      };
-
-      const getMediaLabel = (type, textValue, mediaKey) => {
-        // Use text if available and not an upload message
-        if (
-          textValue &&
-          textValue !== "Uploading..." &&
-          !textValue.includes("Uploading")
-        ) {
-          return textValue;
-        }
-        // Don't show filename for blob URLs or s3 keys
-        if (
-          mediaKey &&
-          (mediaKey.startsWith("blob:") ||
-            mediaKey.startsWith("live-chat-media/"))
-        ) {
-          const labels = {
-            image: "Image",
-            video: "Video",
-            audio: "Audio",
-            document: "Document",
-            file: "File",
-          };
-          return labels[type] || "Media";
-        }
-        // Extract filename from media key if available
-        const fileName = mediaKey ? mediaKey.split("/").pop() : null;
-        const labels = {
-          image: "Image",
-          video: "Video",
-          audio: "Audio",
-          document: "Document",
-          file: "File",
-        };
-        return fileName || labels[type] || "Media";
-      };
+      const mediaMeta = getMediaChipMeta(messageType, mediaStorageUrl, normalizedText);
 
       // Always show media as a clickable chip (same as agent side)
       const mediaChip = document.createElement("button");
       mediaChip.className = "chat-widget-media-chip";
       mediaChip.type = "button";
-      mediaChip.style.display = "flex";
-      mediaChip.style.alignItems = "center";
-      mediaChip.style.gap = "8px";
-      mediaChip.style.padding = "10px 12px";
-      mediaChip.style.backgroundColor =
-        type === "agent" ? "#F5F5F5" : "#E8DFF8";
-      mediaChip.style.border = "1px solid #e5e7eb";
-      mediaChip.style.borderRadius = "8px";
-      mediaChip.style.cursor = "pointer";
-      mediaChip.style.transition = "all 0.2s";
-      mediaChip.style.width = "100%";
-      mediaChip.style.textAlign = "left";
-      mediaChip.style.color = "#18181e";
-      mediaChip.style.fontSize = "14px";
-      mediaChip.style.fontFamily = settings.appearance.fontFamily;
-      mediaChip.style.minHeight = "40px"; // Ensure minimum height for visibility
-      mediaChip.onmouseenter = () => {
-        mediaChip.style.backgroundColor =
-          type === "agent" ? "#e9ecef" : "#ddd4f0";
-        mediaChip.style.transform = "translateY(-1px)";
-      };
-      mediaChip.onmouseleave = () => {
-        mediaChip.style.backgroundColor =
-          type === "agent" ? "#F5F5F5" : "#E8DFF8";
-        mediaChip.style.transform = "translateY(0)";
-      };
       mediaChip.onclick = () => {
         showMediaPreview(mediaStorageUrl, messageType, normalizedText);
       };
 
-      const iconDiv = document.createElement("div");
-      iconDiv.style.display = "flex";
-      iconDiv.style.alignItems = "center";
-      iconDiv.style.justifyContent = "center";
-      iconDiv.style.color =
-          (settings.appearance.gradientColor1 ||
-            settings.appearance.primaryColor ||
-            "#912FF5");
-      iconDiv.style.flexShrink = "0";
-      iconDiv.innerHTML = getMediaIcon(messageType);
+      const iconImg = document.createElement("img");
+      iconImg.src = mediaMeta.icon;
+      iconImg.alt = "File";
+      iconImg.width = 20;
+      iconImg.height = 20;
+      iconImg.className = "chat-widget-media-chip-icon";
 
-      const labelDiv = document.createElement("div");
-      labelDiv.style.flex = "1";
-      labelDiv.style.minWidth = "0";
-      labelDiv.style.wordBreak = "break-word";
-      labelDiv.textContent = getMediaLabel(
-        messageType,
-        normalizedText,
-        mediaStorageUrl,
-      );
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "chat-widget-media-chip-label";
+      labelSpan.textContent = mediaMeta.label;
 
-      mediaChip.appendChild(iconDiv);
-      mediaChip.appendChild(labelDiv);
+      mediaChip.appendChild(iconImg);
+      mediaChip.appendChild(labelSpan);
       msgContent.appendChild(mediaChip);
 
       // Add text caption if available and not the file name
@@ -3020,8 +3921,7 @@
         normalizedText &&
         normalizedText !== "Uploading..." &&
         !normalizedText.includes("Uploading") &&
-        messageType !== "document" &&
-        messageType !== "file"
+        normalizedText !== mediaMeta.label
       ) {
         const captionDiv = document.createElement("div");
         captionDiv.className = "chat-widget-media-caption";
@@ -3191,6 +4091,8 @@
    * ALL status updates go via WebSocket only - no HTTP API calls
    */
   function markMessagesAsRead(messageIds) {
+    const advanced = getAdvancedSettingsConfig();
+    if (!advanced.visitorTrackingEnabled) return;
     if (!conversationId || !userId || settings.testMode) return;
     if (!messageIds || messageIds.length === 0) return;
 
@@ -3231,6 +4133,8 @@
   }
 
   function markVisibleMessagesAsRead() {
+    const advanced = getAdvancedSettingsConfig();
+    if (!advanced.visitorTrackingEnabled) return;
     if (!conversationId || !userId || settings.testMode) return;
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
@@ -3255,42 +4159,89 @@
     }
   }
 
-  function updateOnlineStatus(isOnline, isAgent) {
-    if (isAgent) {
-      isAgentOnline = isOnline;
-      updateOnlineStatusIndicator();
+  function updateOnlineStatus(isOnline, isAgentSide) {
+    if (isAgentSide) {
+      isAgentOnline = !!isOnline;
+      refreshHeaderPresence();
     }
   }
 
-  function updateOnlineStatusIndicator() {
+  function refreshHeaderPresence() {
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const statusIndicator = host.shadowRoot.getElementById(
-      "onlineStatusIndicator",
-    );
-    if (statusIndicator) {
-      statusIndicator.textContent = isAgentOnline ? "● Online" : "○ Offline";
-      statusIndicator.className = `chat-widget-online-status ${
-        isAgentOnline ? "online" : "offline"
-      }`;
+    const userPill = host.shadowRoot.getElementById("userPresencePill");
+    const peerPill = host.shadowRoot.getElementById("peerPresencePill");
+    if (!userPill || !peerPill) return;
+
+    const windowEl = host.shadowRoot.getElementById("chatWindow");
+    const chatOpen = windowEl?.classList.contains("open");
+    const wsLive = socket && socket.readyState === WebSocket.OPEN;
+
+    let userClass = "away";
+    let userText = "You · Away";
+    if (!chatOpen) {
+      userClass = "away";
+      userText = "You · Away";
+    } else if (wsLive) {
+      userClass = "online";
+      userText = "You · Online";
+    } else {
+      userClass = "connecting";
+      userText = "You · Connecting…";
     }
+    userPill.textContent = userText;
+    userPill.className = `chat-widget-presence-pill ${userClass}`;
+
+    let peerClass = "offline";
+    let peerText = "Support · Offline";
+    if (liveAgentDisplayName) {
+      peerClass = isAgentOnline ? "online" : "offline";
+      peerText = isAgentOnline
+        ? `${liveAgentDisplayName} · Online`
+        : `${liveAgentDisplayName} · Offline`;
+    } else if (isAiEnabled()) {
+      peerClass = wsLive ? "online" : "offline";
+      peerText = wsLive ? "Pulse AI · Active" : "Pulse AI · Unavailable";
+    } else {
+      peerClass = "offline";
+      peerText = "Support · Offline";
+    }
+    peerPill.textContent = peerText;
+    peerPill.className = `chat-widget-presence-pill ${peerClass}`;
   }
 
-  function showTypingIndicator(show) {
+  function showTypingIndicator(show, options) {
+    if (!settings?.behavior?.typingIndicator) return;
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
     const typingIndicator = host.shadowRoot.getElementById("typingIndicator");
-    if (typingIndicator) {
-      if (show) {
-        typingIndicator.classList.remove("hidden");
-        const body = host.shadowRoot.getElementById("chatBody");
-        if (body) {
-          requestAnimationFrame(() => {
-            body.scrollTop = body.scrollHeight;
-          });
-        }
-      } else {
-        typingIndicator.classList.add("hidden");
+    if (!typingIndicator) return;
+    const labelEl = typingIndicator.querySelector(".chat-widget-typing-label");
+    if (show) {
+      const kind = options?.kind === "agent" ? "agent" : "ai";
+      let label = "Pulse AI is typing…";
+      if (kind === "agent") {
+        const n = liveAgentDisplayName && String(liveAgentDisplayName).trim();
+        label = n ? `${n} is typing…` : "Agent is typing…";
+      }
+      if (labelEl) {
+        labelEl.textContent = label;
+        labelEl.classList.remove("hidden");
+      }
+      typingIndicator.classList.remove("hidden");
+      typingIndicator.setAttribute("data-typing-kind", kind);
+      const body = host.shadowRoot.getElementById("chatBody");
+      if (body) {
+        requestAnimationFrame(() => {
+          body.scrollTop = body.scrollHeight;
+        });
+      }
+    } else {
+      typingIndicator.classList.add("hidden");
+      typingIndicator.removeAttribute("data-typing-kind");
+      if (labelEl) {
+        labelEl.textContent = "";
+        labelEl.classList.add("hidden");
       }
     }
   }
@@ -3309,6 +4260,14 @@
     });
   }
 
+  function escapeHtmlWidget(t) {
+    return String(t)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   // --- 10. UI RENDERING ---
   function renderWidget() {
     const host = document.createElement("div");
@@ -3316,37 +4275,103 @@
     document.body.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
 
-    // Styles variables: 3-colour gradient (backward compat: fallback to primaryColor if set)
-    const fallback = settings.appearance.primaryColor;
+    // Header / open launcher: primary → secondary only (legacy gradientColor3 no longer used here)
     const c1 =
-      settings.appearance.gradientColor1 || fallback || "#912FF5";
+      settings.appearance.gradientColor1 ||
+      settings.appearance.primaryColor ||
+      "#912FF5";
     const c2 =
-      settings.appearance.gradientColor2 || fallback || "#EF32D4";
+      settings.appearance.gradientColor2 ||
+      settings.appearance.secondaryColor ||
+      "#EF32D4";
+    const rawC3 = settings.appearance.gradientColor3 || "#7DBCFE";
+    const c3Hex = String(rawC3)
+      .trim()
+      .replace(/^#/, "")
+      .toLowerCase();
     const c3 =
-      settings.appearance.gradientColor3 || fallback || "#7DBCFE";
-    const gradientCss = `linear-gradient(272.16deg, ${c1} 0.45%, ${c2} 45.12%, ${c3} 99.8%)`;
-    const accentColor = c1;
+      c3Hex === "fff" ||
+      c3Hex === "ffffff" ||
+      c3Hex === "ffff" ||
+      String(rawC3).trim().toLowerCase() === "white"
+        ? "#7DBCFE"
+        : rawC3;
+    const pulseRingGradientCss = `linear-gradient(272.16deg, ${c2} 0.45%, ${c1} 45.12%, ${c3} 99.8%)`;
+    const preview = settings.preview || {};
+    const primaryColor =
+      preview.primaryColor || settings.appearance.primaryColor || c1;
+    const secondaryColor =
+      preview.secondaryColor || settings.appearance.secondaryColor || c2;
+    const chromeGradientCss = `linear-gradient(272.16deg, ${primaryColor} 0.45%, ${secondaryColor} 99.8%)`;
+    const accentColor = primaryColor;
     const launcherBg = "#FFFFFF";
+    const poweredByBrandGradientCss =
+      "linear-gradient(272.16deg, #EF32D4 0.45%, #912FF5 45.12%, #7DBCFE 99.8%)";
 
     const placement = settings.behavior.stickyPlacement || "bottom-right";
     const isTop = placement.includes("top");
     const isRight = placement.includes("right");
-    const launcherSize = 48;
-    const gap = 16;
-    const horizontalLauncherCss = isRight ? "right: 32px;" : "left: 32px;";
-    const horizontalWindowCss = isRight
-      ? `right: ${32 + launcherSize + gap}px;`
-      : `left: ${32 + launcherSize + gap}px;`;
-    const verticalCss = isTop ? "top: 32px;" : "bottom: 32px;";
+    const bubbleAnimation =
+      preview.bubbleAnimation ?? settings.appearance.bubbleAnimation ?? "none";
+    const launcherAnimClass =
+      bubbleAnimation === "bounce"
+        ? "chat-widget-launcher-bounce"
+        : bubbleAnimation === "pulse"
+          ? "chat-widget-launcher-pulse"
+          : "";
 
-    const getRadius = (style) => {
-      if (style === "rounded") return "10px";
-      if (style === "square") return "0px";
-      return "50%";
+    const bubbleSizeMap = { small: 48, medium: 60, large: 64 };
+    const launcherFacePx =
+      bubbleSizeMap[
+        preview.bubbleSize || settings.appearance.bubbleSize || "small"
+      ] || bubbleSizeMap.small;
+    const pulseRingThicknessPx = 1;
+    const launcherOuterPulsePx = launcherFacePx + 2 * pulseRingThicknessPx;
+    const launcherLayoutPx =
+      bubbleAnimation === "pulse" ? launcherOuterPulsePx : launcherFacePx;
+    const windowSideGapPx = 8;
+    const marginH = Math.max(0, Number(preview.rightMarginPx ?? 20));
+    const marginV = Math.max(0, Number(preview.bottomMarginPx ?? 20));
+    const horizontalLauncherCss = isRight
+      ? `right: ${marginH}px;`
+      : `left: ${marginH}px;`;
+    const horizontalWindowCss = isRight
+      ? `right: ${marginH + launcherLayoutPx + windowSideGapPx}px;`
+      : `left: ${marginH + launcherLayoutPx + windowSideGapPx}px;`;
+    const verticalCss = isTop ? `top: ${marginV}px;` : `bottom: ${marginV}px;`;
+
+    const fontSizeMap = {
+      small: { body: "14px", meta: "12px", input: "14px" },
+      medium: { body: "15px", meta: "13px", input: "15px" },
+      large: { body: "16px", meta: "14px", input: "16px" },
     };
-    const launcherRadius = getRadius(settings.appearance.chatToggleIcon.style);
-    const headerLogoRadius =
-      settings.appearance.iconStyle === "round" ? "50%" : "8px";
+    const fontSizes =
+      fontSizeMap[preview.fontSize || "small"] || fontSizeMap.small;
+
+    const windowSizeMap = {
+      compact: { width: 340, height: 460 },
+      medium: { width: 360, height: 500 },
+      large: { width: 400, height: 560 },
+    };
+    const windowSize =
+      windowSizeMap[preview.windowSize || "medium"] || windowSizeMap.medium;
+    const radiusByStyle = { rounded: "10px", minimal: "0px", card: "16px" };
+    const windowRadius =
+      radiusByStyle[preview.windowStyle || "rounded"] || radiusByStyle.rounded;
+
+    const chatBubbleColor = preview.chatBubbleColor || "#ECE1FF";
+    const agentMessageColor = preview.agentMessageColor || "#F5F5F5";
+    const backgroundColor = preview.backgroundColor || "#FFFFFF";
+    const bodyHeaderOverlap = 36;
+
+    const hasCustomZ =
+      Object.prototype.hasOwnProperty.call(preview, "zIndex") &&
+      preview.zIndex !== null &&
+      preview.zIndex !== "";
+    const zLauncher = hasCustomZ ? Number(preview.zIndex) : 2147483647;
+    const zWindow = hasCustomZ ? Number(preview.zIndex) + 1 : 2147483647;
+
+    const subtitle = String(preview.subtitle || "").trim();
 
     const styleTag = document.createElement("style");
 
@@ -3368,6 +4393,10 @@
         .chat-widget-container *,
         .chat-widget-header,
         .chat-widget-header *,
+        .chat-widget-messages-pane,
+        .chat-widget-messages-pane *,
+        .chat-widget-scroll-wrap,
+        .chat-widget-scroll-wrap *,
         .chat-widget-body,
         .chat-widget-body *,
         .chat-widget-footer,
@@ -3381,47 +4410,124 @@
 
         .chat-widget-launcher {
           position: fixed; ${verticalCss} ${horizontalLauncherCss}
-          width: 48px;
-          height: 48px;
+          width: ${launcherFacePx}px;
+          height: ${launcherFacePx}px;
           padding: 0;
-          background: ${launcherBg};
-          border-radius: ${launcherRadius};
+          background: transparent;
+          border-radius: 50%;
           box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
           cursor: pointer;
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: transform 0.2s;
-          overflow: hidden;
-          z-index: 2147483647;
+          transition: transform 0.2s, width 0.2s, height 0.2s;
+          overflow: visible;
+          z-index: ${zLauncher};
         }
-        .chat-widget-launcher svg,
-        .chat-widget-launcher img {
+        .chat-widget-launcher.chat-widget-launcher-floating {
+          border-radius: 14px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-inner {
+          border-radius: 14px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-pulse-ring {
+          border-radius: 14px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) {
+          width: ${launcherOuterPulsePx}px;
+          height: ${launcherOuterPulsePx}px;
+        }
+        .chat-widget-launcher-pulse-ring {
+          position: absolute;
+          inset: 0;
+          border-radius: 50%;
+          background: ${pulseRingGradientCss};
+          animation: launcherPulseRingRotate 4s linear infinite;
+          transform-origin: 50% 50%;
+          z-index: 0;
+          pointer-events: none;
+        }
+        .chat-widget-launcher.open .chat-widget-launcher-pulse-ring {
+          display: none;
+        }
+        .chat-widget-launcher-inner {
+          position: absolute;
+          inset: 0;
+          border-radius: 50%;
+          background: ${launcherBg};
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          z-index: 1;
+        }
+        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) .chat-widget-launcher-inner {
+          inset: ${pulseRingThicknessPx}px;
+        }
+        .chat-widget-launcher-inner svg,
+        .chat-widget-launcher-inner img {
           width: 100%;
           height: 100%;
           display: block;
           flex-shrink: 0;
         }
-        .chat-widget-launcher img {
-          object-fit: cover;
+        .chat-widget-launcher-inner .chat-widget-launcher-default-icon {
+          width: 124%;
+          height: 124%;
+          max-width: none;
+          max-height: none;
+        }
+        .chat-widget-launcher-inner > img {
+          object-fit: contain;
+          width: 108%;
+          height: 108%;
+          max-width: none;
+          max-height: none;
+        }
+        .chat-widget-launcher.open .chat-widget-launcher-close-icon {
+          width: 58%;
+          height: 58%;
+          min-width: 18px;
+          min-height: 18px;
+          max-width: 32px;
+          max-height: 32px;
         }
 
         .chat-widget-launcher:hover {
           transform: scale(1.05);
         }
 
-        .chat-widget-launcher.open {
-          background: ${gradientCss} !important;
+        .chat-widget-launcher.open .chat-widget-launcher-inner {
+          background: ${primaryColor} !important;
+          inset: 0;
+        }
+        .chat-widget-launcher-bounce {
+          animation: launcherBounce 1.6s infinite;
+        }
+        @keyframes launcherPulseRingRotate {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        @keyframes launcherBounce {
+          0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+          40% { transform: translateY(-5px); }
+          60% { transform: translateY(-3px); }
         }
 
         .chat-widget-window {
           position: fixed; ${verticalCss} ${horizontalWindowCss}
-          width: 424px;
-          height: 668px;
-          max-width: calc(100vw - 40px);
-          max-height: calc(100vh - 120px);
+          width: ${windowSize.width}px;
+          height: min(
+            ${windowSize.height}px,
+            calc(100vh - ${marginV + 16}px)
+          );
+          max-width: calc(
+            100vw -
+              ${2 * marginH + launcherLayoutPx + windowSideGapPx}px
+          );
+          max-height: calc(100vh - ${marginV + 16}px);
           background: #ffffff;
-          border-radius: 10px;
+          border-radius: ${windowRadius};
           box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
           display: flex;
           flex-direction: column;
@@ -3433,7 +4539,7 @@
           } scale(0.95);
           transition: all 0.25s ease;
           border: 1px solid rgba(0, 0, 0, 0.05);
-          z-index: 2147483647;
+          z-index: ${zWindow};
         }
 
         .chat-widget-window.open {
@@ -3443,14 +4549,26 @@
         }
 
         .chat-widget-header {
-          background: ${gradientCss};
-          padding: 8px;
-          height: 72px;
+          background: ${chromeGradientCss};
+          padding: 16px;
+          min-height: 96px;
           color: #fff;
           display: flex;
-          // align-items: center;
+        }
+
+        .chat-widget-header-content {
+          width: 100%;
+          display: flex;
           gap: 8px;
-          flex-shrink: 0;
+          align-items: center;
+          transform: translateY(-${bodyHeaderOverlap / 2}px);
+        }
+
+        .chat-widget-header-text {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
         }
 
         .chat-widget-header-logo {
@@ -3474,35 +4592,123 @@
           flex: 1;
         }
 
-        .chat-widget-online-status {
-          font-size: 12px;
-          margin-left: 8px;
+        .chat-widget-header-presence-row {
           display: flex;
+          flex-wrap: wrap;
+          gap: 6px 8px;
+          margin-top: 6px;
           align-items: center;
-          gap: 4px;
+        }
+
+        .chat-widget-presence-pill {
+          font-size: 11px;
+          line-height: 14px;
+          font-weight: 500;
+          padding: 3px 8px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.2);
+          color: rgba(255, 255, 255, 0.95);
+        }
+
+        .chat-widget-presence-pill.online {
+          background: rgba(255, 255, 255, 0.28);
+          color: rgba(255, 255, 255, 1);
+        }
+
+        .chat-widget-presence-pill.offline {
+          background: rgba(0, 0, 0, 0.12);
+          color: rgba(255, 255, 255, 0.75);
+        }
+
+        .chat-widget-presence-pill.away {
+          background: rgba(0, 0, 0, 0.1);
+          color: rgba(255, 255, 255, 0.72);
+        }
+
+        .chat-widget-presence-pill.connecting {
+          background: rgba(255, 255, 255, 0.18);
+          color: rgba(255, 255, 255, 0.88);
+        }
+
+        .chat-widget-messages-pane {
+          flex: 1;
+          min-height: 0;
+          position: relative;
+          top: -${bodyHeaderOverlap}px;
+          margin-bottom: -${bodyHeaderOverlap}px;
+          display: flex;
+          flex-direction: column;
+          background-color: ${backgroundColor};
+          border-radius: ${windowRadius};
+          overflow: hidden;
+        }
+
+        .chat-widget-scroll-wrap {
+          flex: 1;
+          min-height: 0;
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          isolation: isolate;
+        }
+
+        .chat-widget-scroll-wrap:has(.chat-widget-body--chat)::after {
+          content: "*AI-generated content may be inaccurate.";
+          position: absolute;
+          bottom: 8px;
+          left: 0;
+          right: 0;
+          text-align: center;
+          font-family: ${settings.appearance.fontFamily} !important;
+          font-size: 14px;
+          line-height: 16px;
+          letter-spacing: 0;
           font-weight: 400;
-          height: 10px;
-          line-height: 10px;
-        }
-
-        .chat-widget-online-status.online {
-          color: rgba(255,255,255,0.9);
-        }
-
-        .chat-widget-online-status.offline {
-          color: rgba(255,255,255,0.7);
+          color: #d9d9d9;
+          pointer-events: none;
+          z-index: 0;
         }
 
         .chat-widget-body {
           flex: 1;
-          padding: 16px;
-          border-radius: 10px;
+          min-height: 0;
           overflow-y: auto;
-          background-color: #ffffff;
-          position: relative;
-          top: -24px;
+          overflow-x: hidden;
           display: flex;
           flex-direction: column;
+          -webkit-overflow-scrolling: touch;
+          background-color: ${backgroundColor};
+          scrollbar-width: thin;
+          scrollbar-color: #efeff9 transparent;
+        }
+
+        /* Same as app globals `.custom-select-scrollbar` (embed uses shadow DOM) */
+        .chat-widget-body::-webkit-scrollbar {
+          width: 8px;
+          height: 8px;
+        }
+        .chat-widget-body::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .chat-widget-body::-webkit-scrollbar-thumb {
+          background: #efeff9;
+          border-radius: 20px;
+          border: none;
+        }
+        .chat-widget-body::-webkit-scrollbar-thumb:hover {
+          background: #d1d5db;
+        }
+        .chat-widget-body::-webkit-scrollbar-corner {
+          background: transparent;
+        }
+
+        /* Top inset clears header overlap */
+        .chat-widget-body--chat {
+          padding: 12px 16px 40px;
+        }
+
+        .chat-widget-body--form {
+          padding: 16px;
         }
 
         .chat-widget-loader {
@@ -3531,6 +4737,8 @@
         }
 
         .chat-widget-message {
+          position: relative;
+          z-index: 1;
           max-width: 80%;
           margin-bottom: 16px;
           display: flex;
@@ -3545,6 +4753,29 @@
         .chat-widget-message.user {
           align-self: flex-end;
           margin-left: auto; /* push user messages to the right */
+          align-items: flex-end;
+        }
+
+        .chat-widget-handoff-notice {
+          align-self: stretch;
+          width: 100%;
+          max-width: 100%;
+          margin: 10px 0;
+          display: flex;
+          justify-content: center;
+          box-sizing: border-box;
+        }
+
+        .chat-widget-handoff-notice-inner {
+          padding: 8px 14px;
+          border-radius: 20px;
+          background: rgba(0, 0, 0, 0.06);
+          color: #6b7280;
+          font-size: 12px;
+          line-height: 16px;
+          text-align: center;
+          font-family: ${settings.appearance.fontFamily} !important;
+          max-width: 92%;
         }
 
         .chat-widget-message-content {
@@ -3554,34 +4785,56 @@
         }
 
         .chat-widget-message.bot .chat-widget-message-content {
-          background: #F5F5F5;
+          background: ${agentMessageColor};
           color: #18181e;
+          font-family: ${settings.appearance.fontFamily} !important;
           font-size: 14px;
           line-height: 20px;
+          letter-spacing: 0;
           font-weight: 400;
           border-radius: 10px;
           border-top-left-radius: 0;
         }
 
         .chat-widget-message.user .chat-widget-message-content {
-          background: #ECE1FF;
-          color: #18181E;
-          font-size: 14px;
-          line-height: 20px;
-          font-weight: 400;
+          background: ${chatBubbleColor};
+          color: #18181e;
           border-radius: 10px;
           border-bottom-right-radius: 0;
         }
 
         .chat-widget-message-label {
+          font-family: ${settings.appearance.fontFamily} !important;
           font-size: 12px;
-          color: #9DA2AB;
+          line-height: 16px;
+          letter-spacing: 0;
+          color: #9da2ab;
           margin-bottom: 8px;
           font-weight: 400;
         }
 
         .chat-widget-message.bot .chat-widget-message-label {
           align-self: flex-start;
+        }
+
+        .chat-widget-message-bot-top {
+          display: flex;
+          flex-direction: row;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+
+        .chat-widget-message-avatar {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          object-fit: cover;
+          flex-shrink: 0;
+        }
+
+        .chat-widget-message.bot .chat-widget-message-bot-top .chat-widget-message-label {
+          margin-bottom: 0;
         }
 
         .chat-widget-message.user .chat-widget-message-label {
@@ -3599,6 +4852,7 @@
 
         .chat-widget-message.user .chat-widget-message-meta {
           justify-content: flex-end;
+          align-self: flex-end;
         }
 
         .chat-widget-message.bot .chat-widget-message-meta {
@@ -3607,7 +4861,7 @@
 
         .chat-widget-message-time {
           color: #18181e;
-          font-size: 12px;
+          font-size: ${fontSizes.meta};
           font-weight: 400;
           line-height: 16px;
         }
@@ -3670,20 +4924,41 @@
         }
 
         .chat-widget-typing-indicator {
+          position: relative;
+          z-index: 1;
           display: flex;
-          align-items: center;
-          gap: 4px;
-          padding: 14px 16px;
-          background: #F5F5F5;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 6px;
+          padding: 10px 14px 12px;
+          background: #f5f5f5;
           border-radius: 12px;
           border-top-left-radius: 0;
           margin: 8px 0;
-          max-width: 80px;
+          max-width: min(280px, 92%);
           align-self: flex-start;
         }
 
         .chat-widget-typing-indicator.hidden {
           display: none;
+        }
+
+        .chat-widget-typing-label {
+          font-size: 12px;
+          line-height: 16px;
+          color: #6b7280;
+          font-weight: 500;
+          font-family: ${settings.appearance.fontFamily} !important;
+        }
+
+        .chat-widget-typing-label.hidden {
+          display: none;
+        }
+
+        .chat-widget-typing-dots {
+          display: flex;
+          align-items: center;
+          gap: 4px;
         }
 
         .chat-widget-typing-dot {
@@ -3694,11 +4969,11 @@
           animation: typing 1.4s infinite;
         }
 
-        .chat-widget-typing-dot:nth-child(2) {
+        .chat-widget-typing-dots .chat-widget-typing-dot:nth-child(2) {
           animation-delay: 0.2s;
         }
 
-        .chat-widget-typing-dot:nth-child(3) {
+        .chat-widget-typing-dots .chat-widget-typing-dot:nth-child(3) {
           animation-delay: 0.4s;
         }
 
@@ -3747,23 +5022,10 @@
           cursor: pointer;
         }
 
-        .chat-widget-disclaimer {
-          font-size: 14px;
-          line-height: 16px;
-          font-weight: 400;
-          color: #9ca3af;
-          text-align: center;
-          margin: 0;
-          padding: 8px;
-          flex-shrink: 0;
-        }
-
-        .chat-widget-disclaimer.hidden {
-          display: none;
-        }
-
         .chat-widget-footer-section {
           flex-shrink: 0;
+          position: relative;
+          z-index: 1;
           background: #ffffff;
           border-radius: 0 0 12px 12px;
           box-shadow: 0px -1px 14px 0px #00000014;
@@ -3774,7 +5036,7 @@
         }
 
         .chat-widget-footer {
-          padding: 4px 8px;
+          padding: 12px 16px 12px;
           background: #ffffff;
           flex-shrink: 0;
         }
@@ -3782,7 +5044,8 @@
         .chat-widget-footer-row {
           display: flex;
           align-items: center;
-          background: #F5F5F5;
+          background: #ffffff;
+          border: 1px solid #D9D9D9;
           border-radius: 4px;
           padding: 8px;
           gap: 8px;
@@ -3809,9 +5072,23 @@
           display: flex;
           border: none;
           padding: 4px;
+          width: 28px;
+          height: 28px;
           align-items: center;
           justify-content: center;
           background: transparent;
+          color: #18181e;
+          border-radius: 6px;
+          transition: background-color 0.15s ease, opacity 0.15s ease;
+        }
+
+        .chat-widget-attach-btn:hover {
+          background: #f3f4f6;
+        }
+
+        .chat-widget-attach-btn svg {
+          width: 18px;
+          height: 18px;
         }
 
         .chat-widget-input {
@@ -3819,7 +5096,7 @@
           border: none;
           background: transparent;
           outline: none;
-          font-size: 14px;
+          font-size: ${fontSizes.input};
           color: #1f2937;
         }
 
@@ -3830,6 +5107,49 @@
           padding: 0;
           align-items: center;
           justify-content: center;
+        }
+
+        .chat-widget-powered-by {
+          display: flex;
+          justify-content: center;
+          margin-top: 8px;
+        }
+        .chat-widget-powered-by-row {
+          display: inline-flex;
+          align-items: center;
+          gap: 2px;
+          height: 16px;
+        }
+        .chat-widget-powered-by-trailing {
+          display: inline-flex;
+          align-items: center;
+          gap: 2px;
+          height: 16px;
+        }
+        .chat-widget-powered-by-label,
+        .chat-widget-powered-by-brand {
+          font-family: "DM Sans", sans-serif !important;
+          font-weight: 400;
+          font-size: 14px;
+          line-height: 16px;
+          letter-spacing: 0;
+        }
+        .chat-widget-powered-by-label {
+          color: #d9d9d9;
+          text-align: center;
+        }
+        .chat-widget-powered-by-mark {
+          width: 16px;
+          height: 16px;
+          flex-shrink: 0;
+          display: block;
+        }
+        .chat-widget-powered-by-brand {
+          background: ${poweredByBrandGradientCss};
+          -webkit-background-clip: text;
+          background-clip: text;
+          color: transparent;
+          -webkit-text-fill-color: transparent;
         }
 
         .chat-widget-message-content img {
@@ -3905,14 +5225,40 @@
         }
 
         .chat-widget-media-chip {
-          transition: all 0.2s ease;
-          min-height: 40px;
           display: flex !important;
+          align-items: center;
+          gap: 8px;
+          height: 36px;
+          max-width: 100%;
+          padding: 0 12px;
+          border-radius: 6px;
+          border: 1px solid #EFEFEF;
+          background: #ffffff;
+          cursor: pointer;
+          transition: background-color 0.15s ease;
           visibility: visible !important;
+          color: #18181E;
+          text-align: left;
         }
 
         .chat-widget-media-chip:hover {
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+          background: #F4F4FF;
+        }
+
+        .chat-widget-media-chip-icon {
+          width: 20px;
+          height: 20px;
+          flex-shrink: 0;
+        }
+
+        .chat-widget-media-chip-label {
+          font-size: 14px;
+          line-height: 20px;
+          font-weight: 400;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 220px;
         }
 
         .chat-widget-message-content:empty {
@@ -3951,7 +5297,7 @@
         }
     `;
 
-    const chatIcon = `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    const chatIcon = `<svg class="chat-widget-launcher-default-icon" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
 <rect width="32" height="32" rx="16" transform="matrix(-1 0 0 1 32 0)" fill="white"/>
 <path fill-rule="evenodd" clip-rule="evenodd" d="M16.0005 2.5625C23.4233 2.5625 29.4405 8.57979 29.4405 16.0025C29.4405 23.4252 23.4233 29.4425 16.0005 29.4425C8.57784 29.4425 2.56055 23.4252 2.56055 16.0025C2.56055 8.57979 8.57784 2.5625 16.0005 2.5625ZM16.0005 3.60977C9.15623 3.60977 3.60782 9.15819 3.60782 16.0025C3.60782 22.8468 9.15623 28.3952 16.0005 28.3952C22.8449 28.3952 28.3933 22.8468 28.3933 16.0025C28.3933 9.15819 22.8449 3.60977 16.0005 3.60977Z" fill="url(#paint0_linear_3454_252289)"/>
 <path d="M24.6986 11.5066C24.5218 10.9089 24.2263 10.4429 23.8319 10.1327C23.4154 9.80523 22.9049 9.65744 22.3206 9.71547C21.7937 9.76761 21.2089 9.99373 20.5868 10.4152L20.5573 10.4363C20.5511 10.441 17.8236 12.7353 17.8236 12.7353L18.5602 13.5205C18.5602 13.5205 21.0756 11.3966 21.2081 11.2935C21.6673 10.9851 22.0769 10.8219 22.4265 10.7872C22.7205 10.7582 22.9702 10.8269 23.1664 10.9811C23.3845 11.1525 23.5548 11.4338 23.6664 11.8107C23.8519 12.4379 23.8695 13.2938 23.6793 14.3285L23.6772 14.3413C23.6745 14.3579 23.0611 18.2028 22.8752 18.9969C22.6901 19.7877 22.4053 20.3927 22.0206 20.7699C21.821 20.9654 21.5915 21.0993 21.3319 21.164C21.0581 21.2324 20.742 21.2278 20.383 21.1436C19.329 20.8963 17.9725 19.9953 16.3004 18.2859L16.2898 18.2753L15.8948 17.8965L15.1465 18.6702L15.5418 19.05C17.3621 20.909 18.8947 21.9023 20.1382 22.194C20.6666 22.318 21.1503 22.3197 21.5887 22.2103C22.0413 22.0971 22.4364 21.8691 22.7748 21.5374C23.3106 21.0123 23.6929 20.23 23.9245 19.2412C24.1077 18.4592 24.707 14.711 24.7377 14.5182C24.959 13.3127 24.9295 12.2869 24.6986 11.5067V11.5066Z" fill="url(#paint1_linear_3454_252289)"/>
@@ -3981,43 +5327,113 @@
 </defs>
 </svg>`;
 
-    const closeIcon = `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M24 8L8 24" stroke="white" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8L24 24" stroke="white" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    const messageBubbleIcon = `<svg class="chat-widget-launcher-default-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.3-3.7a8.5 8.5 0 0 1-1.3-4.8 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 3.8.9 8.5 8.5 0 0 1 4.7 7.6Z" stroke="#18181E" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 10.5h5M8.5 13.5h3" stroke="#18181E" stroke-width="1.35" stroke-linecap="round"/></svg>`;
+
+    const closeIcon = `<svg class="chat-widget-launcher-close-icon" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M24 8L8 24" stroke="white" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8L24 24" stroke="white" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
     const container = document.createElement("div");
     container.className = "chat-widget-container";
 
-    const headerTitle =
-      settings.appearance.header?.title || settings.appearance.headerName;
-    const headerLogoImg = resolvedLogoUrl
-      ? `<img src="${resolvedLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
-      : `<div class="chat-widget-header-logo" style="display:flex;align-items:center;justify-content:center;color:#7c3aed"><svg class="chat-widget-header-logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/><path d="M18 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg></div>`;
+    const headerTitle = resolveChatWindowTitleForUi();
+    const headerFallbackSvg = chatIcon.replace(
+      /class="chat-widget-launcher-default-icon"\s+/,
+      "",
+    );
+    const headerLogoImg = resolvedHeaderLogoUrl
+      ? `<img src="${resolvedHeaderLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
+      : `<div class="chat-widget-header-logo" style="display:flex;align-items:center;justify-content:center;color:#7c3aed">${headerFallbackSvg}</div>`;
+    const headerSubtitleHtml = subtitle
+      ? `<div class="chat-widget-header-subtitle" style="font-size:${fontSizes.meta};opacity:0.9">${escapeHtmlWidget(subtitle)}</div>`
+      : "";
 
-    const launcherContent = resolvedLogoUrl
-      ? `<img src="${resolvedLogoUrl}" alt="Chat" />`
-      : chatIcon;
+    const poweredByMarkSvg = `<svg class="chat-widget-powered-by-mark" width="16" height="16" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<rect width="32" height="32" rx="16" transform="matrix(-1 0 0 1 32 0)" fill="white"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M16.0005 2.5625C23.4233 2.5625 29.4405 8.57979 29.4405 16.0025C29.4405 23.4252 23.4233 29.4425 16.0005 29.4425C8.57784 29.4425 2.56055 23.4252 2.56055 16.0025C2.56055 8.57979 8.57784 2.5625 16.0005 2.5625ZM16.0005 3.60977C9.15623 3.60977 3.60782 9.15819 3.60782 16.0025C3.60782 22.8468 9.15623 28.3952 16.0005 28.3952C22.8449 28.3952 28.3933 22.8468 28.3933 16.0025C28.3933 9.15819 22.8449 3.60977 16.0005 3.60977Z" fill="url(#paint0_poweredby)"/>
+<path d="M24.6986 11.5066C24.5218 10.9089 24.2263 10.4429 23.8319 10.1327C23.4154 9.80523 22.9049 9.65744 22.3206 9.71547C21.7937 9.76761 21.2089 9.99373 20.5868 10.4152L20.5573 10.4363C20.5511 10.441 17.8236 12.7353 17.8236 12.7353L18.5602 13.5205C18.5602 13.5205 21.0756 11.3966 21.2081 11.2935C21.6673 10.9851 22.0769 10.8219 22.4265 10.7872C22.7205 10.7582 22.9702 10.8269 23.1664 10.9811C23.3845 11.1525 23.5548 11.4338 23.6664 11.8107C23.8519 12.4379 23.8695 13.2938 23.6793 14.3285L23.6772 14.3413C23.6745 14.3579 23.0611 18.2028 22.8752 18.9969C22.6901 19.7877 22.4053 20.3927 22.0206 20.7699C21.821 20.9654 21.5915 21.0993 21.3319 21.164C21.0581 21.2324 20.742 21.2278 20.383 21.1436C19.329 20.8963 17.9725 19.9953 16.3004 18.2859L16.2898 18.2753L15.8948 17.8965L15.1465 18.6702L15.5418 19.05C17.3621 20.909 18.8947 21.9023 20.1382 22.194C20.6666 22.318 21.1503 22.3197 21.5887 22.2103C22.0413 22.0971 22.4364 21.8691 22.7748 21.5374C23.3106 21.0123 23.6929 20.23 23.9245 19.2412C24.1077 18.4592 24.707 14.711 24.7377 14.5182C24.959 13.3127 24.9295 12.2869 24.6986 11.5067V11.5066Z" fill="url(#paint1_poweredby)"/>
+<path d="M13.6479 18.4093L14.2517 17.8029L15.0115 17.0405L16.9154 15.1311L17.1276 15.343L17.5651 13.7132L15.9324 14.1499L16.1535 14.3706L13.4742 17.0585L12.8921 17.6429L12.1719 18.3656L12.0675 18.4706L12.0611 18.477C11.4621 19.0968 10.8194 19.6911 10.2697 19.8292C9.86458 19.931 9.45724 19.6888 9.08324 18.7817C9.00007 18.4673 8.4387 16.3472 8.27409 15.7593C8.10887 15.103 8.12019 14.6058 8.2629 14.2716C8.34286 14.0844 8.46798 13.9532 8.62607 13.8814C8.80594 13.7993 9.04313 13.7816 9.32265 13.8313C9.95673 13.9444 10.7398 14.3931 11.5464 15.2108L11.5569 15.2214L12.5811 16.2023L13.3918 15.4877L12.3043 14.4465C11.3339 13.4657 10.3449 12.9186 9.5083 12.7696C9.01557 12.682 8.56247 12.7289 8.17875 12.9037C7.7735 13.0884 7.46027 13.4065 7.27093 13.8504C7.03915 14.3931 7.00151 15.1242 7.22726 16.0206L7.23144 16.0353C7.41143 16.6754 8.04945 19.0883 8.05117 19.0953L8.0615 19.1341L8.07245 19.1605C8.71231 20.7359 9.5842 21.1126 10.5314 20.8745C11.3379 20.6716 12.1259 19.9595 12.838 19.223L12.9219 19.1385L13.6481 18.4097L13.6479 18.4093Z" fill="url(#paint2_poweredby)"/>
+<path d="M13.6514 18.4178L14.2546 17.8121L15.0136 17.0504L16.9153 15.143L17.1273 15.3546L17.5643 13.7266L15.9334 14.1628L16.1543 14.3833L13.4779 17.0684L12.8965 17.6522L12.1771 18.3742L12.0728 18.4791L12.0664 18.4854C11.468 19.1046 10.8244 19.6918 10.2769 19.8362C10.156 19.8681 10.0035 19.8724 9.84375 19.7988C9.84375 19.7988 9.26947 20.7471 9.31839 20.774C9.66642 20.9653 10.1114 20.9876 10.5381 20.8802C11.3438 20.6775 12.1309 19.9661 12.8422 19.2305L12.926 19.1461L13.6514 18.418V18.4178Z" fill="url(#paint3_poweredby)"/>
+<defs>
+<linearGradient id="paint0_poweredby" x1="29.4407" y1="26.0825" x2="1.76989" y2="25.0397" gradientUnits="userSpaceOnUse">
+<stop stop-color="#EF32D4"/>
+<stop offset="0.449646" stop-color="#912FF5"/>
+<stop offset="1" stop-color="#7DBCFE"/>
+</linearGradient>
+<linearGradient id="paint1_poweredby" x1="7.84806" y1="19.7277" x2="24.6921" y2="15.2184" gradientUnits="userSpaceOnUse">
+<stop stop-color="#7DBCFE"/>
+<stop offset="0.6" stop-color="#912FF5"/>
+<stop offset="1" stop-color="#EF32D4"/>
+</linearGradient>
+<linearGradient id="paint2_poweredby" x1="7.58231" y1="17.3497" x2="27.1331" y2="12.1016" gradientUnits="userSpaceOnUse">
+<stop stop-color="#7DBCFE"/>
+<stop offset="0.34" stop-color="#912FF5"/>
+<stop offset="1" stop-color="#EF32D4"/>
+</linearGradient>
+<linearGradient id="paint3_poweredby" x1="8.76488" y1="18.7173" x2="26.8533" y2="13.8621" gradientUnits="userSpaceOnUse">
+<stop stop-color="#21C8FF" stop-opacity="0"/>
+<stop offset="0.09" stop-color="#21C8FF" stop-opacity="0.71"/>
+<stop offset="0.14" stop-color="#21C8FF"/>
+</linearGradient>
+</defs>
+</svg>`;
+
+    const appearForLauncher = settings.appearance || {};
+    const launcherIconType =
+      preview.launcherIconType ||
+      appearForLauncher.launcherIconType ||
+      "chat";
+    let launcherImgResolved = "";
+    if (launcherIconType === "custom") {
+      launcherImgResolved =
+        resolvedLauncherCustomUrl || resolvedBrandLogoUrl || "";
+    } else if (launcherIconType === "brand") {
+      launcherImgResolved = resolvedBrandLogoUrl || "";
+    }
+    const defaultLauncherIcon =
+      launcherIconType === "message" ? messageBubbleIcon : chatIcon;
+    const launcherContent = launcherImgResolved
+      ? `<img src="${launcherImgResolved}" alt="Chat" />`
+      : defaultLauncherIcon;
+
+    const pulseRingHtml =
+      bubbleAnimation === "pulse"
+        ? `<div class="chat-widget-launcher-pulse-ring" aria-hidden="true"></div>`
+        : "";
+
+    const launcherShapeClass =
+      (preview.launcherType || appearForLauncher.launcherType) === "floating"
+        ? " chat-widget-launcher-floating"
+        : "";
 
     container.innerHTML = `
-      <div class="chat-widget-launcher" id="launcherBtn">${launcherContent}</div>
+      <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn">${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div></div>
       <div class="chat-widget-window" id="chatWindow">
         <div class="chat-widget-header">
-           ${headerLogoImg}
-           <div style="flex: 1; padding-top: 6px;">
-             <div class="chat-widget-header-title">${headerTitle}</div>
-             <!-- <div id="onlineStatusIndicator" class="chat-widget-online-status offline">○ Offline</div> -->
-           </div>
-           <!-- <div id="closeBtn" style="cursor:pointer; font-size:24px; opacity:0.8; line-height: 1;">&times;</div> -->
+          <div class="chat-widget-header-content">
+            ${headerLogoImg}
+            <div class="chat-widget-header-text">
+              <div class="chat-widget-header-title" id="chatHeaderTitle">${escapeHtmlWidget(headerTitle)}</div>
+              <div class="chat-widget-header-presence-row" id="headerPresenceRow">
+                <span class="chat-widget-presence-pill away" id="userPresencePill">You · Away</span>
+                <span class="chat-widget-presence-pill offline" id="peerPresencePill">Support · Offline</span>
+              </div>
+              ${headerSubtitleHtml}
+            </div>
+          </div>
         </div>
-        <div class="chat-widget-body" id="chatBody">
-          <!-- Messages will be inserted here -->
-          <!-- Typing indicator is appended at the end dynamically -->
+        <div class="chat-widget-messages-pane" id="chatMessagesPane">
+          <div class="chat-widget-scroll-wrap">
+            <div class="chat-widget-body chat-widget-body--chat" id="chatBody">
+              <!-- Messages will be inserted here -->
+              <!-- Typing indicator is appended at the end dynamically -->
+            </div>
+          </div>
         </div>
-        <p class="chat-widget-disclaimer hidden" id="chatDisclaimer">*AI-generated content may be inaccurate.</p>
         <div class="chat-widget-footer-section hidden" id="chatFooterSection">
            <div class="chat-widget-footer" id="chatFooter">
              <div class="chat-widget-footer-row">
              <div class="chat-widget-input-wrapper">
                <input type="file" id="fileInput" style="display: none;" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx" multiple />
-               <button class="chat-widget-attach-btn" id="attachBtn" title="Attach file">
+              <button type="button" class="chat-widget-attach-btn" id="attachBtn" title="Attach file" aria-label="Attach file">
                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="0.75" stroke-linecap="round" stroke-linejoin="round">
                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                  </svg>
@@ -4029,6 +5445,15 @@
                   <path d="M13.5822 12H6.45106C6.45106 11.7556 6.39979 11.5112 6.29815 11.2819L4.16007 6.50225C3.47646 4.97361 5.11173 3.44319 6.61926 4.19951L19.0151 10.4154C20.3283 11.0731 20.3283 12.927 19.0151 13.5847L6.62016 19.8006C5.11173 20.5569 3.47646 19.0256 4.16007 17.4978L6.29635 12.7181C6.39732 12.4919 6.4494 12.2473 6.44926 12" stroke="#18181E" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
              </button>
+             </div>
+             <div class="chat-widget-powered-by">
+               <div class="chat-widget-powered-by-row">
+                 <span class="chat-widget-powered-by-label">Powered by</span>
+                 <div class="chat-widget-powered-by-trailing">
+                   ${poweredByMarkSvg}
+                   <span class="chat-widget-powered-by-brand">CX-Astra</span>
+                 </div>
+               </div>
              </div>
            </div>
         </div>
@@ -4046,7 +5471,6 @@
 
     const renderView = () => {
       const body = shadow.getElementById("chatBody");
-      const disclaimer = shadow.getElementById("chatDisclaimer");
       const footerSection = shadow.getElementById("chatFooterSection");
       const footer = shadow.getElementById("chatFooter");
       body.innerHTML = "";
@@ -4055,20 +5479,46 @@
       // Typing indicator should always be the LAST element in chat body
       body.innerHTML = "";
 
+      body.className =
+        "chat-widget-body " +
+        (currentView === "form" ? "chat-widget-body--form" : "chat-widget-body--chat");
+
       // Create typing indicator (will be appended at the end after messages are loaded)
       const typingIndicator = document.createElement("div");
       typingIndicator.className = "chat-widget-typing-indicator hidden";
       typingIndicator.id = "typingIndicator";
       typingIndicator.innerHTML = `
-        <div class="chat-widget-typing-dot"></div>
-        <div class="chat-widget-typing-dot"></div>
-        <div class="chat-widget-typing-dot"></div>
+        <div class="chat-widget-typing-label hidden" aria-live="polite"></div>
+        <div class="chat-widget-typing-dots">
+          <div class="chat-widget-typing-dot"></div>
+          <div class="chat-widget-typing-dot"></div>
+          <div class="chat-widget-typing-dot"></div>
+        </div>
       `;
       body.appendChild(typingIndicator);
+      refreshHeaderPresence();
 
       if (currentView === "form") {
-        if (disclaimer) disclaimer.classList.add("hidden");
         footerSection.classList.add("hidden");
+
+        const formPreview = settings.preview || {};
+        const showGreetingByTime = Boolean(formPreview.greetingByTime);
+        const welcomeTextForm =
+          settings.appearance.header?.welcomeMessage ||
+          settings.appearance.welcomeMessage ||
+          "Hi there!";
+        let dynamicWelcomePrefixForm = "";
+        if (showGreetingByTime) {
+          const hour = new Date().getHours();
+          if (hour < 12) dynamicWelcomePrefixForm = "Good morning! ";
+          else if (hour < 18) dynamicWelcomePrefixForm = "Good afternoon! ";
+          else dynamicWelcomePrefixForm = "Good evening! ";
+        }
+        const composedWelcomeMessageForm = `${dynamicWelcomePrefixForm}${welcomeTextForm}`;
+        const consentEnabled = Boolean(settings.preChatForm?.consentCheckbox);
+        const consentText = String(
+          settings.preChatForm?.consentText || "I agree to be contacted.",
+        ).trim();
 
         const fieldsHtml = settings.preChatForm.fields
           .map((f) => {
@@ -4092,22 +5542,36 @@
           `;
           })
           .join("");
+        const consentHtml = consentEnabled
+          ? `<div style="margin: 8px 0 16px;">
+              <label style="display:flex; gap:8px; align-items:flex-start; font-size:12px; color:#374151;">
+                <input type="checkbox" id="preChatConsent" required style="margin-top:2px;" />
+                <span>${escapeHtmlWidget(consentText || "I agree to be contacted.")}</span>
+              </label>
+            </div>`
+          : "";
 
         const formContainer = document.createElement("div");
         formContainer.className = "chat-widget-form-container";
         formContainer.innerHTML = `
-          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:14px; color:#111;">Welcome</div>
+          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:16px; color:#111;">${escapeHtmlWidget(composedWelcomeMessageForm)}</div>
           <div style="text-align:center; margin-bottom:20px; font-size:14px; color:#666;">Please fill in your details to continue.</div>
           <form id="preChatForm">
             ${fieldsHtml}
+            ${consentHtml}
             <button type="submit" class="chat-widget-form-btn">Start Chat</button>
           </form>
         `;
         body.appendChild(formContainer);
 
         const formEl = formContainer.querySelector("#preChatForm");
+        const consentEl = formContainer.querySelector("#preChatConsent");
         formEl.addEventListener("submit", (e) => {
           e.preventDefault();
+          if (consentEnabled && consentEl && !consentEl.checked) {
+            alert("Please accept the consent checkbox to continue.");
+            return;
+          }
           const formData = new FormData(formEl);
           const data = Object.fromEntries(formData.entries());
 
@@ -4142,7 +5606,6 @@
           renderView();
         });
       } else {
-        if (disclaimer) disclaimer.classList.remove("hidden");
         footerSection.classList.remove("hidden");
 
         // Re-render file chips if there are selected files
@@ -4182,6 +5645,7 @@
 
     // --- 12. EVENTS ---
     const launcher = shadow.getElementById("launcherBtn");
+    const launcherInner = shadow.getElementById("launcherInner");
     const windowEl = shadow.getElementById("chatWindow");
     const closeBtn = shadow.getElementById("closeBtn");
     const sendBtn = shadow.getElementById("sendBtn");
@@ -4190,30 +5654,53 @@
     const fileInput = shadow.getElementById("fileInput");
 
     const updateLauncherIcon = (isOpen) => {
+      if (!launcherInner) return;
       if (isOpen) {
         launcher.classList.add("open");
-        launcher.innerHTML = closeIcon;
+        launcherInner.innerHTML = closeIcon;
       } else {
         launcher.classList.remove("open");
-        launcher.innerHTML = launcherContent;
+        launcherInner.innerHTML = launcherContent;
       }
     };
+
+    const applyMobileExperienceStyles = () => {
+      const mobile = getMobileExperienceConfig();
+      if (!mobile.isMobile) return;
+      if (mobile.mobileWindowStyle !== "fullscreen") return;
+      windowEl.style.left = "0";
+      windowEl.style.right = "0";
+      windowEl.style.bottom = "0";
+      windowEl.style.top = "0";
+      windowEl.style.width = "100vw";
+      windowEl.style.height = "100vh";
+      windowEl.style.maxWidth = "100vw";
+      windowEl.style.maxHeight = "100vh";
+      windowEl.style.borderRadius = "0";
+      windowEl.style.border = "0";
+    };
+    applyMobileExperienceStyles();
 
     const toggle = (forceState) => {
       const isOpen = windowEl.classList.contains("open");
       const nextState = forceState !== undefined ? forceState : !isOpen;
+      const advanced = getAdvancedSettingsConfig();
 
       if (nextState) windowEl.classList.add("open");
       else windowEl.classList.remove("open");
 
       updateLauncherIcon(nextState);
+      refreshHeaderPresence();
 
-      if (settings.behavior.stickyPlacement) {
+      if (settings.behavior.stickyPlacement && advanced.persistentChat) {
         localStorage.setItem(STORAGE_KEY_OPEN, nextState);
       }
     };
 
-    launcher.addEventListener("click", () => toggle());
+    launcher.addEventListener("click", () => {
+      maybeRequestNotificationPermission();
+      toggle();
+    });
     if (closeBtn) closeBtn.addEventListener("click", () => toggle(false));
 
     const handleSend = () => {
@@ -4254,23 +5741,28 @@
       });
     };
 
-    attachBtn.addEventListener("click", () => {
-      fileInput.click();
-    });
+    if (attachBtn && fileInput) {
+      attachBtn.addEventListener("click", () => {
+        fileInput.click();
+      });
 
-    fileInput.addEventListener("change", (e) => {
-      const files = Array.from(e.target.files || []);
-      if (files.length > 0) {
-        files.forEach((file) => {
-          sendMediaMessage(file).catch((err) => {
-            console.error("UniBox: Failed to add media file", err);
+      fileInput.addEventListener("change", (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length > 0) {
+          files.forEach((file) => {
+            sendMediaMessage(file).catch((err) => {
+              console.error("UniBox: Failed to add media file", err);
+            });
           });
-        });
-        fileInput.value = ""; // Reset input
-      }
-    });
+          fileInput.value = ""; // Reset input
+        }
+      });
+    }
 
-    sendBtn.addEventListener("click", handleSend);
+    sendBtn.addEventListener("click", () => {
+      maybeRequestNotificationPermission();
+      handleSend();
+    });
     msgInput.addEventListener("keypress", (e) => {
       if (e.key === "Enter") {
         if (isTyping) {
@@ -4358,6 +5850,8 @@
      * ALL status updates go via WebSocket only - no HTTP API calls
      */
     function markContactAsRead() {
+      const advanced = getAdvancedSettingsConfig();
+      if (!advanced.visitorTrackingEnabled) return;
       if (!userId || settings.testMode) return;
       if (!conversationId) return;
 
@@ -4379,9 +5873,7 @@
       tooltip.innerHTML =
         '<div class="chat-widget-tooltip-arrow"></div><span class="chat-widget-tooltip-text"></span>';
       chatBody.appendChild(tooltip);
-      const tooltipTextEl = tooltip.querySelector(
-        ".chat-widget-tooltip-text",
-      );
+      const tooltipTextEl = tooltip.querySelector(".chat-widget-tooltip-text");
 
       const showMessageTooltip = (msgEl) => {
         if (!msgEl) return;
@@ -4463,11 +5955,122 @@
       }
     }
 
-    if (settings.behavior.autoOpen) {
-      const hasHistory = localStorage.getItem(STORAGE_KEY_OPEN);
-      if (hasHistory === null || hasHistory === "true") {
-        const delay = settings.behavior.autoOpenDelay || 2000;
-        setTimeout(() => toggle(true), delay);
+    const advanced = getAdvancedSettingsConfig();
+    const mode = resolveAutoTriggerMode();
+    const engagement = getEngagementTriggerConfig();
+    const engagementSeenKey = `${STORAGE_KEY_ENGAGEMENT}_proactive`;
+    const pageViewKey = `${STORAGE_KEY_ENGAGEMENT}_page_views`;
+    const mobile = getMobileExperienceConfig();
+    const pageViews = Number(sessionStorage.getItem(pageViewKey) || "0") + 1;
+    sessionStorage.setItem(pageViewKey, String(pageViews));
+    const hasHistory = localStorage.getItem(STORAGE_KEY_OPEN);
+    const canAutoTrigger =
+      !advanced.persistentChat || hasHistory === null || hasHistory === "true";
+    const triggerOnce = (() => {
+      let fired = false;
+      return () => {
+        if (fired || !canAutoTrigger) return;
+        fired = true;
+        toggle(true);
+      };
+    })();
+    const triggerProactiveMessage = () => {
+      if (!engagement.proactiveMessage) return;
+      if (
+        engagement.showOncePerSession &&
+        sessionStorage.getItem(engagementSeenKey) === "true"
+      ) {
+        return;
+      }
+      triggerOnce();
+      appendMessageToUI(
+        engagement.proactiveMessage,
+        "agent",
+        `proactive_${Date.now()}`,
+        new Date(),
+        "sent",
+        null,
+        false,
+        null,
+        "text",
+        undefined,
+      );
+      if (engagement.showOncePerSession) {
+        sessionStorage.setItem(engagementSeenKey, "true");
+      }
+    };
+
+    if (mobile.isMobile && mobile.autoOpenOnMobile) {
+      setTimeout(() => triggerOnce(), 0);
+    } else if (mode === "exit-intent") {
+      const handleExitIntent = (event) => {
+        const related = event.relatedTarget || event.toElement;
+        if (related) return;
+        if (typeof event.clientY === "number" && event.clientY <= 0) {
+          triggerOnce();
+          document.removeEventListener("mouseout", handleExitIntent);
+        }
+      };
+      document.addEventListener("mouseout", handleExitIntent);
+    } else if (mode === "on-scroll") {
+      const threshold = Math.min(
+        100,
+        Math.max(1, Number(settings.behavior.showOnlyAfterScrollPercent || 0)),
+      );
+      const handleScrollTrigger = () => {
+        const scrollTop =
+          window.pageYOffset || document.documentElement.scrollTop || 0;
+        const maxScroll =
+          Math.max(
+            document.documentElement.scrollHeight - window.innerHeight,
+            0,
+          ) || 1;
+        const percent = (scrollTop / maxScroll) * 100;
+        if (percent >= threshold) {
+          triggerOnce();
+          window.removeEventListener("scroll", handleScrollTrigger);
+        }
+      };
+      window.addEventListener("scroll", handleScrollTrigger, { passive: true });
+      handleScrollTrigger();
+    } else if (mode === "after-delay") {
+      const delay = Math.max(0, Number(settings.behavior.autoOpenDelay || 0));
+      setTimeout(() => triggerOnce(), delay);
+    } else if (mode === "immediately") {
+      setTimeout(() => triggerOnce(), 0);
+    }
+
+    if (engagement.proactiveMessage) {
+      if (engagement.triggerCondition === "scroll") {
+        const threshold = Math.min(
+          100,
+          Math.max(1, Number(engagement.triggerValue || 30)),
+        );
+        const onScroll = () => {
+          const scrollTop =
+            window.pageYOffset || document.documentElement.scrollTop || 0;
+          const maxScroll =
+            Math.max(
+              document.documentElement.scrollHeight - window.innerHeight,
+              0,
+            ) || 1;
+          const percent = (scrollTop / maxScroll) * 100;
+          if (percent >= threshold) {
+            triggerProactiveMessage();
+            window.removeEventListener("scroll", onScroll);
+          }
+        };
+        window.addEventListener("scroll", onScroll, { passive: true });
+      } else if (engagement.triggerCondition === "pages") {
+        const pageTarget = Math.max(1, Number(engagement.triggerValue || 2));
+        if (pageViews >= pageTarget) triggerProactiveMessage();
+      } else if (engagement.triggerCondition === "returning") {
+        if (Boolean(localStorage.getItem(STORAGE_KEY_USER))) {
+          triggerProactiveMessage();
+        }
+      } else {
+        const delayMs = Math.max(0, Number(engagement.triggerValue || 5) * 1000);
+        setTimeout(() => triggerProactiveMessage(), delayMs);
       }
     }
   }
@@ -4482,11 +6085,16 @@
     return target;
   }
 
+  const loadedGoogleFontFamilies = new Set();
+
   function loadGoogleFont(font) {
     if (!font) return;
     const family = font.split(",")[0].replace(/['"]/g, "").trim();
     if (["sans-serif", "serif", "system-ui"].includes(family.toLowerCase()))
       return;
+    const familyKey = family.toLowerCase();
+    if (loadedGoogleFontFamilies.has(familyKey)) return;
+    loadedGoogleFontFamilies.add(familyKey);
     const link = document.createElement("link");
     link.href = `https://fonts.googleapis.com/css2?family=${family.replace(
       / /g,

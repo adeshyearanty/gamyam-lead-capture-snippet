@@ -4692,7 +4692,7 @@
           scrollbar-color: #efeff9 transparent;
         }
 
-        /* Same as app globals `.custom-select-scrollbar` (embed uses shadow DOM) */
+        /* Same as app globals custom-select-scrollbar (embed uses shadow DOM) */
         .chat-widget-body::-webkit-scrollbar {
           width: 8px;
           height: 8px;

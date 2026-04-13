@@ -85,7 +85,6 @@
 
   // API URLs - will be set after we get the full config
   let API_BASE = baseUrl;
-  let API_S3_URL = "";
   let UTILITY_API_BASE = "";
   let UTILITY_S3_URL = "";
   let SOCKET_CONFIG = { namespaceUrl: "", path: "" };
@@ -1146,8 +1145,6 @@
 
       // Now initialize API URLs and socket config with the baseUrl
       API_BASE = baseUrl;
-      API_S3_URL = API_BASE.replace(/\/chat\/?$/, "/s3/generate-access-url");
-
       // Use utilityApiBaseUrl from config if provided, otherwise construct it
       // utilityApiBaseUrl should be like: https://dev-api.salesastra.ai/utilities/v1/s3
       if (fetchedConfig && fetchedConfig.utilityApiBaseUrl) {
@@ -1198,6 +1195,21 @@
       resolvedLauncherCustomUrl = "";
       const appear = settings.appearance || {};
       const previewSnap = settings.preview || {};
+      const headerLogoKey = String(
+        appear.headerLogoUrl ||
+          previewSnap.headerLogoUrl ||
+          appear.brandLogoUrl ||
+          previewSnap.brandLogoUrl ||
+          appear.logoUrl ||
+          "",
+      ).trim();
+      if (headerLogoKey) {
+        try {
+          resolvedHeaderLogoUrl = await fetchLogoUrl(headerLogoKey);
+        } catch (err) {
+          console.warn("UniBox: Failed to load header logo", err);
+        }
+      }
       const brandLogoKey = String(
         appear.brandLogoUrl || previewSnap.brandLogoUrl || appear.logoUrl || "",
       ).trim();
@@ -1206,16 +1218,6 @@
           resolvedBrandLogoUrl = await fetchLogoUrl(brandLogoKey);
         } catch (err) {
           console.warn("UniBox: Failed to load brand logo", err);
-        }
-      }
-      const headerLogoKey = String(
-        appear.headerLogoUrl || previewSnap.headerLogoUrl || brandLogoKey || "",
-      ).trim();
-      if (headerLogoKey) {
-        try {
-          resolvedHeaderLogoUrl = await fetchLogoUrl(headerLogoKey);
-        } catch (err) {
-          console.warn("UniBox: Failed to load header logo", err);
         }
       }
       const launcherCustomKey = String(
@@ -1266,7 +1268,7 @@
   // --- 8. S3 LOGIC ---
 
   /**
-   * Fetch signed URL for logo/images (uses pulse service endpoint)
+   * Fetch signed URL for logo/images (uses normal utility S3 endpoint)
    * @param {string} fileName - The S3 key or file name
    * @returns {Promise<string>} - The presigned URL
    */
@@ -1275,7 +1277,6 @@
     const trimmed = fileName.trim();
     if (/^(https?:|blob:|data:)/i.test(trimmed)) return trimmed;
     try {
-      // Keep logo URL generation aligned with admin flow by using utility service.
       const res = await fetch(UTILITY_S3_URL, {
         method: "POST",
         headers: getHeaders(),
@@ -1842,124 +1843,6 @@
   /**
    * Handle incoming WebSocket messages
    */
-  function normalizeIncomingMessagePayload(payload, envelope) {
-    const source =
-      payload && typeof payload === "object" ? payload : envelope || {};
-    const nested =
-      source.message && typeof source.message === "object"
-        ? source.message
-        : source;
-    const nestedPayload =
-      nested.payload && typeof nested.payload === "object" ? nested.payload : {};
-
-    const attachments = Array.isArray(nested.attachments)
-      ? nested.attachments
-      : Array.isArray(source.attachments)
-        ? source.attachments
-        : Array.isArray(nestedPayload.attachments)
-          ? nestedPayload.attachments
-          : Array.isArray(nested.media_items)
-            ? nested.media_items
-            : Array.isArray(source.media_items)
-              ? source.media_items
-              : [];
-    const firstAttachment =
-      attachments.length > 0 && attachments[0] && typeof attachments[0] === "object"
-        ? attachments[0]
-        : null;
-
-    const senderRaw =
-      nested.sender ??
-      source.sender ??
-      (nested.direction === "inbound" ? "user" : undefined) ??
-      (nested.direction === "outbound" ? "agent" : undefined);
-    let sender = senderRaw != null ? String(senderRaw).toLowerCase() : "";
-    if (sender === "user" || sender === "guest" || sender === "customer") {
-      sender = "user";
-    } else if (sender === "agent" || sender === "bot" || sender === "ai") {
-      sender = "agent";
-    }
-
-    const typeRaw =
-      nested.type ??
-      nested.messageType ??
-      source.type ??
-      firstAttachment?.type ??
-      firstAttachment?.mediaType ??
-      firstAttachment?.mimeType;
-    const typeNorm = typeRaw != null ? String(typeRaw).toLowerCase() : "text";
-    const mappedType =
-      typeNorm === "text"
-        ? "text"
-        : typeNorm.startsWith("image")
-          ? "image"
-          : typeNorm.startsWith("video")
-            ? "video"
-            : typeNorm.startsWith("audio")
-              ? "audio"
-              : typeNorm === "document" ||
-                  typeNorm === "file" ||
-                  typeNorm === "pdf" ||
-                  typeNorm.includes("document") ||
-                  typeNorm.includes("application/")
-                ? "document"
-                : typeNorm;
-
-    const mediaUrlFromAttachment =
-      firstAttachment?.media_storage_url ??
-      firstAttachment?.mediaStorageUrl ??
-      firstAttachment?.url ??
-      firstAttachment?.key ??
-      firstAttachment?.s3Key;
-
-    return {
-      messageId: nested.messageId ?? nested.id ?? source.messageId ?? source.id,
-      conversationId:
-        nested.conversationId ??
-        nested.conversation_id ??
-        source.conversationId ??
-        source.conversation_id,
-      sender: sender || "agent",
-      text:
-        nested.text ??
-        nested.text_body ??
-        nestedPayload.text ??
-        source.text ??
-        source.text_body,
-      timestamp:
-        nested.timestamp ??
-        nested.createdAt ??
-        nested.created_at ??
-        source.timestamp,
-      status: nested.status ?? source.status,
-      readAt: nested.readAt ?? nested.read_at ?? source.readAt,
-      readByUs:
-        nested.readByUs ??
-        nested.read_by_us ??
-        nested.readByUS ??
-        source.readByUs,
-      readByUsAt: nested.readByUsAt ?? nested.read_by_us_at ?? source.readByUsAt,
-      type: mappedType,
-      media_storage_url:
-        nested.media_storage_url ??
-        nested.mediaStorageUrl ??
-        nestedPayload.url ??
-        source.media_storage_url ??
-        source.mediaStorageUrl ??
-        mediaUrlFromAttachment,
-      is_ai_reply:
-        nested.is_ai_reply ??
-        nested.isAiReply ??
-        nestedPayload.is_ai_reply ??
-        source.is_ai_reply,
-      attachments,
-      agentName: nested.agentName ?? source.agentName,
-      displayName: nested.displayName ?? source.displayName,
-      assignedAgentName:
-        nested.assignedAgentName ?? source.assignedAgentName,
-    };
-  }
-
   function handleWebSocketMessage(message) {
     let type = message.type ?? message.event ?? message.Event;
     let data = message.data;
@@ -1998,7 +1881,7 @@
       case "message_created":
       case "message":
         console.log("UniBox: Processing MESSAGE_CREATED:", data || message);
-        handleIncomingMessage(normalizeIncomingMessagePayload(data, message));
+        handleIncomingMessage(data || message);
         break;
 
       case "typing":
@@ -2137,7 +2020,7 @@
       default:
         // Handle legacy format or unknown types
         if (message.messageId || message.text || message.sender) {
-          handleIncomingMessage(normalizeIncomingMessagePayload(message, message));
+          handleIncomingMessage(message);
         } else {
           console.log(
             "UniBox: Unknown WebSocket message type:",
@@ -2152,7 +2035,6 @@
    * Handle incoming message from WebSocket
    */
   function handleIncomingMessage(message) {
-    message = normalizeIncomingMessagePayload(message, message);
     const isUserMessage = message.sender === "user";
 
     const existingMessage =
@@ -2538,26 +2420,17 @@
         throw new Error(`Failed to get presigned URL: ${response.status}`);
       }
 
-      // Response can be plain text URL, JSON object, or JSON string.
-      // Do not rely only on content-type since some backends return a raw URL
-      // while still labeling the response as application/json.
-      const rawBody = (await response.text()).trim();
-      let presignedUrl = rawBody;
+      // Response can be plain text URL or JSON object
+      const contentType = response.headers.get("content-type") || "";
+      let presignedUrl;
 
-      if (!rawBody) {
-        throw new Error("Empty response body from presigned URL endpoint");
-      }
-
-      try {
-        const parsed = JSON.parse(rawBody);
-        // Response may be { url }, { uploadUrl }, or a JSON string.
-        presignedUrl =
-          (parsed && typeof parsed === "object"
-            ? parsed.url || parsed.uploadUrl
-            : parsed) || rawBody;
-      } catch (parseError) {
-        // Not valid JSON; use plain text response as-is.
-        presignedUrl = rawBody;
+      if (contentType.includes("application/json")) {
+        const data = await response.json();
+        // Response should have { url: presignedUrl } or { uploadUrl: presignedUrl }
+        presignedUrl = data.url || data.uploadUrl || data;
+      } else {
+        // Plain text response - URL directly
+        presignedUrl = await response.text();
       }
 
       // Handle case where presignedUrl is still an object
@@ -4179,45 +4052,25 @@
   function refreshHeaderPresence() {
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const userPill = host.shadowRoot.getElementById("userPresencePill");
-    const peerPill = host.shadowRoot.getElementById("peerPresencePill");
-    if (!userPill || !peerPill) return;
+    const headerOnlineDot = host.shadowRoot.getElementById("headerOnlineDot");
+    if (!headerOnlineDot) return;
 
     const windowEl = host.shadowRoot.getElementById("chatWindow");
     const chatOpen = windowEl?.classList.contains("open");
     const wsLive = socket && socket.readyState === WebSocket.OPEN;
 
-    let userClass = "away";
-    let userText = "You · Away";
-    if (!chatOpen) {
-      userClass = "away";
-      userText = "You · Away";
-    } else if (wsLive) {
-      userClass = "online";
-      userText = "You · Online";
-    } else {
-      userClass = "connecting";
-      userText = "You · Connecting…";
+    if (!liveAgentDisplayName) {
+      headerOnlineDot.className = "chat-widget-online-dot hidden";
+      return;
     }
-    userPill.textContent = userText;
-    userPill.className = `chat-widget-presence-pill ${userClass}`;
 
-    let peerClass = "offline";
-    let peerText = "Support · Offline";
+    let dotClass = "offline";
     if (liveAgentDisplayName) {
-      peerClass = isAgentOnline ? "online" : "offline";
-      peerText = isAgentOnline
-        ? `${liveAgentDisplayName} · Online`
-        : `${liveAgentDisplayName} · Offline`;
-    } else if (isAiEnabled()) {
-      peerClass = wsLive ? "online" : "offline";
-      peerText = wsLive ? "Pulse AI · Active" : "Pulse AI · Unavailable";
-    } else {
-      peerClass = "offline";
-      peerText = "Support · Offline";
+      dotClass = isAgentOnline ? "online" : "offline";
+    } else if (chatOpen && !wsLive) {
+      dotClass = "connecting";
     }
-    peerPill.textContent = peerText;
-    peerPill.className = `chat-widget-presence-pill ${peerClass}`;
+    headerOnlineDot.className = `chat-widget-online-dot ${dotClass}`;
   }
 
   function showTypingIndicator(show, options) {
@@ -4339,16 +4192,21 @@
     const launcherOuterPulsePx = launcherFacePx + 2 * pulseRingThicknessPx;
     const launcherLayoutPx =
       bubbleAnimation === "pulse" ? launcherOuterPulsePx : launcherFacePx;
-    const windowSideGapPx = 8;
+    const windowLauncherGapPx = 8;
     const marginH = Math.max(0, Number(preview.rightMarginPx ?? 20));
     const marginV = Math.max(0, Number(preview.bottomMarginPx ?? 20));
     const horizontalLauncherCss = isRight
       ? `right: ${marginH}px;`
       : `left: ${marginH}px;`;
     const horizontalWindowCss = isRight
-      ? `right: ${marginH + launcherLayoutPx + windowSideGapPx}px;`
-      : `left: ${marginH + launcherLayoutPx + windowSideGapPx}px;`;
-    const verticalCss = isTop ? `top: ${marginV}px;` : `bottom: ${marginV}px;`;
+      ? `right: ${marginH}px;`
+      : `left: ${marginH}px;`;
+    const verticalLauncherCss = isTop
+      ? `top: ${marginV}px;`
+      : `bottom: ${marginV}px;`;
+    const verticalWindowCss = isTop
+      ? `top: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`
+      : `bottom: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`;
 
     const fontSizeMap = {
       small: { body: "14px", meta: "12px", input: "14px" },
@@ -4419,7 +4277,7 @@
         }
 
         .chat-widget-launcher {
-          position: fixed; ${verticalCss} ${horizontalLauncherCss}
+          position: fixed; ${verticalLauncherCss} ${horizontalLauncherCss}
           width: ${launcherFacePx}px;
           height: ${launcherFacePx}px;
           padding: 0;
@@ -4435,13 +4293,31 @@
           z-index: ${zLauncher};
         }
         .chat-widget-launcher.chat-widget-launcher-floating {
-          border-radius: 14px;
+          border-radius: 4px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-custom {
+          border-radius: 10px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-text {
+          width: auto;
+          min-width: 140px;
+          height: 44px;
+          border-radius: 999px;
+          padding: 0 16px;
+          background: ${launcherBg};
+          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
         }
         .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-inner {
-          border-radius: 14px;
+          border-radius: 4px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-inner {
+          border-radius: 10px;
         }
         .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-pulse-ring {
-          border-radius: 14px;
+          border-radius: 4px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-pulse-ring {
+          border-radius: 999px;
         }
         .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) {
           width: ${launcherOuterPulsePx}px;
@@ -4471,6 +4347,15 @@
           overflow: hidden;
           z-index: 1;
         }
+        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner {
+          position: static;
+          inset: auto;
+          width: auto;
+          height: 100%;
+          border-radius: 999px;
+          padding: 0;
+          gap: 8px;
+        }
         .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) .chat-widget-launcher-inner {
           inset: ${pulseRingThicknessPx}px;
         }
@@ -4494,6 +4379,19 @@
           max-width: none;
           max-height: none;
         }
+        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner svg,
+        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner img {
+          width: 20px;
+          height: 20px;
+          flex-shrink: 0;
+        }
+        .chat-widget-launcher-text-label {
+          font-size: 14px;
+          line-height: 20px;
+          font-weight: 600;
+          color: #18181e;
+          white-space: nowrap;
+        }
         .chat-widget-launcher.open .chat-widget-launcher-close-icon {
           width: 58%;
           height: 58%;
@@ -4511,6 +4409,11 @@
           background: ${primaryColor} !important;
           inset: 0;
         }
+        .chat-widget-launcher.chat-widget-launcher-text.open .chat-widget-launcher-inner {
+          position: absolute;
+          width: auto;
+          height: auto;
+        }
         .chat-widget-launcher-bounce {
           animation: launcherBounce 1.6s infinite;
         }
@@ -4525,16 +4428,13 @@
         }
 
         .chat-widget-window {
-          position: fixed; ${verticalCss} ${horizontalWindowCss}
+          position: fixed; ${verticalWindowCss} ${horizontalWindowCss}
           width: ${windowSize.width}px;
           height: min(
             ${windowSize.height}px,
             calc(100vh - ${marginV + 16}px)
           );
-          max-width: calc(
-            100vw -
-              ${2 * marginH + launcherLayoutPx + windowSideGapPx}px
-          );
+          max-width: calc(100vw - ${2 * marginH + 16}px);
           max-height: calc(100vh - ${marginV + 16}px);
           background: #ffffff;
           border-radius: ${windowRadius};
@@ -4548,7 +4448,6 @@
             isTop ? "translateY(-20px)" : "translateY(20px)"
           } scale(0.95);
           transition: all 0.25s ease;
-          border: 1px solid rgba(0, 0, 0, 0.05);
           z-index: ${zWindow};
         }
 
@@ -4574,6 +4473,13 @@
           transform: translateY(-${bodyHeaderOverlap / 2}px);
         }
 
+        .chat-widget-header-logo-wrap {
+          position: relative;
+          width: 32px;
+          height: 32px;
+          flex-shrink: 0;
+        }
+
         .chat-widget-header-text {
           flex: 1;
           display: flex;
@@ -4591,6 +4497,35 @@
           justify-content: center;
         }
 
+        .chat-widget-online-dot {
+          position: absolute;
+          right: -1px;
+          bottom: -1px;
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          border: 2px solid #ffffff;
+          background: #9ca3af;
+          z-index: 2;
+        }
+
+        .chat-widget-online-dot.hidden {
+          display: none;
+        }
+
+        .chat-widget-online-dot.online {
+          background: #22c55e;
+        }
+
+        .chat-widget-online-dot.offline,
+        .chat-widget-online-dot.away {
+          background: #9ca3af;
+        }
+
+        .chat-widget-online-dot.connecting {
+          background: #f59e0b;
+        }
+
         .chat-widget-header-logo-icon {
           width: 32px;
           height: 32px;
@@ -4600,44 +4535,6 @@
           font-weight: 600;
           font-size: 14px;
           flex: 1;
-        }
-
-        .chat-widget-header-presence-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px 8px;
-          margin-top: 6px;
-          align-items: center;
-        }
-
-        .chat-widget-presence-pill {
-          font-size: 11px;
-          line-height: 14px;
-          font-weight: 500;
-          padding: 3px 8px;
-          border-radius: 999px;
-          background: rgba(255, 255, 255, 0.2);
-          color: rgba(255, 255, 255, 0.95);
-        }
-
-        .chat-widget-presence-pill.online {
-          background: rgba(255, 255, 255, 0.28);
-          color: rgba(255, 255, 255, 1);
-        }
-
-        .chat-widget-presence-pill.offline {
-          background: rgba(0, 0, 0, 0.12);
-          color: rgba(255, 255, 255, 0.75);
-        }
-
-        .chat-widget-presence-pill.away {
-          background: rgba(0, 0, 0, 0.1);
-          color: rgba(255, 255, 255, 0.72);
-        }
-
-        .chat-widget-presence-pill.connecting {
-          background: rgba(255, 255, 255, 0.18);
-          color: rgba(255, 255, 255, 0.88);
         }
 
         .chat-widget-messages-pane {
@@ -4692,7 +4589,7 @@
           scrollbar-color: #efeff9 transparent;
         }
 
-        /* Same as app globals custom-select-scrollbar (embed uses shadow DOM) */
+        /* Same as app globals .custom-select-scrollbar (embed uses shadow DOM) */
         .chat-widget-body::-webkit-scrollbar {
           width: 8px;
           height: 8px;
@@ -5092,8 +4989,13 @@
           transition: background-color 0.15s ease, opacity 0.15s ease;
         }
 
-        .chat-widget-attach-btn:hover {
-          background: #f3f4f6;
+        .chat-widget-attach-btn:hover,
+        .chat-widget-attach-btn:focus,
+        .chat-widget-attach-btn:focus-visible,
+        .chat-widget-attach-btn:active {
+          background: transparent;
+          outline: none;
+          box-shadow: none;
         }
 
         .chat-widget-attach-btn svg {
@@ -5117,6 +5019,16 @@
           padding: 0;
           align-items: center;
           justify-content: center;
+          background: transparent;
+        }
+
+        .chat-widget-send-btn:hover,
+        .chat-widget-send-btn:focus,
+        .chat-widget-send-btn:focus-visible,
+        .chat-widget-send-btn:active {
+          background: transparent;
+          outline: none;
+          box-shadow: none;
         }
 
         .chat-widget-powered-by {
@@ -5387,22 +5299,33 @@
 </svg>`;
 
     const appearForLauncher = settings.appearance || {};
-    const launcherIconType =
+    const rawLauncherIconType =
       preview.launcherIconType ||
       appearForLauncher.launcherIconType ||
       "chat";
+    const launcherIconType =
+      rawLauncherIconType === "message"
+        ? "message"
+        : rawLauncherIconType === "custom" || rawLauncherIconType === "brand"
+          ? "custom"
+          : "chat";
+    const launcherType =
+      preview.launcherType || appearForLauncher.launcherType || "bubble";
+    const launcherText = (preview.launcherText || "Chat with us").trim();
     let launcherImgResolved = "";
     if (launcherIconType === "custom") {
       launcherImgResolved =
         resolvedLauncherCustomUrl || resolvedBrandLogoUrl || "";
-    } else if (launcherIconType === "brand") {
-      launcherImgResolved = resolvedBrandLogoUrl || "";
     }
     const defaultLauncherIcon =
       launcherIconType === "message" ? messageBubbleIcon : chatIcon;
-    const launcherContent = launcherImgResolved
+    const launcherIconHtml = launcherImgResolved
       ? `<img src="${launcherImgResolved}" alt="Chat" />`
       : defaultLauncherIcon;
+    const launcherContent =
+      launcherType === "text"
+        ? `${launcherIconHtml}<span class="chat-widget-launcher-text-label">${escapeHtmlWidget(launcherText)}</span>`
+        : launcherIconHtml;
 
     const pulseRingHtml =
       bubbleAnimation === "pulse"
@@ -5410,22 +5333,25 @@
         : "";
 
     const launcherShapeClass =
-      (preview.launcherType || appearForLauncher.launcherType) === "floating"
+      launcherType === "floating"
         ? " chat-widget-launcher-floating"
-        : "";
+        : launcherType === "text"
+          ? " chat-widget-launcher-text"
+          : launcherType === "custom"
+            ? " chat-widget-launcher-custom"
+            : "";
 
     container.innerHTML = `
       <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn">${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div></div>
       <div class="chat-widget-window" id="chatWindow">
         <div class="chat-widget-header">
           <div class="chat-widget-header-content">
-            ${headerLogoImg}
+            <div class="chat-widget-header-logo-wrap">
+              ${headerLogoImg}
+              <span class="chat-widget-online-dot hidden" id="headerOnlineDot" aria-hidden="true"></span>
+            </div>
             <div class="chat-widget-header-text">
               <div class="chat-widget-header-title" id="chatHeaderTitle">${escapeHtmlWidget(headerTitle)}</div>
-              <div class="chat-widget-header-presence-row" id="headerPresenceRow">
-                <span class="chat-widget-presence-pill away" id="userPresencePill">You · Away</span>
-                <span class="chat-widget-presence-pill offline" id="peerPresencePill">Support · Offline</span>
-              </div>
               ${headerSubtitleHtml}
             </div>
           </div>

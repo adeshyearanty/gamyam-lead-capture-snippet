@@ -4050,45 +4050,22 @@
   function refreshHeaderPresence() {
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
-    const userPill = host.shadowRoot.getElementById("userPresencePill");
-    const peerPill = host.shadowRoot.getElementById("peerPresencePill");
-    if (!userPill || !peerPill) return;
+    const headerOnlineDot = host.shadowRoot.getElementById("headerOnlineDot");
+    if (!headerOnlineDot) return;
 
     const windowEl = host.shadowRoot.getElementById("chatWindow");
     const chatOpen = windowEl?.classList.contains("open");
     const wsLive = socket && socket.readyState === WebSocket.OPEN;
 
-    let userClass = "away";
-    let userText = "You · Away";
-    if (!chatOpen) {
-      userClass = "away";
-      userText = "You · Away";
-    } else if (wsLive) {
-      userClass = "online";
-      userText = "You · Online";
-    } else {
-      userClass = "connecting";
-      userText = "You · Connecting…";
-    }
-    userPill.textContent = userText;
-    userPill.className = `chat-widget-presence-pill ${userClass}`;
-
-    let peerClass = "offline";
-    let peerText = "Support · Offline";
+    let dotClass = "offline";
     if (liveAgentDisplayName) {
-      peerClass = isAgentOnline ? "online" : "offline";
-      peerText = isAgentOnline
-        ? `${liveAgentDisplayName} · Online`
-        : `${liveAgentDisplayName} · Offline`;
+      dotClass = isAgentOnline ? "online" : "offline";
     } else if (isAiEnabled()) {
-      peerClass = wsLive ? "online" : "offline";
-      peerText = wsLive ? "Pulse AI · Active" : "Pulse AI · Unavailable";
-    } else {
-      peerClass = "offline";
-      peerText = "Support · Offline";
+      dotClass = wsLive ? "online" : "offline";
+    } else if (chatOpen && !wsLive) {
+      dotClass = "connecting";
     }
-    peerPill.textContent = peerText;
-    peerPill.className = `chat-widget-presence-pill ${peerClass}`;
+    headerOnlineDot.className = `chat-widget-online-dot ${dotClass}`;
   }
 
   function showTypingIndicator(show, options) {
@@ -4447,6 +4424,13 @@
           transform: translateY(-${bodyHeaderOverlap / 2}px);
         }
 
+        .chat-widget-header-logo-wrap {
+          position: relative;
+          width: 32px;
+          height: 32px;
+          flex-shrink: 0;
+        }
+
         .chat-widget-header-text {
           flex: 1;
           display: flex;
@@ -4464,6 +4448,40 @@
           justify-content: center;
         }
 
+        .chat-widget-header-logo-fallback {
+          background: linear-gradient(135deg, #7dbcfe 0%, #912ff5 55%, #ef32d4 100%);
+          color: #ffffff;
+          font-size: 14px;
+          font-weight: 700;
+          line-height: 1;
+          font-family: ${settings.appearance.fontFamily} !important;
+        }
+
+        .chat-widget-online-dot {
+          position: absolute;
+          right: -1px;
+          bottom: -1px;
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          border: 2px solid #ffffff;
+          background: #9ca3af;
+          z-index: 2;
+        }
+
+        .chat-widget-online-dot.online {
+          background: #22c55e;
+        }
+
+        .chat-widget-online-dot.offline,
+        .chat-widget-online-dot.away {
+          background: #9ca3af;
+        }
+
+        .chat-widget-online-dot.connecting {
+          background: #f59e0b;
+        }
+
         .chat-widget-header-logo-icon {
           width: 32px;
           height: 32px;
@@ -4473,44 +4491,6 @@
           font-weight: 600;
           font-size: 14px;
           flex: 1;
-        }
-
-        .chat-widget-header-presence-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px 8px;
-          margin-top: 6px;
-          align-items: center;
-        }
-
-        .chat-widget-presence-pill {
-          font-size: 11px;
-          line-height: 14px;
-          font-weight: 500;
-          padding: 3px 8px;
-          border-radius: 999px;
-          background: rgba(255, 255, 255, 0.2);
-          color: rgba(255, 255, 255, 0.95);
-        }
-
-        .chat-widget-presence-pill.online {
-          background: rgba(255, 255, 255, 0.28);
-          color: rgba(255, 255, 255, 1);
-        }
-
-        .chat-widget-presence-pill.offline {
-          background: rgba(0, 0, 0, 0.12);
-          color: rgba(255, 255, 255, 0.75);
-        }
-
-        .chat-widget-presence-pill.away {
-          background: rgba(0, 0, 0, 0.1);
-          color: rgba(255, 255, 255, 0.72);
-        }
-
-        .chat-widget-presence-pill.connecting {
-          background: rgba(255, 255, 255, 0.18);
-          color: rgba(255, 255, 255, 0.88);
         }
 
         .chat-widget-messages-pane {
@@ -4965,8 +4945,13 @@
           transition: background-color 0.15s ease, opacity 0.15s ease;
         }
 
-        .chat-widget-attach-btn:hover {
-          background: #f3f4f6;
+        .chat-widget-attach-btn:hover,
+        .chat-widget-attach-btn:focus,
+        .chat-widget-attach-btn:focus-visible,
+        .chat-widget-attach-btn:active {
+          background: transparent;
+          outline: none;
+          box-shadow: none;
         }
 
         .chat-widget-attach-btn svg {
@@ -4990,6 +4975,16 @@
           padding: 0;
           align-items: center;
           justify-content: center;
+          background: transparent;
+        }
+
+        .chat-widget-send-btn:hover,
+        .chat-widget-send-btn:focus,
+        .chat-widget-send-btn:focus-visible,
+        .chat-widget-send-btn:active {
+          background: transparent;
+          outline: none;
+          box-shadow: none;
         }
 
         .chat-widget-powered-by {
@@ -5218,13 +5213,9 @@
     container.className = "chat-widget-container";
 
     const headerTitle = resolveChatWindowTitleForUi();
-    const headerFallbackSvg = chatIcon.replace(
-      /class="chat-widget-launcher-default-icon"\s+/,
-      "",
-    );
     const headerLogoImg = resolvedHeaderLogoUrl
       ? `<img src="${resolvedHeaderLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
-      : `<div class="chat-widget-header-logo" style="display:flex;align-items:center;justify-content:center;color:#7c3aed">${headerFallbackSvg}</div>`;
+      : `<div class="chat-widget-header-logo chat-widget-header-logo-fallback" aria-hidden="true">P</div>`;
     const headerSubtitleHtml = subtitle
       ? `<div class="chat-widget-header-subtitle" style="font-size:${fontSizes.meta};opacity:0.9">${escapeHtmlWidget(subtitle)}</div>`
       : "";
@@ -5292,13 +5283,12 @@
       <div class="chat-widget-window" id="chatWindow">
         <div class="chat-widget-header">
           <div class="chat-widget-header-content">
-            ${headerLogoImg}
+            <div class="chat-widget-header-logo-wrap">
+              ${headerLogoImg}
+              <span class="chat-widget-online-dot offline" id="headerOnlineDot" aria-hidden="true"></span>
+            </div>
             <div class="chat-widget-header-text">
               <div class="chat-widget-header-title" id="chatHeaderTitle">${escapeHtmlWidget(headerTitle)}</div>
-              <div class="chat-widget-header-presence-row" id="headerPresenceRow">
-                <span class="chat-widget-presence-pill away" id="userPresencePill">You · Away</span>
-                <span class="chat-widget-presence-pill offline" id="peerPresencePill">Support · Offline</span>
-              </div>
               ${headerSubtitleHtml}
             </div>
           </div>

@@ -71,11 +71,19 @@
     return;
   }
 
-  // Get base URL - support both apiBaseUrl and baseUrl
+  // Get pulse API URL from config only (no hardcoded host fallback).
+  const pulseServiceBase = String(userConfig.pulseServiceBase || "").trim();
   const baseUrl =
     userConfig.apiBaseUrl ||
     userConfig.baseUrl ||
-    "https://dev-api.salesastra.ai/pulse/v1/chat";
+    (pulseServiceBase ? `${pulseServiceBase.replace(/\/+$/, "")}/chat` : "");
+
+  if (!baseUrl) {
+    console.error(
+      "UniBox: Missing pulse API base URL. Provide apiBaseUrl/baseUrl or pulseServiceBase.",
+    );
+    return;
+  }
 
   // Storage Keys (using tenantId from userConfig)
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
@@ -96,13 +104,25 @@
   // This matches the backend S3 client (`S3_CLIENT_URL`)
   function getUtilityBaseUrl() {
     try {
+      const explicitUtilityBase = String(
+        userConfig.utilityApiBaseUrl || userConfig.utilityServiceBase || "",
+      ).trim();
+      if (explicitUtilityBase) {
+        const normalized = explicitUtilityBase.replace(/\/+$/, "");
+        return normalized.endsWith("/s3") ? normalized : `${normalized}/s3`;
+      }
       const urlObj = new URL(API_BASE);
       // Always point to the shared utilities service (independent of /pulse path)
       return `${urlObj.protocol}//${urlObj.host}/utilities/v1/s3`;
     } catch (e) {
-      // Fallback if URL parsing fails (dev default)
-      return "https://dev-api.salesastra.ai/utilities/v1/s3";
+      return "";
     }
+  }
+
+  function normalizeUtilityS3Base(url) {
+    const normalized = String(url || "").trim().replace(/\/+$/, "");
+    if (!normalized) return "";
+    return normalized.endsWith("/s3") ? normalized : `${normalized}/s3`;
   }
 
   // Get WebSocket URL from config or construct from API base
@@ -173,11 +193,10 @@
       return urlWithParams.toString();
     } catch (e) {
       // Fallback if URL parsing fails
-      const fallbackUrl =
-        baseUrl.replace(
-          /\/pulse\/v1\/chat\/?$/,
-          "/pulse/v1/public/chatbot/config",
-        ) || "https://dev-api.salesastra.ai/pulse/v1/public/chatbot/config";
+      const fallbackUrl = baseUrl.replace(
+        /\/pulse\/v1\/chat\/?$/,
+        "/pulse/v1/public/chatbot/config",
+      );
       return `${fallbackUrl}?chatbotId=${encodeURIComponent(
         userConfig.chatbotId,
       )}`;
@@ -287,9 +306,7 @@
 
   function parsePathRuleList(input) {
     if (Array.isArray(input)) {
-      return input
-        .map((item) => String(item || "").trim())
-        .filter(Boolean);
+      return input.map((item) => String(item || "").trim()).filter(Boolean);
     }
     return String(input || "")
       .split(",")
@@ -335,8 +352,7 @@
     );
 
     return {
-      persistentChat:
-        advanced.persistentChat ?? preview.persistentChat ?? true,
+      persistentChat: advanced.persistentChat ?? preview.persistentChat ?? true,
       visitorTrackingEnabled:
         advanced.visitorTrackingEnabled ??
         preview.visitorTrackingEnabled ??
@@ -416,7 +432,9 @@
       )
         .trim()
         .toLowerCase(),
-      triggerValue: Number(engagement.triggerValue ?? preview.triggerValue ?? 0),
+      triggerValue: Number(
+        engagement.triggerValue ?? preview.triggerValue ?? 0,
+      ),
       showOncePerSession:
         engagement.showOncePerSession ?? preview.showOncePerSession ?? true,
     };
@@ -429,7 +447,9 @@
     const allowedDomainsRaw =
       installation.allowedDomains ?? preview.allowedDomains ?? [];
     const allowedDomains = parsePathRuleList(allowedDomainsRaw).map((domain) =>
-      String(domain).toLowerCase().replace(/^https?:\/\//, ""),
+      String(domain)
+        .toLowerCase()
+        .replace(/^https?:\/\//, ""),
     );
 
     if (allowedDomains.length > 0) {
@@ -467,7 +487,9 @@
       if (!matchedShow) return false;
     }
     if (hide.length > 0) {
-      const matchedHide = hide.some((rule) => pathMatchesRule(currentPath, rule));
+      const matchedHide = hide.some((rule) =>
+        pathMatchesRule(currentPath, rule),
+      );
       if (matchedHide) return false;
     }
     return true;
@@ -746,11 +768,7 @@
       rawEnvelope?.conversationId ??
       rawEnvelope?.conversation_id;
 
-    if (
-      convId &&
-      conversationId &&
-      String(convId) !== String(conversationId)
-    ) {
+    if (convId && conversationId && String(convId) !== String(conversationId)) {
       return;
     }
 
@@ -1014,10 +1032,12 @@
         preChatForm: apiConfig.preChatForm || defaults.preChatForm,
         engagementTriggers:
           apiConfig.engagementTriggers || defaults.engagementTriggers,
-        mobileExperience: apiConfig.mobileExperience || defaults.mobileExperience,
+        mobileExperience:
+          apiConfig.mobileExperience || defaults.mobileExperience,
         soundNotifications:
           apiConfig.soundNotifications || defaults.soundNotifications,
-        advancedSettings: apiConfig.advancedSettings || defaults.advancedSettings,
+        advancedSettings:
+          apiConfig.advancedSettings || defaults.advancedSettings,
         installation: apiConfig.installation || defaults.installation,
         windowUi: apiConfig.windowUi || {},
         preview:
@@ -1060,7 +1080,10 @@
 
       if (userConfig && typeof userConfig === "object") {
         if (userConfig.preview && typeof userConfig.preview === "object") {
-          settings.preview = deepMerge(settings.preview || {}, userConfig.preview);
+          settings.preview = deepMerge(
+            settings.preview || {},
+            userConfig.preview,
+          );
         }
         if (userConfig.behavior && typeof userConfig.behavior === "object") {
           settings.behavior = deepMerge(
@@ -1068,7 +1091,10 @@
             userConfig.behavior,
           );
         }
-        if (userConfig.appearance && typeof userConfig.appearance === "object") {
+        if (
+          userConfig.appearance &&
+          typeof userConfig.appearance === "object"
+        ) {
           settings.appearance = deepMerge(
             settings.appearance || {},
             userConfig.appearance,
@@ -1129,7 +1155,10 @@
           );
         }
         if (userConfig.windowUi && typeof userConfig.windowUi === "object") {
-          settings.windowUi = deepMerge(settings.windowUi || {}, userConfig.windowUi);
+          settings.windowUi = deepMerge(
+            settings.windowUi || {},
+            userConfig.windowUi,
+          );
         }
       }
 
@@ -1138,20 +1167,27 @@
       // Use utilityApiBaseUrl from config if provided, otherwise construct it
       // utilityApiBaseUrl should be like: https://dev-api.salesastra.ai/utilities/v1/s3
       if (fetchedConfig && fetchedConfig.utilityApiBaseUrl) {
-        UTILITY_API_BASE = fetchedConfig.utilityApiBaseUrl;
+        UTILITY_API_BASE = normalizeUtilityS3Base(
+          fetchedConfig.utilityApiBaseUrl,
+        );
         console.log(
           "UniBox: Using utility API URL from config:",
           UTILITY_API_BASE,
         );
       } else if (userConfig.utilityApiBaseUrl) {
-        UTILITY_API_BASE = userConfig.utilityApiBaseUrl;
+        UTILITY_API_BASE = normalizeUtilityS3Base(userConfig.utilityApiBaseUrl);
         console.log(
           "UniBox: Using utility API URL from userConfig:",
           UTILITY_API_BASE,
         );
       } else {
         // Fallback: construct from API_BASE
-        UTILITY_API_BASE = getUtilityBaseUrl();
+        UTILITY_API_BASE = normalizeUtilityS3Base(getUtilityBaseUrl());
+      }
+      if (!UTILITY_API_BASE) {
+        throw new Error(
+          "Missing utility API base URL. Provide utilityApiBaseUrl or utilityServiceBase.",
+        );
       }
       UTILITY_S3_URL = `${UTILITY_API_BASE}/generate-access-url`;
 
@@ -1185,7 +1221,8 @@
       resolvedLauncherCustomUrl = "";
       const appear = settings.appearance || {};
       const previewSnap = settings.preview || {};
-      // Legacy compatibility only: read logoUrl as fallback without mutating config.
+
+      // Resolve the base brand/logo key (used as fallback)
       const legacyLogoKey = String(
         appear.logoUrl || previewSnap.logoUrl || "",
       ).trim();
@@ -1195,6 +1232,8 @@
       const headerLogoKey = String(
         appear.headerLogoUrl || previewSnap.headerLogoUrl || brandLogoKey || "",
       ).trim();
+
+      // Header icon: prefer headerLogoUrl, then fallback to brand/logo.
       if (headerLogoKey) {
         try {
           resolvedHeaderLogoUrl = await fetchLogoUrl(headerLogoKey);
@@ -1202,6 +1241,7 @@
           console.warn("UniBox: Failed to load header logo", err);
         }
       }
+
       if (brandLogoKey) {
         try {
           resolvedBrandLogoUrl = await fetchLogoUrl(brandLogoKey);
@@ -1209,6 +1249,8 @@
           console.warn("UniBox: Failed to load brand logo", err);
         }
       }
+
+      // Launcher icon: uses launcherIconUrl if provided, otherwise falls back to brandLogoUrl / logoUrl
       const launcherCustomKey = String(
         appear.launcherIconUrl || previewSnap.launcherIconUrl || "",
       ).trim();
@@ -1218,6 +1260,9 @@
         } catch (err) {
           console.warn("UniBox: Failed to load launcher custom icon", err);
         }
+      } else if (brandLogoKey) {
+        // No dedicated launcher icon — fall back to brand/logo URL
+        resolvedLauncherCustomUrl = resolvedBrandLogoUrl || resolvedHeaderLogoUrl;
       }
 
       const previewForAvatar = settings.preview || {};
@@ -1947,9 +1992,7 @@
       case "peer_presence": {
         const evt = data || message;
         const conv =
-          evt.conversationId ??
-          evt.conversation_id ??
-          message.conversationId;
+          evt.conversationId ?? evt.conversation_id ?? message.conversationId;
         if (
           conv != null &&
           conversationId != null &&
@@ -1973,11 +2016,7 @@
         }
 
         const uid = evt.userId ?? evt.user_id;
-        if (
-          uid != null &&
-          userId != null &&
-          String(uid) === String(userId)
-        ) {
+        if (uid != null && userId != null && String(uid) === String(userId)) {
           refreshHeaderPresence();
           break;
         }
@@ -2308,7 +2347,11 @@
     const explicitText = String(fallbackText || "").trim();
     let filename = storageKey ? storageKey.split("/").pop() || "" : "";
 
-    if (!filename && explicitText && !explicitText.toLowerCase().includes("uploading")) {
+    if (
+      !filename &&
+      explicitText &&
+      !explicitText.toLowerCase().includes("uploading")
+    ) {
       filename = explicitText;
     }
     if (!filename) {
@@ -2844,7 +2887,10 @@
       chip.style.color = "#18181E";
 
       const iconImg = document.createElement("img");
-      iconImg.src = getFileChipIconFromName(fileData.fileName, fileData.mediaType);
+      iconImg.src = getFileChipIconFromName(
+        fileData.fileName,
+        fileData.mediaType,
+      );
       iconImg.alt = "File";
       iconImg.width = 20;
       iconImg.height = 20;
@@ -3720,7 +3766,10 @@
         playSystemSound(soundCfg.soundType);
       }
       if (msgAgeMs <= 15000) {
-        maybeNotifyIncomingMessage(resolveAgentTitleForUi(), normalizedText || "");
+        maybeNotifyIncomingMessage(
+          resolveAgentTitleForUi(),
+          normalizedText || "",
+        );
       }
     }
 
@@ -3763,7 +3812,11 @@
 
     // Ensure media messages are always rendered, even with empty/null text
     if (hasMedia) {
-      const mediaMeta = getMediaChipMeta(messageType, mediaStorageUrl, normalizedText);
+      const mediaMeta = getMediaChipMeta(
+        messageType,
+        mediaStorageUrl,
+        normalizedText,
+      );
 
       // Always show media as a clickable chip (same as agent side)
       const mediaChip = document.createElement("button");
@@ -4137,10 +4190,7 @@
       settings.appearance.secondaryColor ||
       "#EF32D4";
     const rawC3 = settings.appearance.gradientColor3 || "#7DBCFE";
-    const c3Hex = String(rawC3)
-      .trim()
-      .replace(/^#/, "")
-      .toLowerCase();
+    const c3Hex = String(rawC3).trim().replace(/^#/, "").toLowerCase();
     const c3 =
       c3Hex === "fff" ||
       c3Hex === "ffffff" ||
@@ -5289,9 +5339,7 @@
 
     const appearForLauncher = settings.appearance || {};
     const rawLauncherIconType =
-      preview.launcherIconType ||
-      appearForLauncher.launcherIconType ||
-      "chat";
+      preview.launcherIconType || appearForLauncher.launcherIconType || "chat";
     const launcherIconType =
       rawLauncherIconType === "message"
         ? "message"
@@ -5406,7 +5454,9 @@
 
       body.className =
         "chat-widget-body " +
-        (currentView === "form" ? "chat-widget-body--form" : "chat-widget-body--chat");
+        (currentView === "form"
+          ? "chat-widget-body--form"
+          : "chat-widget-body--chat");
 
       // Create typing indicator (will be appended at the end after messages are loaded)
       const typingIndicator = document.createElement("div");
@@ -5994,7 +6044,10 @@
           triggerProactiveMessage();
         }
       } else {
-        const delayMs = Math.max(0, Number(engagement.triggerValue || 5) * 1000);
+        const delayMs = Math.max(
+          0,
+          Number(engagement.triggerValue || 5) * 1000,
+        );
         setTimeout(() => triggerProactiveMessage(), delayMs);
       }
     }

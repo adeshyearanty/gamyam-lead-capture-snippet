@@ -1133,16 +1133,6 @@
         }
       }
 
-      const app = settings.appearance;
-      if (
-        app &&
-        !String(app.headerLogoUrl || "").trim() &&
-        !String(app.brandLogoUrl || "").trim() &&
-        String(app.logoUrl || "").trim()
-      ) {
-        app.brandLogoUrl = app.logoUrl;
-      }
-
       // Now initialize API URLs and socket config with the baseUrl
       API_BASE = baseUrl;
       // Use utilityApiBaseUrl from config if provided, otherwise construct it
@@ -1195,13 +1185,15 @@
       resolvedLauncherCustomUrl = "";
       const appear = settings.appearance || {};
       const previewSnap = settings.preview || {};
+      // Legacy compatibility only: read logoUrl as fallback without mutating config.
+      const legacyLogoKey = String(
+        appear.logoUrl || previewSnap.logoUrl || "",
+      ).trim();
+      const brandLogoKey = String(
+        appear.brandLogoUrl || previewSnap.brandLogoUrl || legacyLogoKey || "",
+      ).trim();
       const headerLogoKey = String(
-        appear.headerLogoUrl ||
-          previewSnap.headerLogoUrl ||
-          appear.brandLogoUrl ||
-          previewSnap.brandLogoUrl ||
-          appear.logoUrl ||
-          "",
+        appear.headerLogoUrl || previewSnap.headerLogoUrl || brandLogoKey || "",
       ).trim();
       if (headerLogoKey) {
         try {
@@ -1210,9 +1202,6 @@
           console.warn("UniBox: Failed to load header logo", err);
         }
       }
-      const brandLogoKey = String(
-        appear.brandLogoUrl || previewSnap.brandLogoUrl || appear.logoUrl || "",
-      ).trim();
       if (brandLogoKey) {
         try {
           resolvedBrandLogoUrl = await fetchLogoUrl(brandLogoKey);

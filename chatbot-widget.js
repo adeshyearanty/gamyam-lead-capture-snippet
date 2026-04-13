@@ -1841,124 +1841,6 @@
   /**
    * Handle incoming WebSocket messages
    */
-  function normalizeIncomingMessagePayload(payload, envelope) {
-    const source =
-      payload && typeof payload === "object" ? payload : envelope || {};
-    const nested =
-      source.message && typeof source.message === "object"
-        ? source.message
-        : source;
-    const nestedPayload =
-      nested.payload && typeof nested.payload === "object" ? nested.payload : {};
-
-    const attachments = Array.isArray(nested.attachments)
-      ? nested.attachments
-      : Array.isArray(source.attachments)
-        ? source.attachments
-        : Array.isArray(nestedPayload.attachments)
-          ? nestedPayload.attachments
-          : Array.isArray(nested.media_items)
-            ? nested.media_items
-            : Array.isArray(source.media_items)
-              ? source.media_items
-              : [];
-    const firstAttachment =
-      attachments.length > 0 && attachments[0] && typeof attachments[0] === "object"
-        ? attachments[0]
-        : null;
-
-    const senderRaw =
-      nested.sender ??
-      source.sender ??
-      (nested.direction === "inbound" ? "user" : undefined) ??
-      (nested.direction === "outbound" ? "agent" : undefined);
-    let sender = senderRaw != null ? String(senderRaw).toLowerCase() : "";
-    if (sender === "user" || sender === "guest" || sender === "customer") {
-      sender = "user";
-    } else if (sender === "agent" || sender === "bot" || sender === "ai") {
-      sender = "agent";
-    }
-
-    const typeRaw =
-      nested.type ??
-      nested.messageType ??
-      source.type ??
-      firstAttachment?.type ??
-      firstAttachment?.mediaType ??
-      firstAttachment?.mimeType;
-    const typeNorm = typeRaw != null ? String(typeRaw).toLowerCase() : "text";
-    const mappedType =
-      typeNorm === "text"
-        ? "text"
-        : typeNorm.startsWith("image")
-          ? "image"
-          : typeNorm.startsWith("video")
-            ? "video"
-            : typeNorm.startsWith("audio")
-              ? "audio"
-              : typeNorm === "document" ||
-                  typeNorm === "file" ||
-                  typeNorm === "pdf" ||
-                  typeNorm.includes("document") ||
-                  typeNorm.includes("application/")
-                ? "document"
-                : typeNorm;
-
-    const mediaUrlFromAttachment =
-      firstAttachment?.media_storage_url ??
-      firstAttachment?.mediaStorageUrl ??
-      firstAttachment?.url ??
-      firstAttachment?.key ??
-      firstAttachment?.s3Key;
-
-    return {
-      messageId: nested.messageId ?? nested.id ?? source.messageId ?? source.id,
-      conversationId:
-        nested.conversationId ??
-        nested.conversation_id ??
-        source.conversationId ??
-        source.conversation_id,
-      sender: sender || "agent",
-      text:
-        nested.text ??
-        nested.text_body ??
-        nestedPayload.text ??
-        source.text ??
-        source.text_body,
-      timestamp:
-        nested.timestamp ??
-        nested.createdAt ??
-        nested.created_at ??
-        source.timestamp,
-      status: nested.status ?? source.status,
-      readAt: nested.readAt ?? nested.read_at ?? source.readAt,
-      readByUs:
-        nested.readByUs ??
-        nested.read_by_us ??
-        nested.readByUS ??
-        source.readByUs,
-      readByUsAt: nested.readByUsAt ?? nested.read_by_us_at ?? source.readByUsAt,
-      type: mappedType,
-      media_storage_url:
-        nested.media_storage_url ??
-        nested.mediaStorageUrl ??
-        nestedPayload.url ??
-        source.media_storage_url ??
-        source.mediaStorageUrl ??
-        mediaUrlFromAttachment,
-      is_ai_reply:
-        nested.is_ai_reply ??
-        nested.isAiReply ??
-        nestedPayload.is_ai_reply ??
-        source.is_ai_reply,
-      attachments,
-      agentName: nested.agentName ?? source.agentName,
-      displayName: nested.displayName ?? source.displayName,
-      assignedAgentName:
-        nested.assignedAgentName ?? source.assignedAgentName,
-    };
-  }
-
   function handleWebSocketMessage(message) {
     let type = message.type ?? message.event ?? message.Event;
     let data = message.data;
@@ -1997,7 +1879,7 @@
       case "message_created":
       case "message":
         console.log("UniBox: Processing MESSAGE_CREATED:", data || message);
-        handleIncomingMessage(normalizeIncomingMessagePayload(data, message));
+        handleIncomingMessage(data || message);
         break;
 
       case "typing":
@@ -2136,7 +2018,7 @@
       default:
         // Handle legacy format or unknown types
         if (message.messageId || message.text || message.sender) {
-          handleIncomingMessage(normalizeIncomingMessagePayload(message, message));
+          handleIncomingMessage(message);
         } else {
           console.log(
             "UniBox: Unknown WebSocket message type:",
@@ -2151,7 +2033,6 @@
    * Handle incoming message from WebSocket
    */
   function handleIncomingMessage(message) {
-    message = normalizeIncomingMessagePayload(message, message);
     const isUserMessage = message.sender === "user";
 
     const existingMessage =
@@ -4329,16 +4210,21 @@
     const launcherOuterPulsePx = launcherFacePx + 2 * pulseRingThicknessPx;
     const launcherLayoutPx =
       bubbleAnimation === "pulse" ? launcherOuterPulsePx : launcherFacePx;
-    const windowSideGapPx = 8;
+    const windowLauncherGapPx = 8;
     const marginH = Math.max(0, Number(preview.rightMarginPx ?? 20));
     const marginV = Math.max(0, Number(preview.bottomMarginPx ?? 20));
     const horizontalLauncherCss = isRight
       ? `right: ${marginH}px;`
       : `left: ${marginH}px;`;
     const horizontalWindowCss = isRight
-      ? `right: ${marginH + launcherLayoutPx + windowSideGapPx}px;`
-      : `left: ${marginH + launcherLayoutPx + windowSideGapPx}px;`;
-    const verticalCss = isTop ? `top: ${marginV}px;` : `bottom: ${marginV}px;`;
+      ? `right: ${marginH}px;`
+      : `left: ${marginH}px;`;
+    const verticalLauncherCss = isTop
+      ? `top: ${marginV}px;`
+      : `bottom: ${marginV}px;`;
+    const verticalWindowCss = isTop
+      ? `top: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`
+      : `bottom: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`;
 
     const fontSizeMap = {
       small: { body: "14px", meta: "12px", input: "14px" },
@@ -4409,7 +4295,7 @@
         }
 
         .chat-widget-launcher {
-          position: fixed; ${verticalCss} ${horizontalLauncherCss}
+          position: fixed; ${verticalLauncherCss} ${horizontalLauncherCss}
           width: ${launcherFacePx}px;
           height: ${launcherFacePx}px;
           padding: 0;
@@ -4515,16 +4401,13 @@
         }
 
         .chat-widget-window {
-          position: fixed; ${verticalCss} ${horizontalWindowCss}
+          position: fixed; ${verticalWindowCss} ${horizontalWindowCss}
           width: ${windowSize.width}px;
           height: min(
             ${windowSize.height}px,
             calc(100vh - ${marginV + 16}px)
           );
-          max-width: calc(
-            100vw -
-              ${2 * marginH + launcherLayoutPx + windowSideGapPx}px
-          );
+          max-width: calc(100vw - ${2 * marginH + 16}px);
           max-height: calc(100vh - ${marginV + 16}px);
           background: #ffffff;
           border-radius: ${windowRadius};

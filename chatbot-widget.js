@@ -1010,41 +1010,344 @@
           ? apiResponse.data
           : apiResponse;
 
-      // Transform API response to match widget structure
+      // ── Normalised sub-objects from the API response ─────────────────────────
+      // The API can return config in two shapes:
+      //   • Legacy flat fields:  widgetAppearance, widgetBehavior, preChatForm …
+      //   • Structured windowUi: windowUi.appearance, .launcher, .position,
+      //                          .layout, .behavior, .messages, .engagementTriggers …
+      // We always prefer the structured windowUi sub-keys when available so that
+      // the widget always reflects the most recent server-side config without any
+      // encrypted snapshot dependency.
+      const widgetBehaviorApi = apiConfig.widgetBehavior || {};
+      const windowUiApi = apiConfig.windowUi || {};
+      const windowUiAppearance = windowUiApi.appearance || {};
+      const launcherFromWindowUi = windowUiApi.launcher || {};
+      const windowUiPosition = windowUiApi.position || {};
+      const windowUiLayout = windowUiApi.layout || {};
+      const windowUiBehavior = windowUiApi.behavior || {};
+      const windowUiMessages = windowUiApi.messages || {};
+      const windowUiEngagement = windowUiApi.engagementTriggers ||
+        widgetBehaviorApi.windowEngagementTriggers || {};
+      const windowUiMobile = windowUiApi.mobileExperience ||
+        widgetBehaviorApi.windowMobileExperience || {};
+      const windowUiSound = windowUiApi.soundNotifications ||
+        widgetBehaviorApi.windowSoundNotifications || {};
+      const windowUiAdvanced = windowUiApi.advancedSettings ||
+        widgetBehaviorApi.windowAdvancedSettings || {};
+      const windowUiInstallation = windowUiApi.installation || {};
+      const widgetAppearanceApi = apiConfig.widgetAppearance || {};
+
+      // Normalise launcher icon type (chat | message | custom)
+      const launcherIconTypeRaw = String(
+        widgetAppearanceApi.launcherIconType ||
+          launcherFromWindowUi.launcherIconType ||
+          "chat",
+      );
+      const normLauncherIconType =
+        launcherIconTypeRaw === "message"
+          ? "message"
+          : launcherIconTypeRaw === "custom" || launcherIconTypeRaw === "brand"
+            ? "custom"
+            : "chat";
+
+      // Merge appearance – always include launcher fields from windowUi.launcher
+      // so they are available for renderWidget regardless of which API shape is used.
+      const mergedAppearance = {
+        ...(widgetAppearanceApi || defaults.appearance),
+        // Merge windowUi.appearance colour overrides when present
+        primaryColor: widgetAppearanceApi.primaryColor || windowUiAppearance.primaryColor,
+        secondaryColor: widgetAppearanceApi.secondaryColor || windowUiAppearance.secondaryColor,
+        brandLogoUrl: widgetAppearanceApi.brandLogoUrl || windowUiAppearance.brandLogoUrl,
+        // Launcher fields – prefer widgetAppearance, fall back to windowUi.launcher
+        launcherIconType: normLauncherIconType,
+        launcherIconUrl:
+          widgetAppearanceApi.launcherIconUrl ||
+          launcherFromWindowUi.launcherIconUrl ||
+          undefined,
+        launcherType:
+          widgetAppearanceApi.launcherType ||
+          launcherFromWindowUi.launcherType ||
+          undefined,
+        launcherText:
+          widgetAppearanceApi.launcherText ||
+          launcherFromWindowUi.launcherText ||
+          undefined,
+        bubbleAnimation:
+          widgetAppearanceApi.bubbleAnimation ||
+          launcherFromWindowUi.bubbleAnimation ||
+          undefined,
+        bubbleSize:
+          widgetAppearanceApi.bubbleSize ||
+          launcherFromWindowUi.bubbleSize ||
+          undefined,
+        // Chat window title / header name from layout
+        headerName:
+          widgetAppearanceApi.headerName ||
+          windowUiLayout.chatWindowTitle ||
+          undefined,
+        // Header / welcome messages from windowUi.messages
+        header: {
+          ...((widgetAppearanceApi.header) || {}),
+          title:
+            windowUiLayout.chatWindowTitle ||
+            (widgetAppearanceApi.header || {}).title ||
+            "",
+          subtitle: windowUiLayout.subtitle || "",
+          welcomeMessage:
+            windowUiMessages.welcomeMessage ||
+            (widgetAppearanceApi.header || {}).welcomeMessage ||
+            "",
+          offlineMessage:
+            windowUiMessages.offlineMessage ||
+            (widgetAppearanceApi.header || {}).offlineMessage ||
+            "",
+          greetingByTime: Boolean(windowUiMessages.greetingByTime),
+          botIntroductionMessage:
+            windowUiMessages.botIntroductionMessage || "",
+          fallbackMessage: windowUiMessages.fallbackMessage || "",
+        },
+        // Top-level welcome message for the chat view
+        welcomeMessage:
+          windowUiMessages.welcomeMessage ||
+          widgetAppearanceApi.welcomeMessage ||
+          undefined,
+        headerLogoUrl:
+          widgetAppearanceApi.headerLogoUrl ||
+          windowUiLayout.headerLogoUrl ||
+          "",
+        chatAvatarUrl:
+          widgetAppearanceApi.chatAvatarUrl ||
+          windowUiLayout.chatAvatarUrl ||
+          "",
+      };
+
+      // Build the preview snapshot that renderWidget reads for layout/visual values.
+      // This replaces the old "encrypted preview payload" approach: now it is always
+      // derived from the live API response so any admin change is instantly reflected.
+      const normalizedPreview = {
+        // Colors
+        primaryColor:
+          widgetAppearanceApi.primaryColor ||
+          windowUiAppearance.primaryColor ||
+          defaults.appearance.gradientColor1,
+        secondaryColor:
+          widgetAppearanceApi.secondaryColor ||
+          windowUiAppearance.secondaryColor ||
+          defaults.appearance.gradientColor2,
+        chatBubbleColor:
+          widgetAppearanceApi.chatBubbleColor ||
+          windowUiAppearance.chatBubbleColor ||
+          "#ECE1FF",
+        agentMessageColor:
+          widgetAppearanceApi.agentMessageColor ||
+          windowUiAppearance.agentMessageColor ||
+          "#ECEFF1",
+        backgroundColor:
+          widgetAppearanceApi.backgroundColor ||
+          windowUiAppearance.backgroundColor ||
+          "#FFFFFF",
+        // Typography
+        fontSize: widgetAppearanceApi.fontSize || "small",
+        // Launcher
+        launcherType:
+          widgetAppearanceApi.launcherType ||
+          launcherFromWindowUi.launcherType ||
+          "bubble",
+        launcherIconType: normLauncherIconType,
+        launcherText:
+          widgetAppearanceApi.launcherText ||
+          launcherFromWindowUi.launcherText ||
+          "",
+        launcherIconUrl:
+          widgetAppearanceApi.launcherIconUrl ||
+          launcherFromWindowUi.launcherIconUrl ||
+          "",
+        bubbleAnimation:
+          widgetAppearanceApi.bubbleAnimation ||
+          launcherFromWindowUi.bubbleAnimation ||
+          "none",
+        bubbleSize:
+          widgetAppearanceApi.bubbleSize ||
+          launcherFromWindowUi.bubbleSize ||
+          "small",
+        // Position
+        rightMarginPx: Number(
+          widgetBehaviorApi.rightMarginPx ??
+            windowUiPosition.rightMarginPx ??
+            20,
+        ),
+        bottomMarginPx: Number(
+          widgetBehaviorApi.bottomMarginPx ??
+            windowUiPosition.bottomMarginPx ??
+            20,
+        ),
+        zIndex: Number(
+          widgetBehaviorApi.zIndex ?? windowUiPosition.zIndex ?? 9999,
+        ),
+        // Layout
+        subtitle: String(windowUiLayout.subtitle || "").trim(),
+        windowSize:
+          widgetAppearanceApi.windowSize ||
+          windowUiLayout.windowSize ||
+          "medium",
+        windowStyle:
+          widgetAppearanceApi.windowStyle ||
+          windowUiLayout.windowStyle ||
+          "rounded",
+        chatAvatarUrl:
+          widgetAppearanceApi.chatAvatarUrl ||
+          windowUiLayout.chatAvatarUrl ||
+          "",
+        headerLogoUrl:
+          widgetAppearanceApi.headerLogoUrl ||
+          windowUiLayout.headerLogoUrl ||
+          "",
+        brandLogoUrl:
+          widgetAppearanceApi.brandLogoUrl ||
+          windowUiAppearance.brandLogoUrl ||
+          "",
+        // Messages
+        greetingByTime: Boolean(windowUiMessages.greetingByTime),
+        botIntroductionMessage: String(
+          windowUiMessages.botIntroductionMessage || "",
+        ),
+        offlineMessage: String(windowUiMessages.offlineMessage || ""),
+        fallbackMessage: String(windowUiMessages.fallbackMessage || ""),
+        // Engagement triggers
+        proactiveMessage: String(windowUiEngagement.proactiveMessage || ""),
+        triggerCondition: String(
+          windowUiEngagement.triggerCondition || "time",
+        ),
+        triggerValue: Number(windowUiEngagement.triggerValue || 0),
+        showOncePerSession: Boolean(
+          windowUiEngagement.showOncePerSession ?? true,
+        ),
+        // Mobile
+        mobileWidgetEnabled: Boolean(
+          windowUiMobile.mobileWidgetEnabled ?? true,
+        ),
+        mobileWindowStyle: String(
+          windowUiMobile.mobileWindowStyle || "fullscreen",
+        ),
+        autoOpenOnMobile: Boolean(windowUiMobile.autoOpenOnMobile),
+        // Sound
+        newMessageSoundEnabled: Boolean(
+          windowUiSound.newMessageSoundEnabled,
+        ),
+        soundType: String(windowUiSound.soundType || "ping"),
+        browserNotificationEnabled: Boolean(
+          windowUiSound.browserNotificationEnabled,
+        ),
+        // Advanced
+        persistentChat: Boolean(windowUiAdvanced.persistentChat ?? true),
+        visitorTrackingEnabled: Boolean(
+          windowUiAdvanced.visitorTrackingEnabled ?? true,
+        ),
+        hideOnPages: windowUiAdvanced.hideOnPages || [],
+        showOnlyOnPages: windowUiAdvanced.showOnlyOnPages || [],
+        // Installation
+        allowedDomains: windowUiInstallation.allowedDomains || [],
+      };
+
       const transformedConfig = {
         tenantId: userConfig.tenantId,
         widgetToken: userConfig.widgetToken,
-        apiKey: userConfig.apiKey || userConfig.widgetToken, // Use apiKey if provided, otherwise fallback to widgetToken
+        apiKey: userConfig.apiKey || userConfig.widgetToken,
         testMode: userConfig.testMode || false,
+        // Pass both service base URLs through so UTILITY_API_BASE can be set
+        // from fetchedConfig without depending solely on userConfig.
+        utilityApiBaseUrl:
+          userConfig.utilityApiBaseUrl || userConfig.utilityServiceBase || "",
+        pulseServiceBase: userConfig.pulseServiceBase || "",
         // Preserve websocketUrl from userConfig (passed from embed script)
         websocketUrl: userConfig.websocketUrl,
-        appearance: apiConfig.widgetAppearance || defaults.appearance,
+        appearance: mergedAppearance,
         behavior: {
           ...defaults.behavior,
-          ...(apiConfig.widgetBehavior || {}),
-          // Preserve autoOpen and autoOpenDelay from defaults if not in API response
+          ...(widgetBehaviorApi),
+          // Normalise field names that differ between API shapes:
+          // windowUi.behavior uses camelCase "enabled/Seconds" suffixes.
           autoOpen:
-            apiConfig.widgetBehavior?.autoOpen ?? defaults.behavior.autoOpen,
+            widgetBehaviorApi.autoOpen ??
+            windowUiBehavior.autoOpenEnabled ??
+            defaults.behavior.autoOpen,
           autoOpenDelay:
-            apiConfig.widgetBehavior?.autoOpenDelay ??
+            widgetBehaviorApi.autoOpenDelay ??
+            (windowUiBehavior.autoOpenDelaySeconds != null
+              ? Number(windowUiBehavior.autoOpenDelaySeconds) * 1000
+              : null) ??
             defaults.behavior.autoOpenDelay,
+          showOnlyAfterScrollPercent:
+            widgetBehaviorApi.showOnlyAfterScrollPercent ??
+            windowUiBehavior.showOnlyAfterScrollPercent ??
+            widgetBehaviorApi.triggerRules?.scrollPercentage ??
+            0,
+          showOnExitIntent:
+            widgetBehaviorApi.showOnExitIntent ??
+            windowUiBehavior.showOnExitIntent ??
+            false,
+          stickyPlacement:
+            widgetBehaviorApi.stickyPlacement ||
+            // windowUi.position uses "bottom_right" (underscore); normalise to dash
+            String(windowUiPosition.widgetPosition || "bottom-right").replace(
+              /_/g,
+              "-",
+            ),
+          botDelayMs:
+            widgetBehaviorApi.botDelayMs ?? defaults.behavior.botDelayMs,
+          typingIndicator:
+            widgetBehaviorApi.typingIndicator ??
+            defaults.behavior.typingIndicator,
         },
-        preChatForm: apiConfig.preChatForm || defaults.preChatForm,
+        preChatForm:
+          apiConfig.preChatForm ||
+          (windowUiApi.preChatForm
+            ? {
+                enabled: Boolean(windowUiApi.preChatForm.enabled),
+                fields: (windowUiApi.preChatForm.fields || []).map((f) => ({
+                  id: f.id || f.name,
+                  name: f.name || f.id,
+                  label: f.label,
+                  type: f.type,
+                  required: Boolean(f.required),
+                  customQuestion: f.customQuestion || null,
+                })),
+                consentCheckbox: Boolean(
+                  windowUiApi.preChatForm.consentCheckbox,
+                ),
+                consentText:
+                  windowUiApi.preChatForm.consentText ||
+                  "I agree to be contacted.",
+              }
+            : defaults.preChatForm),
         engagementTriggers:
-          apiConfig.engagementTriggers || defaults.engagementTriggers,
+          apiConfig.engagementTriggers ||
+          (Object.keys(windowUiEngagement).length
+            ? windowUiEngagement
+            : defaults.engagementTriggers),
         mobileExperience:
-          apiConfig.mobileExperience || defaults.mobileExperience,
+          apiConfig.mobileExperience ||
+          (Object.keys(windowUiMobile).length
+            ? windowUiMobile
+            : defaults.mobileExperience),
         soundNotifications:
-          apiConfig.soundNotifications || defaults.soundNotifications,
+          apiConfig.soundNotifications ||
+          (Object.keys(windowUiSound).length
+            ? windowUiSound
+            : defaults.soundNotifications),
         advancedSettings:
-          apiConfig.advancedSettings || defaults.advancedSettings,
-        installation: apiConfig.installation || defaults.installation,
+          apiConfig.advancedSettings ||
+          (Object.keys(windowUiAdvanced).length
+            ? windowUiAdvanced
+            : defaults.advancedSettings),
+        installation:
+          apiConfig.installation ||
+          (Object.keys(windowUiInstallation).length
+            ? windowUiInstallation
+            : defaults.installation),
         windowUi: apiConfig.windowUi || {},
-        preview:
-          apiConfig.widgetPreview ||
-          apiConfig.preview ||
-          defaults.preview ||
-          {},
+        // preview is now always built from live API data — no encrypted snapshot needed
+        preview: normalizedPreview,
         // Store additional config that might be useful
         botFlow: apiConfig.botFlow,
         defaultLanguage: apiConfig.defaultLanguage,
@@ -1078,89 +1381,9 @@
       // Merge fetched config with defaults
       settings = deepMerge(defaults, fetchedConfig);
 
-      if (userConfig && typeof userConfig === "object") {
-        if (userConfig.preview && typeof userConfig.preview === "object") {
-          settings.preview = deepMerge(
-            settings.preview || {},
-            userConfig.preview,
-          );
-        }
-        if (userConfig.behavior && typeof userConfig.behavior === "object") {
-          settings.behavior = deepMerge(
-            settings.behavior || {},
-            userConfig.behavior,
-          );
-        }
-        if (
-          userConfig.appearance &&
-          typeof userConfig.appearance === "object"
-        ) {
-          settings.appearance = deepMerge(
-            settings.appearance || {},
-            userConfig.appearance,
-          );
-        }
-        if (
-          userConfig.preChatForm &&
-          typeof userConfig.preChatForm === "object"
-        ) {
-          settings.preChatForm = deepMerge(
-            settings.preChatForm || {},
-            userConfig.preChatForm,
-          );
-        }
-        if (
-          userConfig.engagementTriggers &&
-          typeof userConfig.engagementTriggers === "object"
-        ) {
-          settings.engagementTriggers = deepMerge(
-            settings.engagementTriggers || {},
-            userConfig.engagementTriggers,
-          );
-        }
-        if (
-          userConfig.mobileExperience &&
-          typeof userConfig.mobileExperience === "object"
-        ) {
-          settings.mobileExperience = deepMerge(
-            settings.mobileExperience || {},
-            userConfig.mobileExperience,
-          );
-        }
-        if (
-          userConfig.soundNotifications &&
-          typeof userConfig.soundNotifications === "object"
-        ) {
-          settings.soundNotifications = deepMerge(
-            settings.soundNotifications || {},
-            userConfig.soundNotifications,
-          );
-        }
-        if (
-          userConfig.advancedSettings &&
-          typeof userConfig.advancedSettings === "object"
-        ) {
-          settings.advancedSettings = deepMerge(
-            settings.advancedSettings || {},
-            userConfig.advancedSettings,
-          );
-        }
-        if (
-          userConfig.installation &&
-          typeof userConfig.installation === "object"
-        ) {
-          settings.installation = deepMerge(
-            settings.installation || {},
-            userConfig.installation,
-          );
-        }
-        if (userConfig.windowUi && typeof userConfig.windowUi === "object") {
-          settings.windowUi = deepMerge(
-            settings.windowUi || {},
-            userConfig.windowUi,
-          );
-        }
-      }
+      // IMPORTANT: Runtime config from API is source of truth.
+      // Do not overlay visual/behavior config from encrypted payload, so any
+      // chatbot config updates are reflected immediately across all websites.
 
       // Now initialize API URLs and socket config with the baseUrl
       API_BASE = baseUrl;

@@ -4659,7 +4659,7 @@
         .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-pulse-ring {
           border-radius: 4px;
         }
-        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) {
+        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open):not(.chat-widget-launcher-text) {
           width: ${launcherOuterPulsePx}px;
           height: ${launcherOuterPulsePx}px;
         }
@@ -4777,9 +4777,8 @@
         }
         .chat-widget-launcher-text-hover-tooltip {
           position: absolute;
-          left: 50%;
           bottom: calc(100% + 10px);
-          transform: translateX(-50%) translateY(4px);
+          transform: translateY(4px);
           background: #ffffff;
           color: #18181e;
           border-radius: 6px;
@@ -4787,7 +4786,8 @@
           font-size: 13px;
           line-height: 18px;
           font-weight: 500;
-          white-space: nowrap;
+          max-width: min(320px, calc(100vw - 24px));
+          white-space: normal;
           box-shadow: 0px 2px 7px 0px #0000001f;
           opacity: 0;
           visibility: hidden;
@@ -4798,11 +4798,32 @@
             transform 0.18s ease,
             visibility 0s linear 0.18s;
         }
+        .chat-widget-launcher-text-hover-tooltip.chat-widget-launcher-text-hover-tooltip-left {
+          right: 0;
+        }
+        .chat-widget-launcher-text-hover-tooltip.chat-widget-launcher-text-hover-tooltip-right {
+          left: 0;
+        }
+        .chat-widget-launcher-text-hover-tooltip::after {
+          content: "";
+          position: absolute;
+          bottom: -5px;
+          width: 10px;
+          height: 10px;
+          background: #ffffff;
+          transform: rotate(45deg);
+        }
+        .chat-widget-launcher-text-hover-tooltip.chat-widget-launcher-text-hover-tooltip-left::after {
+          right: 18px;
+        }
+        .chat-widget-launcher-text-hover-tooltip.chat-widget-launcher-text-hover-tooltip-right::after {
+          left: 18px;
+        }
         .chat-widget-launcher.chat-widget-launcher-text:not(.open):hover .chat-widget-launcher-text-hover-tooltip {
           opacity: 1;
           visibility: visible;
-          transform: translateX(-50%) translateY(0);
-          transition-delay: 2.2s;
+          transform: translateY(0);
+          transition-delay: 0.9s;
         }
         .chat-widget-launcher-tooltip {
           position: absolute;
@@ -5784,7 +5805,11 @@
         : launcherIconHtml;
     const launcherTextHoverTooltipHtml =
       launcherType === "text"
-        ? `<div class="chat-widget-launcher-text-hover-tooltip">${escapeHtmlWidget(launcherText)}</div>`
+        ? `<div class="chat-widget-launcher-text-hover-tooltip ${
+            isRight
+              ? "chat-widget-launcher-text-hover-tooltip-left"
+              : "chat-widget-launcher-text-hover-tooltip-right"
+          }">${escapeHtmlWidget(launcherText)}</div>`
         : "";
     const launcherTooltipHtml =
       launcherType !== "text" && launcherText

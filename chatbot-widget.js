@@ -4744,18 +4744,15 @@
         .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-inner {
           border-radius: 4px;
         }
-        .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-pulse-ring {
+        .chat-widget-launcher-floating .chat-widget-launcher-pulse-ring {
           border-radius: 10px;
         }
-        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-pulse-ring {
-          border-radius: 8px;
-        }
-        .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-pulse-ring {
+        .chat-widget-launcher-custom .chat-widget-launcher-pulse-ring {
           border-radius: 4px;
         }
-        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open):not(.chat-widget-launcher-text) {
-          width: ${launcherOuterPulsePx}px;
-          height: ${launcherOuterPulsePx}px;
+        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) {
+          ${launcherType === "text" ? "width: auto;" : `width: ${launcherOuterPulsePx}px;`}
+          ${launcherType === "text" ? "height: auto;" : `height: ${launcherOuterPulsePx}px;`}
         }
         .chat-widget-launcher.chat-widget-launcher-floating.chat-widget-launcher-pulse:not(.open),
         .chat-widget-launcher.chat-widget-launcher-text.chat-widget-launcher-pulse:not(.open) {
@@ -4800,7 +4797,8 @@
           z-index: 1;
           padding: ${launcherPaddingPx}px;
         }
-        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner {
+        .chat-widget-launcher.chat-widget-launcher-text
+          .chat-widget-launcher-inner {
           position: static;
           inset: auto;
           width: auto;
@@ -4810,7 +4808,8 @@
           padding: 8px 16px;
           gap: ${textLauncherSize.gap}px;
         }
-        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) .chat-widget-launcher-inner {
+        .chat-widget-launcher.chat-widget-launcher-pulse:not(.open)
+          .chat-widget-launcher-inner {
           inset: ${pulseRingInsetPx}px;
         }
         .chat-widget-launcher-inner svg,

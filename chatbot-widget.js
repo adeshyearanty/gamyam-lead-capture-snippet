@@ -1480,7 +1480,7 @@
         return;
       }
 
-      loadGoogleFont(resolvedFontFamily);
+      loadGoogleFont(settings.appearance.fontFamily);
       loadGoogleFont("DM Sans");
 
       resolvedHeaderLogoUrl = "";
@@ -4778,16 +4778,31 @@
         .chat-widget-launcher:hover {
           transform: scale(1.05);
         }
+        .chat-widget-launcher.open,
+        .chat-widget-launcher.open:hover,
+        .chat-widget-launcher.open.chat-widget-launcher-bounce {
+          width: ${launcherFacePx}px !important;
+          height: ${launcherFacePx}px !important;
+          padding: 0 !important;
+          border-radius: 50% !important;
+          animation: none !important;
+          transform: none !important;
+          transition: none !important;
+        }
 
         .chat-widget-launcher.open .chat-widget-launcher-inner {
           background: ${primaryColor} !important;
           inset: 0;
+          width: 100%;
+          height: 100%;
+          border-radius: 50% !important;
+          transition: none !important;
         }
         .chat-widget-launcher.chat-widget-launcher-text.open .chat-widget-launcher-inner {
           position: absolute;
           inset: 0;
-          width: auto;
-          height: auto;
+          width: 100%;
+          height: 100%;
         }
         .chat-widget-launcher-bounce {
           animation: launcherBounce 1.6s infinite;

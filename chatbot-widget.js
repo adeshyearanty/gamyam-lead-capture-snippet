@@ -4499,9 +4499,9 @@
     const bubbleSizeMap = { small: 48, medium: 60, large: 64 };
     const launcherPaddingMap = { small: 6, medium: 8, large: 10 };
     const textLauncherSizeMap = {
-      small: { minWidth: 120, minHeight: 40, icon: 18, gap: 6, fontSize: 13, lineHeight: 18 },
-      medium: { minWidth: 140, minHeight: 44, icon: 20, gap: 8, fontSize: 14, lineHeight: 20 },
-      large: { minWidth: 160, minHeight: 48, icon: 22, gap: 10, fontSize: 15, lineHeight: 22 },
+      small: { minHeight: 40, icon: 18, gap: 6, fontSize: 13, lineHeight: 18, maxWidth: 170 },
+      medium: { minHeight: 44, icon: 20, gap: 8, fontSize: 14, lineHeight: 20, maxWidth: 210 },
+      large: { minHeight: 48, icon: 22, gap: 10, fontSize: 15, lineHeight: 22, maxWidth: 250 },
     };
     const launcherFacePx =
       bubbleSizeMap[
@@ -4636,6 +4636,7 @@
         .chat-widget-launcher.chat-widget-launcher-text {
           width: auto;
           min-width: fit-content;
+          max-width: ${textLauncherSize.maxWidth}px;
           min-height: ${textLauncherSize.minHeight}px;
           height: auto;
           border-radius: 8px;
@@ -4709,6 +4710,7 @@
           position: static;
           inset: auto;
           width: auto;
+          max-width: ${textLauncherSize.maxWidth}px;
           height: 100%;
           border-radius: 8px;
           padding: 8px 16px;
@@ -4762,11 +4764,45 @@
           border-radius: 4px;
         }
         .chat-widget-launcher-text-label {
+          display: block;
+          flex: 1;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
           font-size: ${textLauncherSize.fontSize}px;
           line-height: ${textLauncherSize.lineHeight}px;
           font-weight: 600;
           color: #ffffff;
           white-space: nowrap;
+        }
+        .chat-widget-launcher-text-hover-tooltip {
+          position: absolute;
+          left: 50%;
+          bottom: calc(100% + 10px);
+          transform: translateX(-50%) translateY(4px);
+          background: #ffffff;
+          color: #18181e;
+          border-radius: 6px;
+          padding: 6px 10px;
+          font-size: 13px;
+          line-height: 18px;
+          font-weight: 500;
+          white-space: nowrap;
+          box-shadow: 0px 2px 7px 0px #0000001f;
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+          z-index: 3;
+          transition:
+            opacity 0.18s ease,
+            transform 0.18s ease,
+            visibility 0s linear 0.18s;
+        }
+        .chat-widget-launcher.chat-widget-launcher-text:not(.open):hover .chat-widget-launcher-text-hover-tooltip {
+          opacity: 1;
+          visibility: visible;
+          transform: translateX(-50%) translateY(0);
+          transition-delay: 2.2s;
         }
         .chat-widget-launcher-tooltip {
           position: absolute;
@@ -5746,6 +5782,10 @@
       launcherType === "text"
         ? `${launcherIconHtml}<span class="chat-widget-launcher-text-label">${escapeHtmlWidget(launcherText)}</span>`
         : launcherIconHtml;
+    const launcherTextHoverTooltipHtml =
+      launcherType === "text"
+        ? `<div class="chat-widget-launcher-text-hover-tooltip">${escapeHtmlWidget(launcherText)}</div>`
+        : "";
     const launcherTooltipHtml =
       launcherType !== "text" && launcherText
         ? `<div class="chat-widget-launcher-tooltip ${
@@ -5770,7 +5810,7 @@
             : "";
 
     container.innerHTML = `
-      <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn">${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div>${launcherTooltipHtml}</div>
+      <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn">${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div>${launcherTooltipHtml}${launcherTextHoverTooltipHtml}</div>
       <div class="chat-widget-window" id="chatWindow">
         <div class="chat-widget-header">
           <div class="chat-widget-header-content">

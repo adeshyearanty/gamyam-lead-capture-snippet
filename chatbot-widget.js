@@ -3838,8 +3838,11 @@
   }
 
   function getReadReceiptIcon(status, readAt, readByUs, readByUsAt, sender) {
-    // Logic disabled in original
-    return "";
+    if (sender !== "user") return "";
+    if (readByUs && readByUsAt) {
+      return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+    }
+    return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity:0.5"><path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
   }
 
   // Helper function to check if a message is a welcome message
@@ -4177,11 +4180,17 @@
 
     const msgMeta = document.createElement("div");
     msgMeta.className = "chat-widget-message-meta";
-
-    // Only append meta if there is something inside, otherwise we get empty margin space
-    if (msgMeta.hasChildNodes()) {
-      msgDiv.appendChild(msgMeta);
+    if (type === "user") {
+      msgMeta.insertAdjacentHTML(
+        "beforeend",
+        getReadReceiptIcon(status, readAt, readByUs, readByUsAt, type),
+      );
     }
+    const timeEl = document.createElement("span");
+    timeEl.className = "chat-widget-message-time";
+    timeEl.textContent = formatTimestamp(normalizedTimestamp, true);
+    msgMeta.appendChild(timeEl);
+    msgContent.appendChild(msgMeta);
 
     // Store message data (for text messages only - media messages are stored above)
     if (!hasMedia && normalizedId) {
@@ -5270,9 +5279,15 @@
           display: flex;
           align-items: center;
           gap: 4px;
-          margin-top: 8px;
-          font-size: 12px;
+          margin-top: 2px;
           justify-content: flex-end;
+          font-family: "DM Sans", sans-serif;
+          font-weight: 400;
+          font-size: 10px;
+          line-height: 20px;
+          letter-spacing: 0;
+          text-align: right;
+          color: #18181e;
         }
 
         .chat-widget-message.user .chat-widget-message-meta {
@@ -5286,9 +5301,12 @@
 
         .chat-widget-message-time {
           color: #18181e;
-          font-size: ${fontSizes.meta};
+          font-family: "DM Sans", sans-serif;
           font-weight: 400;
-          line-height: 16px;
+          font-size: 10px;
+          line-height: 20px;
+          letter-spacing: 0;
+          text-align: right;
         }
 
         .chat-widget-tooltip {
@@ -5339,7 +5357,6 @@
         .chat-widget-read-receipt {
           display: inline-flex;
           align-items: center;
-          margin-right: 4px;
         }
         
         .chat-widget-read-receipt-icon {

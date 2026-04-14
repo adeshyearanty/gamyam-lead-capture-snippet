@@ -4465,7 +4465,14 @@
       String(rawC3).trim().toLowerCase() === "white"
         ? "#7DBCFE"
         : rawC3;
-    const pulseRingGradientCss = `linear-gradient(272.16deg, ${c2} 0.45%, ${c1} 45.12%, ${c3} 99.8%)`;
+    const pulseRingGradientCss = `conic-gradient(
+      from var(--pulse-angle, 0deg),
+      #7DBCFE 0%,
+      #912FF5 35%,
+      #EF32D4 50%,
+      #912FF5 65%,
+      #7DBCFE 100%
+    )`;
     const preview = settings.preview || {};
     const primaryColor =
       preview.primaryColor || settings.appearance.primaryColor || c1;
@@ -4491,6 +4498,11 @@
 
     const bubbleSizeMap = { small: 48, medium: 60, large: 64 };
     const launcherPaddingMap = { small: 6, medium: 8, large: 10 };
+    const textLauncherSizeMap = {
+      small: { minWidth: 120, minHeight: 40, icon: 18, gap: 6, fontSize: 13, lineHeight: 18 },
+      medium: { minWidth: 140, minHeight: 44, icon: 20, gap: 8, fontSize: 14, lineHeight: 20 },
+      large: { minWidth: 160, minHeight: 48, icon: 22, gap: 10, fontSize: 15, lineHeight: 22 },
+    };
     const launcherFacePx =
       bubbleSizeMap[
         preview.bubbleSize || settings.appearance.bubbleSize || "small"
@@ -4499,8 +4511,18 @@
       launcherPaddingMap[
         preview.bubbleSize || settings.appearance.bubbleSize || "small"
       ] || launcherPaddingMap.small;
-    const pulseRingThicknessPx = 1;
-    const launcherOuterPulsePx = launcherFacePx + 2 * pulseRingThicknessPx;
+    const textLauncherSize =
+      textLauncherSizeMap[
+        preview.bubbleSize || settings.appearance.bubbleSize || "small"
+      ] || textLauncherSizeMap.small;
+    const textLauncherIconSizePx = Math.max(
+      16,
+      textLauncherSize.minHeight - 2 * launcherPaddingPx,
+    );
+    const pulseRingStrokePx = 2;
+    const pulseRingGapPx = 1;
+    const pulseRingInsetPx = pulseRingStrokePx + pulseRingGapPx;
+    const launcherOuterPulsePx = launcherFacePx + 2 * pulseRingInsetPx;
     const launcherLayoutPx =
       bubbleAnimation === "pulse" ? launcherOuterPulsePx : launcherFacePx;
     const windowLauncherGapPx = 8;
@@ -4613,8 +4635,8 @@
         }
         .chat-widget-launcher.chat-widget-launcher-text {
           width: auto;
-          min-width: 140px;
-          min-height: 44px;
+          min-width: ${textLauncherSize.minWidth}px;
+          min-height: ${textLauncherSize.minHeight}px;
           height: auto;
           border-radius: 8px;
           padding: ${launcherPaddingPx}px;
@@ -4628,7 +4650,7 @@
           border-radius: 4px;
         }
         .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-pulse-ring {
-          border-radius: 8px;
+          border-radius: 10px;
         }
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-pulse-ring {
           border-radius: 8px;
@@ -4640,17 +4662,31 @@
           width: ${launcherOuterPulsePx}px;
           height: ${launcherOuterPulsePx}px;
         }
+        .chat-widget-launcher.chat-widget-launcher-floating.chat-widget-launcher-pulse:not(.open),
+        .chat-widget-launcher.chat-widget-launcher-text.chat-widget-launcher-pulse:not(.open) {
+          border-radius: 10px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-custom.chat-widget-launcher-pulse:not(.open) {
+          border-radius: ${4 + pulseRingInsetPx}px;
+        }
         .chat-widget-launcher.chat-widget-launcher-text.chat-widget-launcher-pulse:not(.open) {
           width: auto;
           height: auto;
+          padding: 0;
+          background: transparent;
         }
         .chat-widget-launcher-pulse-ring {
           position: absolute;
           inset: 0;
-          border-radius: 50%;
+          border-radius: inherit;
           background: ${pulseRingGradientCss};
+          padding: ${pulseRingStrokePx}px;
+          -webkit-mask:
+            linear-gradient(#000 0 0) content-box,
+            linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor;
+          mask-composite: exclude;
           animation: launcherPulseRingRotate 4s linear infinite;
-          transform-origin: 50% 50%;
           z-index: 0;
           pointer-events: none;
         }
@@ -4676,10 +4712,16 @@
           height: 100%;
           border-radius: 8px;
           padding: 0;
-          gap: 8px;
+          gap: ${textLauncherSize.gap}px;
         }
         .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) .chat-widget-launcher-inner {
-          inset: ${pulseRingThicknessPx}px;
+          inset: ${pulseRingInsetPx}px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-text.chat-widget-launcher-pulse:not(.open) .chat-widget-launcher-inner {
+          position: absolute;
+          inset: ${pulseRingInsetPx}px;
+          width: auto;
+          height: auto;
         }
         .chat-widget-launcher-inner svg,
         .chat-widget-launcher-inner img {
@@ -4704,24 +4746,30 @@
         }
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner svg,
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner img {
-          width: 20px;
-          height: 20px;
+          width: ${textLauncherIconSizePx}px;
+          height: ${textLauncherIconSizePx}px;
           flex-shrink: 0;
         }
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner > img {
           border-radius: 4px;
-          width: 20px;
-          height: 20px;
-          max-width: 20px;
-          max-height: 20px;
+          width: ${textLauncherIconSizePx}px;
+          height: ${textLauncherIconSizePx}px;
+          max-width: ${textLauncherIconSizePx}px;
+          max-height: ${textLauncherIconSizePx}px;
           object-fit: contain;
+        }
+        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner .chat-widget-launcher-default-icon {
+          width: ${textLauncherIconSizePx}px;
+          height: ${textLauncherIconSizePx}px;
+          max-width: ${textLauncherIconSizePx}px;
+          max-height: ${textLauncherIconSizePx}px;
         }
         .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-inner > img {
           border-radius: 4px;
         }
         .chat-widget-launcher-text-label {
-          font-size: 14px;
-          line-height: 20px;
+          font-size: ${textLauncherSize.fontSize}px;
+          line-height: ${textLauncherSize.lineHeight}px;
           font-weight: 600;
           color: #ffffff;
           white-space: nowrap;
@@ -4815,9 +4863,14 @@
         .chat-widget-launcher-bounce {
           animation: launcherBounce 1.6s infinite;
         }
+        @property --pulse-angle {
+          syntax: "<angle>";
+          inherits: false;
+          initial-value: 0deg;
+        }
         @keyframes launcherPulseRingRotate {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
+          from { --pulse-angle: 0deg; }
+          to { --pulse-angle: 360deg; }
         }
         @keyframes launcherBounce {
           0%, 20%, 50%, 80%, 100% { transform: translateY(0); }

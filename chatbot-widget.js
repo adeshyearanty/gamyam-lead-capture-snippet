@@ -120,7 +120,9 @@
   }
 
   function normalizeUtilityS3Base(url) {
-    const normalized = String(url || "").trim().replace(/\/+$/, "");
+    const normalized = String(url || "")
+      .trim()
+      .replace(/\/+$/, "");
     if (!normalized) return "";
     return normalized.endsWith("/s3") ? normalized : `${normalized}/s3`;
   }
@@ -205,27 +207,58 @@
 
   /** Supported font families. Key = stored config value, value = full CSS font-family string. */
   const WIDGET_FONT_FAMILIES = {
-    "default":             "'Inter', sans-serif",
-    "inter":               "'Inter', sans-serif",
-    "dm-sans":             "'DM Sans', sans-serif",
-    "dm_sans":             "'DM Sans', sans-serif",
-    "roboto":              "'Roboto', sans-serif",
-    "open-sans":           "'Open Sans', sans-serif",
-    "lato":                "'Lato', sans-serif",
-    "poppins":             "'Poppins', sans-serif",
-    "nunito":              "'Nunito', sans-serif",
-    "montserrat":          "'Montserrat', sans-serif",
-    "figtree":             "'Figtree', sans-serif",
-    "plus-jakarta-sans":   "'Plus Jakarta Sans', sans-serif",
+    default:
+      "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    inter:
+      "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    roboto:
+      "'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif",
+    "open-sans":
+      "'Open Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    "segoe-ui":
+      "'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif",
+    "helvetica-neue":
+      "'Helvetica Neue', Helvetica, Arial, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    poppins:
+      "'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    montserrat:
+      "'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    "dm-sans":
+      "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    dm_sans:
+      "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    nunito:
+      "'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    quicksand:
+      "'Quicksand', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    comfortaa:
+      "'Comfortaa', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    rubik:
+      "'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    "system-font":
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
     "system-ui":
-      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-    "system_ui":
-      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    system_ui:
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    system:
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    // Backward-compat for previously exposed options.
+    lato:
+      "'Lato', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    figtree:
+      "'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    "plus-jakarta-sans":
+      "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
   };
 
   function resolveWidgetFont(raw) {
     if (!raw) return WIDGET_FONT_FAMILIES["inter"];
-    const key = raw.toLowerCase().trim().replace(/\s+/g, "-").replace(/['"]/g, "");
+    const key = raw
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/['"]/g, "");
     return WIDGET_FONT_FAMILIES[key] || WIDGET_FONT_FAMILIES[raw] || raw;
   }
 
@@ -310,6 +343,7 @@
   let resolvedBrandLogoUrl = "";
   let resolvedLauncherCustomUrl = "";
   let resolvedAvatarUrl = "";
+  let resolvedFontFamily = "";
   let messages = new Map();
   /** Peer (human agent) online — driven by assignment + presence events */
   let isAgentOnline = false;
@@ -1055,14 +1089,22 @@
       const windowUiLayout = windowUiApi.layout || {};
       const windowUiBehavior = windowUiApi.behavior || {};
       const windowUiMessages = windowUiApi.messages || {};
-      const windowUiEngagement = windowUiApi.engagementTriggers ||
-        widgetBehaviorApi.windowEngagementTriggers || {};
-      const windowUiMobile = windowUiApi.mobileExperience ||
-        widgetBehaviorApi.windowMobileExperience || {};
-      const windowUiSound = windowUiApi.soundNotifications ||
-        widgetBehaviorApi.windowSoundNotifications || {};
-      const windowUiAdvanced = windowUiApi.advancedSettings ||
-        widgetBehaviorApi.windowAdvancedSettings || {};
+      const windowUiEngagement =
+        windowUiApi.engagementTriggers ||
+        widgetBehaviorApi.windowEngagementTriggers ||
+        {};
+      const windowUiMobile =
+        windowUiApi.mobileExperience ||
+        widgetBehaviorApi.windowMobileExperience ||
+        {};
+      const windowUiSound =
+        windowUiApi.soundNotifications ||
+        widgetBehaviorApi.windowSoundNotifications ||
+        {};
+      const windowUiAdvanced =
+        windowUiApi.advancedSettings ||
+        widgetBehaviorApi.windowAdvancedSettings ||
+        {};
       const windowUiInstallation = windowUiApi.installation || {};
       const widgetAppearanceApi = apiConfig.widgetAppearance || {};
 
@@ -1084,9 +1126,13 @@
       const mergedAppearance = {
         ...(widgetAppearanceApi || defaults.appearance),
         // Merge windowUi.appearance colour overrides when present
-        primaryColor: widgetAppearanceApi.primaryColor || windowUiAppearance.primaryColor,
-        secondaryColor: widgetAppearanceApi.secondaryColor || windowUiAppearance.secondaryColor,
-        brandLogoUrl: widgetAppearanceApi.brandLogoUrl || windowUiAppearance.brandLogoUrl,
+        primaryColor:
+          widgetAppearanceApi.primaryColor || windowUiAppearance.primaryColor,
+        secondaryColor:
+          widgetAppearanceApi.secondaryColor ||
+          windowUiAppearance.secondaryColor,
+        brandLogoUrl:
+          widgetAppearanceApi.brandLogoUrl || windowUiAppearance.brandLogoUrl,
         // Launcher fields – prefer widgetAppearance, fall back to windowUi.launcher
         launcherIconType: normLauncherIconType,
         launcherIconUrl:
@@ -1116,7 +1162,7 @@
           undefined,
         // Header / welcome messages from windowUi.messages
         header: {
-          ...((widgetAppearanceApi.header) || {}),
+          ...(widgetAppearanceApi.header || {}),
           title:
             windowUiLayout.chatWindowTitle ||
             (widgetAppearanceApi.header || {}).title ||
@@ -1131,8 +1177,7 @@
             (widgetAppearanceApi.header || {}).offlineMessage ||
             "",
           greetingByTime: Boolean(windowUiMessages.greetingByTime),
-          botIntroductionMessage:
-            windowUiMessages.botIntroductionMessage || "",
+          botIntroductionMessage: windowUiMessages.botIntroductionMessage || "",
           fallbackMessage: windowUiMessages.fallbackMessage || "",
         },
         // Top-level welcome message for the chat view
@@ -1244,9 +1289,7 @@
         fallbackMessage: String(windowUiMessages.fallbackMessage || ""),
         // Engagement triggers
         proactiveMessage: String(windowUiEngagement.proactiveMessage || ""),
-        triggerCondition: String(
-          windowUiEngagement.triggerCondition || "time",
-        ),
+        triggerCondition: String(windowUiEngagement.triggerCondition || "time"),
         triggerValue: Number(windowUiEngagement.triggerValue || 0),
         showOncePerSession: Boolean(
           windowUiEngagement.showOncePerSession ?? true,
@@ -1260,9 +1303,7 @@
         ),
         autoOpenOnMobile: Boolean(windowUiMobile.autoOpenOnMobile),
         // Sound
-        newMessageSoundEnabled: Boolean(
-          windowUiSound.newMessageSoundEnabled,
-        ),
+        newMessageSoundEnabled: Boolean(windowUiSound.newMessageSoundEnabled),
         soundType: String(windowUiSound.soundType || "ping"),
         browserNotificationEnabled: Boolean(
           windowUiSound.browserNotificationEnabled,
@@ -1307,7 +1348,7 @@
         appearance: mergedAppearance,
         behavior: {
           ...defaults.behavior,
-          ...(widgetBehaviorApi),
+          ...widgetBehaviorApi,
           // Normalise field names that differ between API shapes:
           // windowUi.behavior uses camelCase "enabled/Seconds" suffixes.
           autoOpen:
@@ -1480,7 +1521,6 @@
       }
 
       loadGoogleFont(settings.appearance.fontFamily);
-      loadGoogleFont("DM Sans");
 
       resolvedHeaderLogoUrl = "";
       resolvedBrandLogoUrl = "";
@@ -1528,7 +1568,8 @@
         }
       } else if (brandLogoKey) {
         // No dedicated launcher icon — fall back to brand/logo URL
-        resolvedLauncherCustomUrl = resolvedBrandLogoUrl || resolvedHeaderLogoUrl;
+        resolvedLauncherCustomUrl =
+          resolvedBrandLogoUrl || resolvedHeaderLogoUrl;
       }
 
       const previewForAvatar = settings.preview || {};
@@ -3157,8 +3198,7 @@
       chip.style.backgroundColor = "#ffffff";
       chip.style.border = "1px solid #EFEFEF";
       chip.style.fontSize = "14px";
-      chip.style.fontFamily =
-        resolvedFontFamily || "DM Sans, sans-serif";
+      chip.style.fontFamily = resolvedFontFamily || "DM Sans, sans-serif";
       chip.style.fontWeight = "400";
       chip.style.lineHeight = "20px";
       chip.style.color = "#18181E";
@@ -3713,7 +3753,7 @@
         loadingDiv.style.textAlign = "center";
         loadingDiv.innerHTML = `
           <div style="width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.gradientColor1 || settings.appearance.primaryColor || "#912FF5"}; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px;"></div>
-          <div style="color: #6b7280; font-size: 14px;">Loading media...</div>
+          <div style="color: #6b7280; font-size: ${fontSizes.body};">Loading media...</div>
         `;
         previewContainer.appendChild(loadingDiv);
       } else if (previewMedia.error) {
@@ -3722,7 +3762,7 @@
         errorDiv.style.textAlign = "center";
         errorDiv.style.color = "#ef4444";
         errorDiv.innerHTML = `
-          <div style="font-size: 14px;">Failed to load media</div>
+          <div style="font-size: ${fontSizes.body};">Failed to load media</div>
         `;
         previewContainer.appendChild(errorDiv);
       } else if (previewMedia.url) {
@@ -4305,8 +4345,8 @@
       if (!id || typeof id !== "string") return false;
       // Exclude client-side generated IDs
       if (id.startsWith("static_welcome_")) return false;
-      if (id.startsWith("proactive_")) return false;   // client-only proactive messages
-      if (id.startsWith("msg_")) return false;          // client-generated optimistic IDs
+      if (id.startsWith("proactive_")) return false; // client-only proactive messages
+      if (id.startsWith("msg_")) return false; // client-generated optimistic IDs
       if (id.startsWith("guest_")) return false;
       if (id.startsWith("user_")) return false;
       if (id.startsWith("temp_")) return false;
@@ -4512,9 +4552,30 @@
     const bubbleSizeMap = { small: 48, medium: 60, large: 64 };
     const launcherPaddingMap = { small: 6, medium: 8, large: 10 };
     const textLauncherSizeMap = {
-      small: { minHeight: 40, icon: 18, gap: 6, fontSize: 13, lineHeight: 18, maxWidth: 170 },
-      medium: { minHeight: 44, icon: 20, gap: 8, fontSize: 14, lineHeight: 20, maxWidth: 210 },
-      large: { minHeight: 48, icon: 22, gap: 10, fontSize: 15, lineHeight: 22, maxWidth: 250 },
+      small: {
+        minHeight: 40,
+        icon: 18,
+        gap: 6,
+        fontSize: 13,
+        lineHeight: 18,
+        maxWidth: 170,
+      },
+      medium: {
+        minHeight: 44,
+        icon: 20,
+        gap: 8,
+        fontSize: 14,
+        lineHeight: 20,
+        maxWidth: 210,
+      },
+      large: {
+        minHeight: 48,
+        icon: 22,
+        gap: 10,
+        fontSize: 15,
+        lineHeight: 22,
+        maxWidth: 250,
+      },
     };
     const launcherFacePx =
       bubbleSizeMap[
@@ -4554,12 +4615,14 @@
       ? `top: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`
       : `bottom: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`;
 
-    const resolvedFontFamily = resolveWidgetFont(settings.appearance.fontFamily);
+    resolvedFontFamily = resolveWidgetFont(
+      settings.appearance.fontFamily,
+    );
 
     const fontSizeMap = {
-      small:  { body: "14px", meta: "12px", input: "14px", title: "16px" },
+      small: { body: "14px", meta: "12px", input: "14px", title: "16px" },
       medium: { body: "15px", meta: "13px", input: "15px", title: "17px" },
-      large:  { body: "16px", meta: "14px", input: "16px", title: "18px" },
+      large: { body: "16px", meta: "14px", input: "16px", title: "18px" },
     };
     const fontSizes =
       fontSizeMap[preview.fontSize || "small"] || fontSizeMap.small;
@@ -4808,7 +4871,7 @@
           color: #18181e;
           border-radius: 6px;
           padding: 6px 10px;
-          font-size: 13px;
+          font-size: ${fontSizes.meta};
           line-height: 18px;
           font-weight: 500;
           max-width: min(320px, calc(100vw - 24px));
@@ -4858,7 +4921,7 @@
           color: #18181e;
           border-radius: 4px;
           padding: 8px 16px;
-          font-size: 14px;
+          font-size: ${fontSizes.body};
           line-height: 20px;
           font-weight: 500;
           width: min(320px, calc(100vw - 24px));
@@ -5064,7 +5127,7 @@
 
         .chat-widget-header-title {
           font-weight: 600;
-          font-size: 14px;
+          font-size: ${fontSizes.title};
           flex: 1;
         }
 
@@ -5098,7 +5161,7 @@
           right: 0;
           text-align: center;
           font-family: ${resolvedFontFamily} !important;
-          font-size: 14px;
+          font-size: ${fontSizes.meta};
           line-height: 16px;
           letter-spacing: 0;
           font-weight: 400;
@@ -5209,7 +5272,7 @@
           border-radius: 20px;
           background: rgba(0, 0, 0, 0.06);
           color: #6b7280;
-          font-size: 12px;
+          font-size: ${fontSizes.meta};
           line-height: 16px;
           text-align: center;
           font-family: ${resolvedFontFamily} !important;
@@ -5226,7 +5289,7 @@
           background: ${agentMessageColor};
           color: #18181e;
           font-family: ${resolvedFontFamily} !important;
-          font-size: 14px;
+          font-size: ${fontSizes.body};
           line-height: 20px;
           letter-spacing: 0;
           font-weight: 400;
@@ -5237,13 +5300,18 @@
         .chat-widget-message.user .chat-widget-message-content {
           background: ${chatBubbleColor};
           color: #18181e;
+          font-family: ${resolvedFontFamily} !important;
+          font-size: ${fontSizes.body};
+          line-height: 20px;
+          letter-spacing: 0;
+          font-weight: 400;
           border-radius: 10px;
           border-bottom-right-radius: 0;
         }
 
         .chat-widget-message-label {
           font-family: ${resolvedFontFamily} !important;
-          font-size: 12px;
+          font-size: ${fontSizes.meta};
           line-height: 16px;
           letter-spacing: 0;
           color: #9da2ab;
@@ -5285,9 +5353,9 @@
           gap: 4px;
           margin-top: 2px;
           justify-content: flex-end;
-          font-family: "DM Sans", sans-serif;
+          font-family: ${resolvedFontFamily} !important;
           font-weight: 400;
-          font-size: 10px;
+          font-size: ${fontSizes.meta};
           line-height: 20px;
           letter-spacing: 0;
           text-align: right;
@@ -5305,9 +5373,9 @@
 
         .chat-widget-message-time {
           color: #18181e;
-          font-family: "DM Sans", sans-serif;
+          font-family: ${resolvedFontFamily} !important;
           font-weight: 400;
-          font-size: 10px;
+          font-size: ${fontSizes.meta};
           line-height: 20px;
           letter-spacing: 0;
           text-align: right;
@@ -5322,7 +5390,7 @@
           padding: 5px 7px;
           background: #18181e;
           color: #ffffff;
-          font-size: 12px;
+          font-size: ${fontSizes.meta};
           line-height: 16px;
           display: flex;
           align-items: center;
@@ -5390,7 +5458,7 @@
         }
 
         .chat-widget-typing-label {
-          font-size: 12px;
+          font-size: ${fontSizes.meta};
           line-height: 16px;
           color: #6b7280;
           font-weight: 500;
@@ -5450,7 +5518,7 @@
           padding: 10px;
           border: 1px solid #e5e7eb;
           border-radius: 6px;
-          font-size: 14px;
+          font-size: ${fontSizes.body};
         }
 
         .chat-widget-form-input:focus {
@@ -5591,7 +5659,7 @@
         .chat-widget-powered-by-brand {
           font-family: ${resolvedFontFamily} !important;
           font-weight: 400;
-          font-size: 14px;
+          font-size: ${fontSizes.body};
           line-height: 16px;
           letter-spacing: 0;
         }
@@ -5713,7 +5781,7 @@
         }
 
         .chat-widget-media-chip-label {
-          font-size: 14px;
+          font-size: ${fontSizes.body};
           line-height: 20px;
           font-weight: 400;
           white-space: nowrap;
@@ -6012,7 +6080,7 @@
           .join("");
         const consentHtml = consentEnabled
           ? `<div style="margin: 8px 0 16px;">
-              <label style="display:flex; gap:8px; align-items:flex-start; font-size:12px; color:#374151;">
+              <label style="display:flex; gap:8px; align-items:flex-start; font-size:${fontSizes.meta}; color:#374151;">
                 <input type="checkbox" id="preChatConsent" required style="margin-top:2px;" />
                 <span>${escapeHtmlWidget(consentText || "I agree to be contacted.")}</span>
               </label>
@@ -6022,8 +6090,8 @@
         const formContainer = document.createElement("div");
         formContainer.className = "chat-widget-form-container";
         formContainer.innerHTML = `
-          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:16px; color:#111;">${escapeHtmlWidget(composedWelcomeMessageForm)}</div>
-          <div style="text-align:center; margin-bottom:20px; font-size:14px; color:#666;">Please fill in your details to continue.</div>
+          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:${fontSizes.title}; color:#111;">${escapeHtmlWidget(composedWelcomeMessageForm)}</div>
+          <div style="text-align:center; margin-bottom:20px; font-size:${fontSizes.body}; color:#666;">Please fill in your details to continue.</div>
           <form id="preChatForm">
             ${fieldsHtml}
             ${consentHtml}
@@ -6564,10 +6632,20 @@
 
   function loadGoogleFont(font) {
     if (!font) return;
-    const family = font.split(",")[0].replace(/['"]/g, "").trim();
-    if (["sans-serif", "serif", "system-ui"].includes(family.toLowerCase()))
-      return;
+    const resolved = resolveWidgetFont(font);
+    const family = resolved.split(",")[0].replace(/['"]/g, "").trim();
     const familyKey = family.toLowerCase();
+    if (
+      [
+        "sans-serif",
+        "serif",
+        "system-ui",
+        "system font",
+        "segoe ui",
+        "helvetica neue",
+      ].includes(familyKey)
+    )
+      return;
     if (loadedGoogleFontFamilies.has(familyKey)) return;
     loadedGoogleFontFamilies.add(familyKey);
     const link = document.createElement("link");

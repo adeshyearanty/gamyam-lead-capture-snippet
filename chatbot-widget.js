@@ -4715,6 +4715,12 @@
           z-index: 3;
           pointer-events: none;
         }
+        .chat-widget-launcher-badge.hidden {
+          display: none !important;
+        }
+        .chat-widget-launcher.open .chat-widget-launcher-badge {
+          display: none !important;
+        }
         .chat-widget-launcher.chat-widget-launcher-floating {
           border-radius: 8px;
         }

@@ -4852,8 +4852,8 @@
         }
         .chat-widget-launcher-tooltip {
           position: absolute;
-          top: 50%;
-          transform: translateY(-50%);
+          bottom: 0;
+          transform: none;
           background: #ffffff;
           color: #18181e;
           border-radius: 4px;
@@ -4861,7 +4861,11 @@
           font-size: 14px;
           line-height: 20px;
           font-weight: 500;
-          white-space: nowrap;
+          width: min(320px, calc(100vw - 24px));
+          max-width: min(320px, calc(100vw - 24px));
+          white-space: normal;
+          overflow-wrap: break-word;
+          word-break: break-word;
           box-shadow: 0px 2px 7px 0px #0000001f;
           pointer-events: none;
           z-index: 2;
@@ -4875,11 +4879,11 @@
         .chat-widget-launcher-tooltip::after {
           content: "";
           position: absolute;
-          top: 50%;
+          bottom: 10px;
           width: 10px;
           height: 10px;
           background: #ffffff;
-          transform: translateY(-50%) rotate(45deg);
+          transform: rotate(45deg);
         }
         .chat-widget-launcher-tooltip.chat-widget-launcher-tooltip-left::after {
           right: -5px;

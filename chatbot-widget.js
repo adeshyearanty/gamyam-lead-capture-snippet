@@ -4711,7 +4711,7 @@
           height: 10px;
           border-radius: 50%;
           background: #ff3b30;
-          border: 2px solid #ffffff;
+          border: 2px solid transparent;
           z-index: 3;
           pointer-events: none;
         }
@@ -5387,51 +5387,6 @@
           text-align: right;
         }
 
-        .chat-widget-tooltip {
-          position: absolute;
-          height: 26px;
-          opacity: 0;
-          pointer-events: none;
-          border-radius: 4px;
-          padding: 5px 7px;
-          background: #18181e;
-          color: #ffffff;
-          font-size: ${fontSizes.meta};
-          line-height: 16px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          white-space: nowrap;
-          box-shadow: 0px 2px 7px 0px #0000001f;
-          transition: opacity 0.15s ease;
-          z-index: 10;
-        }
-
-        .chat-widget-tooltip.visible {
-          opacity: 1;
-        }
-
-        .chat-widget-tooltip-arrow {
-          position: absolute;
-          top: -10px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 15px;
-          height: 10px;
-        }
-
-        .chat-widget-tooltip-arrow::before {
-          content: "";
-          position: absolute;
-          left: 0;
-          top: 0;
-          width: 0;
-          height: 0;
-          border-left: 7.5px solid transparent;
-          border-right: 7.5px solid transparent;
-          border-bottom: 10px solid #18181e;
-        }
-
         .chat-widget-read-receipt {
           display: inline-flex;
           align-items: center;
@@ -5567,7 +5522,7 @@
           background: #ffffff;
           border: 1px solid #D9D9D9;
           border-radius: 4px;
-          padding: 8px;
+          padding: 7px 8px;
           gap: 8px;
         }
 
@@ -5591,9 +5546,9 @@
           cursor: pointer;
           display: flex;
           border: none;
-          padding: 4px;
-          width: 28px;
-          height: 28px;
+          padding: 2px;
+          width: 24px;
+          height: 24px;
           align-items: center;
           justify-content: center;
           background: transparent;
@@ -6412,70 +6367,8 @@
     const chatWindow = shadow.getElementById("chatWindow");
     const chatBody = shadow.getElementById("chatBody");
     if (chatBody) {
-      // Create a single tooltip element inside the chat body
-      const tooltip = document.createElement("div");
-      tooltip.id = "chatMessageTooltip";
-      tooltip.className = "chat-widget-tooltip";
-      tooltip.innerHTML =
-        '<div class="chat-widget-tooltip-arrow"></div><span class="chat-widget-tooltip-text"></span>';
-      chatBody.appendChild(tooltip);
-      const tooltipTextEl = tooltip.querySelector(".chat-widget-tooltip-text");
-
-      const showMessageTooltip = (msgEl) => {
-        if (!msgEl) return;
-        const tsStr = msgEl.getAttribute("data-timestamp");
-        if (!tsStr) return;
-        const ts = Number.parseInt(tsStr, 10);
-        if (!Number.isFinite(ts)) return;
-
-        const formatted = formatTimestamp(ts, true);
-        if (!formatted) return;
-
-        tooltipTextEl.textContent = formatted;
-
-        // Temporarily show to measure width
-        tooltip.classList.add("visible");
-
-        const bodyRect = chatBody.getBoundingClientRect();
-        const msgRect = msgEl.getBoundingClientRect();
-        const tooltipRect = tooltip.getBoundingClientRect();
-
-        const centerX = msgRect.left + msgRect.width / 2;
-        let left = centerX - tooltipRect.width / 2 - bodyRect.left;
-        const minLeft = 8;
-        const maxLeft = bodyRect.width - tooltipRect.width - 8;
-        if (left < minLeft) left = minLeft;
-        if (left > maxLeft) left = maxLeft;
-
-        const top = msgRect.bottom - bodyRect.top + 8; // 8px gap below message
-
-        tooltip.style.left = `${left}px`;
-        tooltip.style.top = `${top}px`;
-      };
-
-      const hideMessageTooltip = () => {
-        tooltip.classList.remove("visible");
-      };
-
-      chatBody.addEventListener("mouseover", (e) => {
-        const target =
-          e.target instanceof Element ? e.target : e.target.parentElement;
-        if (!target) return;
-        const msgEl = target.closest(".chat-widget-message");
-        if (!msgEl || !chatBody.contains(msgEl)) {
-          hideMessageTooltip();
-          return;
-        }
-        showMessageTooltip(msgEl);
-      });
-
-      chatBody.addEventListener("mouseleave", () => {
-        hideMessageTooltip();
-      });
-
       let scrollTimeout;
       chatBody.addEventListener("scroll", () => {
-        hideMessageTooltip();
         clearTimeout(scrollTimeout);
         scrollTimeout = setTimeout(() => {
           markVisibleMessagesAsRead();

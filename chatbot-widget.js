@@ -4751,8 +4751,8 @@
           border-radius: 4px;
         }
         .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) {
-          ${launcherType === "text" ? "width: auto;" : `width: ${launcherOuterPulsePx}px;`}
-          ${launcherType === "text" ? "height: auto;" : `height: ${launcherOuterPulsePx}px;`}
+          width: ${launcherOuterPulsePx}px;
+          height: ${launcherOuterPulsePx}px;
         }
         .chat-widget-launcher.chat-widget-launcher-floating.chat-widget-launcher-pulse:not(.open),
         .chat-widget-launcher.chat-widget-launcher-text.chat-widget-launcher-pulse:not(.open) {

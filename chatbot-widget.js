@@ -203,6 +203,32 @@
     }
   }
 
+  /** Supported font families. Key = stored config value, value = full CSS font-family string. */
+  const WIDGET_FONT_FAMILIES = {
+    "default":             "'Inter', sans-serif",
+    "inter":               "'Inter', sans-serif",
+    "dm-sans":             "'DM Sans', sans-serif",
+    "dm_sans":             "'DM Sans', sans-serif",
+    "roboto":              "'Roboto', sans-serif",
+    "open-sans":           "'Open Sans', sans-serif",
+    "lato":                "'Lato', sans-serif",
+    "poppins":             "'Poppins', sans-serif",
+    "nunito":              "'Nunito', sans-serif",
+    "montserrat":          "'Montserrat', sans-serif",
+    "figtree":             "'Figtree', sans-serif",
+    "plus-jakarta-sans":   "'Plus Jakarta Sans', sans-serif",
+    "system-ui":
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "system_ui":
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  };
+
+  function resolveWidgetFont(raw) {
+    if (!raw) return WIDGET_FONT_FAMILIES["inter"];
+    const key = raw.toLowerCase().trim().replace(/\s+/g, "-").replace(/['"]/g, "");
+    return WIDGET_FONT_FAMILIES[key] || WIDGET_FONT_FAMILIES[raw] || raw;
+  }
+
   const defaults = {
     tenantId: "",
     apiKey: "",
@@ -212,7 +238,7 @@
       gradientColor1: "#912FF5",
       gradientColor2: "#EF32D4",
       gradientColor3: "#7DBCFE",
-      fontFamily: "Inter, sans-serif",
+      fontFamily: "inter",
       iconStyle: "rounded",
       logoUrl: "",
       headerLogoUrl: "",
@@ -1454,7 +1480,7 @@
         return;
       }
 
-      loadGoogleFont(settings.appearance.fontFamily);
+      loadGoogleFont(resolvedFontFamily);
       loadGoogleFont("DM Sans");
 
       resolvedHeaderLogoUrl = "";
@@ -3122,7 +3148,7 @@
       chip.style.border = "1px solid #EFEFEF";
       chip.style.fontSize = "14px";
       chip.style.fontFamily =
-        settings.appearance.fontFamily || "DM Sans, sans-serif";
+        resolvedFontFamily || "DM Sans, sans-serif";
       chip.style.fontWeight = "400";
       chip.style.lineHeight = "20px";
       chip.style.color = "#18181E";
@@ -4493,10 +4519,12 @@
       ? `top: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`
       : `bottom: ${marginV + launcherLayoutPx + windowLauncherGapPx}px;`;
 
+    const resolvedFontFamily = resolveWidgetFont(settings.appearance.fontFamily);
+
     const fontSizeMap = {
-      small: { body: "14px", meta: "12px", input: "14px" },
-      medium: { body: "15px", meta: "13px", input: "15px" },
-      large: { body: "16px", meta: "14px", input: "16px" },
+      small:  { body: "14px", meta: "12px", input: "14px", title: "16px" },
+      medium: { body: "15px", meta: "13px", input: "15px", title: "17px" },
+      large:  { body: "16px", meta: "14px", input: "16px", title: "18px" },
     };
     const fontSizes =
       fontSizeMap[preview.fontSize || "small"] || fontSizeMap.small;
@@ -4531,7 +4559,7 @@
     // Updated CSS to match the provided JSX UI exactly
     styleTag.textContent = `
         :host {
-          font-family: ${settings.appearance.fontFamily} !important;
+          font-family: ${resolvedFontFamily} !important;
         }
         
         /* Note: Container set to fixed to ensure it floats above page content as a widget */
@@ -4539,7 +4567,7 @@
           position: fixed; z-index: 2147483647; 
           top: auto; bottom: auto; left: auto; right: auto;
           width: 0; height: 0;
-          font-family: ${settings.appearance.fontFamily};
+          font-family: ${resolvedFontFamily};
           display: block;
         }
 
@@ -4557,7 +4585,7 @@
         .chat-widget-input,
         .chat-widget-form-input,
         .chat-widget-form-btn {
-          font-family: ${settings.appearance.fontFamily} !important;
+          font-family: ${resolvedFontFamily} !important;
           box-sizing: border-box;
         }
 
@@ -4913,7 +4941,7 @@
           left: 0;
           right: 0;
           text-align: center;
-          font-family: ${settings.appearance.fontFamily} !important;
+          font-family: ${resolvedFontFamily} !important;
           font-size: 14px;
           line-height: 16px;
           letter-spacing: 0;
@@ -5028,7 +5056,7 @@
           font-size: 12px;
           line-height: 16px;
           text-align: center;
-          font-family: ${settings.appearance.fontFamily} !important;
+          font-family: ${resolvedFontFamily} !important;
           max-width: 92%;
         }
 
@@ -5041,7 +5069,7 @@
         .chat-widget-message.bot .chat-widget-message-content {
           background: ${agentMessageColor};
           color: #18181e;
-          font-family: ${settings.appearance.fontFamily} !important;
+          font-family: ${resolvedFontFamily} !important;
           font-size: 14px;
           line-height: 20px;
           letter-spacing: 0;
@@ -5058,7 +5086,7 @@
         }
 
         .chat-widget-message-label {
-          font-family: ${settings.appearance.fontFamily} !important;
+          font-family: ${resolvedFontFamily} !important;
           font-size: 12px;
           line-height: 16px;
           letter-spacing: 0;
@@ -5202,7 +5230,7 @@
           line-height: 16px;
           color: #6b7280;
           font-weight: 500;
-          font-family: ${settings.appearance.fontFamily} !important;
+          font-family: ${resolvedFontFamily} !important;
         }
 
         .chat-widget-typing-label.hidden {
@@ -5397,7 +5425,7 @@
         }
         .chat-widget-powered-by-label,
         .chat-widget-powered-by-brand {
-          font-family: "DM Sans", sans-serif !important;
+          font-family: ${resolvedFontFamily} !important;
           font-weight: 400;
           font-size: 14px;
           line-height: 16px;

@@ -703,6 +703,8 @@
 
   /** After live handoff, virtual agent display name from WebSocket; cleared on new/ended session. */
   let liveAgentDisplayName = null;
+  /** Launcher badge for unseen inbound events while chat is closed. */
+  let launcherEventBadgeVisible = false;
 
   /**
    * Chat window title from appearance (embed / API), not the live agent name.
@@ -734,6 +736,15 @@
     if (!t) return;
     liveAgentDisplayName = t;
     syncAgentTitleUi();
+  }
+
+  function setLauncherEventBadgeVisible(visible) {
+    launcherEventBadgeVisible = Boolean(visible);
+    const host = document.getElementById("unibox-root");
+    const badge = host?.shadowRoot?.getElementById("launcherEventBadge");
+    if (!badge) return;
+    if (launcherEventBadgeVisible) badge.classList.remove("hidden");
+    else badge.classList.add("hidden");
   }
 
   function extractVirtualAgentDisplayName(evt) {
@@ -956,18 +967,6 @@
     if (existingHost) {
       existingHost.remove();
     }
-  }
-
-  // --- 5. DEPENDENCY LOADER ---
-  function loadSocketScript(callback) {
-    if (window.io) {
-      callback();
-      return;
-    }
-    const script = document.createElement("script");
-    script.src = "https://cdn.socket.io/4.7.4/socket.io.min.js";
-    script.onload = callback;
-    document.head.appendChild(script);
   }
 
   // --- 6. FETCH CONFIG FROM API ---
@@ -1551,15 +1550,14 @@
         console.warn("UniBox: Running in TEST MODE.");
       }
 
-      loadSocketScript(() => {
-        if (userId) {
-          const hasSubmittedForm =
-            sessionStorage.getItem(SESSION_KEY_FORM) === "true";
-          if (!settings.preChatForm.enabled || hasSubmittedForm) {
-            restoreExistingConversation();
-          }
+      // Widget uses native WebSocket — no Socket.IO dependency needed.
+      if (userId) {
+        const hasSubmittedForm =
+          sessionStorage.getItem(SESSION_KEY_FORM) === "true";
+        if (!settings.preChatForm.enabled || hasSubmittedForm) {
+          restoreExistingConversation();
         }
-      });
+      }
     } catch (error) {
       console.error("UniBox: Initialization failed:", error);
       removeWidgetRoot();
@@ -2108,18 +2106,26 @@
 
         // Only clean up if this is still the active socket
         if (socket === ws) {
+          // Capture conversationId NOW before any delayed session_status_change
+          // event can clear the module-level variable, which would otherwise
+          // silently prevent the reconnect attempt below.
+          const convIdAtDisconnect = conversationId;
+
           socket = null;
           wsToken = null;
           wsConnectPromise = null;
           subscribedConversationId = null; // Reset subscription state on disconnect
           refreshHeaderPresence();
 
-          // Attempt to reconnect after 3 seconds
+          // Attempt to reconnect after 3 seconds.
+          // Use convIdAtDisconnect so a race with session_status_change cannot
+          // suppress the reconnect. After connecting, re-read conversationId in
+          // case it was updated (new session) during the 3-second window.
           setTimeout(() => {
-            if (conversationId) {
+            const targetConvId = conversationId || convIdAtDisconnect;
+            if (targetConvId) {
               connectSocket().then(() => {
-                // Re-subscribe after reconnecting
-                subscribeToConversation(conversationId);
+                subscribeToConversation(conversationId || convIdAtDisconnect);
               });
             }
           }, 3000);
@@ -2269,6 +2275,10 @@
         }
 
         if (evt.isTyping === false || evt.typing === false) {
+          // Clear the typing indicator — a presence event with isTyping:false means
+          // the peer stopped typing. Route through the shared handler so all cleanup
+          // (optimistic timer, agentTypingTimeout, showTypingIndicator) is applied.
+          handleTypingIndicator(evt);
           break;
         }
 
@@ -3437,24 +3447,8 @@
       }
 
       // Send via WebSocket ONLY - no HTTP fallback for live chat
-      const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      // Optimistically add message to UI immediately
-      appendMessageToUI(
-        text,
-        "user",
-        messageId,
-        new Date(),
-        "sending",
-        null,
-        false,
-        null,
-        "text",
-        null,
-      );
-
-      sortMessagesByTimestamp();
-
+      // NOTE: Optimistic UI append is handled by the caller (handleSend) before
+      // invoking this function, so we do NOT call appendMessageToUI here.
       const wsSent = wsSend({
         action: "sendMessage",
         conversationId: conversationId,
@@ -3474,7 +3468,7 @@
         console.log("UniBox: Message queued for WebSocket delivery");
       }
 
-      return { success: true, messageId };
+      return { success: true };
     } catch (error) {
       console.error("UniBox: Send Error", error);
       const host = document.getElementById("unibox-root");
@@ -4028,6 +4022,9 @@
       const hostRoot = document.getElementById("unibox-root");
       const chatWindowEl = hostRoot?.shadowRoot?.getElementById("chatWindow");
       const isOpen = Boolean(chatWindowEl?.classList.contains("open"));
+      if (!isOpen && msgAgeMs <= 15000) {
+        setLauncherEventBadgeVisible(true);
+      }
       const soundCfg = getSoundNotificationConfig();
       if (soundCfg.newMessageSoundEnabled && !isOpen) {
         playSystemSound(soundCfg.soundType);
@@ -4226,6 +4223,11 @@
     if (!host || !host.shadowRoot) return;
     const body = host.shadowRoot.getElementById("chatBody");
     if (!body) return;
+    const chatWindowEl = host.shadowRoot.getElementById("chatWindow");
+    const isOpen = Boolean(chatWindowEl?.classList.contains("open"));
+    if (!isOpen) {
+      setLauncherEventBadgeVisible(true);
+    }
 
     const messageElements = Array.from(body.children).filter((child) => {
       return child.hasAttribute("data-timestamp");
@@ -4294,6 +4296,8 @@
       if (!id || typeof id !== "string") return false;
       // Exclude client-side generated IDs
       if (id.startsWith("static_welcome_")) return false;
+      if (id.startsWith("proactive_")) return false;   // client-only proactive messages
+      if (id.startsWith("msg_")) return false;          // client-generated optimistic IDs
       if (id.startsWith("guest_")) return false;
       if (id.startsWith("user_")) return false;
       if (id.startsWith("temp_")) return false;
@@ -4626,6 +4630,18 @@
           transition: transform 0.2s, width 0.2s, height 0.2s;
           overflow: visible;
           z-index: ${zLauncher};
+        }
+        .chat-widget-launcher-badge {
+          position: absolute;
+          top: -2px;
+          right: -2px;
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: #ff3b30;
+          border: 2px solid #ffffff;
+          z-index: 3;
+          pointer-events: none;
         }
         .chat-widget-launcher.chat-widget-launcher-floating {
           border-radius: 8px;
@@ -5835,7 +5851,7 @@
             : "";
 
     container.innerHTML = `
-      <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn">${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div>${launcherTooltipHtml}${launcherTextHoverTooltipHtml}</div>
+      <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn"><span id="launcherEventBadge" class="chat-widget-launcher-badge hidden" aria-hidden="true"></span>${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div>${launcherTooltipHtml}${launcherTextHoverTooltipHtml}</div>
       <div class="chat-widget-window" id="chatWindow">
         <div class="chat-widget-header">
           <div class="chat-widget-header-content">
@@ -6121,6 +6137,9 @@
       else windowEl.classList.remove("open");
 
       updateLauncherIcon(nextState);
+      if (nextState) {
+        setLauncherEventBadgeVisible(false);
+      }
       refreshHeaderPresence();
 
       if (settings.behavior.stickyPlacement && advanced.persistentChat) {
@@ -6196,6 +6215,7 @@
     });
     msgInput.addEventListener("keypress", (e) => {
       if (e.key === "Enter") {
+        e.preventDefault(); // prevent accidental form submission if ever wrapped in a <form>
         if (isTyping) {
           isTyping = false;
           emitTypingStatus(false);

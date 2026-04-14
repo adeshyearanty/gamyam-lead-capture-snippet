@@ -4771,16 +4771,24 @@
           position: absolute;
           inset: 0;
           border-radius: inherit;
-          background: ${pulseRingGradientCss};
-          padding: ${pulseRingStrokePx}px;
-          -webkit-mask:
-            linear-gradient(#000 0 0) content-box,
-            linear-gradient(#000 0 0);
-          -webkit-mask-composite: xor;
-          mask-composite: exclude;
-          animation: launcherPulseRingRotate 4s linear infinite;
+          overflow: hidden;
           z-index: 0;
           pointer-events: none;
+        }
+        .chat-widget-launcher-pulse-ring::before {
+          content: "";
+          position: absolute;
+          inset: -100%;
+          background: ${pulseRingGradientCss};
+          animation: launcherPulseRingRotate 4s linear infinite;
+        }
+        .chat-widget-launcher-pulse-ring::after {
+          content: "";
+          position: absolute;
+          inset: ${pulseRingStrokePx}px;
+          border-radius: inherit;
+          background: transparent;
+          z-index: 1;
         }
         .chat-widget-launcher.open .chat-widget-launcher-pulse-ring {
           display: none;
@@ -4794,7 +4802,7 @@
           align-items: center;
           justify-content: center;
           overflow: hidden;
-          z-index: 1;
+          z-index: 2;
           padding: ${launcherPaddingPx}px;
         }
         .chat-widget-launcher.chat-widget-launcher-text
@@ -5011,14 +5019,8 @@
         .chat-widget-launcher-bounce {
           animation: launcherBounce 1.6s infinite;
         }
-        @property --pulse-angle {
-          syntax: "<angle>";
-          inherits: false;
-          initial-value: 0deg;
-        }
         @keyframes launcherPulseRingRotate {
-          from { --pulse-angle: 0deg; }
-          to { --pulse-angle: 360deg; }
+          to { transform: rotate(360deg); }
         }
         @keyframes launcherBounce {
           0%, 20%, 50%, 80%, 100% { transform: translateY(0); }

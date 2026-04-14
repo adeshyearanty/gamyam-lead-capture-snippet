@@ -4783,11 +4783,19 @@
         .chat-widget-launcher.open.chat-widget-launcher-bounce {
           width: ${launcherFacePx}px !important;
           height: ${launcherFacePx}px !important;
+          min-width: ${launcherFacePx}px !important;
+          min-height: ${launcherFacePx}px !important;
+          max-width: ${launcherFacePx}px !important;
+          max-height: ${launcherFacePx}px !important;
           padding: 0 !important;
           border-radius: 50% !important;
           animation: none !important;
           transform: none !important;
           transition: none !important;
+        }
+        .chat-widget-launcher.chat-widget-launcher-text.open {
+          min-width: ${launcherFacePx}px !important;
+          min-height: ${launcherFacePx}px !important;
         }
 
         .chat-widget-launcher.open .chat-widget-launcher-inner {
@@ -4936,7 +4944,7 @@
           display: flex;
           flex-direction: column;
           background-color: ${backgroundColor};
-          border-radius: ${windowRadius};
+          border-radius: ${windowRadius} ${windowRadius} 0 0;
           overflow: hidden;
         }
 

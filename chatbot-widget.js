@@ -343,10 +343,14 @@
       {};
 
     const hideOnPages = parsePathRuleList(
-      advanced.hideOnPages ?? preview.hideOnPages ?? preview.hideChatOnPages,
+      advanced.hideOnPages ??
+        advanced.hideChatOnPages ??
+        preview.hideOnPages ??
+        preview.hideChatOnPages,
     );
     const showOnlyOnPages = parsePathRuleList(
       advanced.showOnlyOnPages ??
+        advanced.showChatOnPagesOnly ??
         preview.showOnlyOnPages ??
         preview.showChatOnPagesOnly,
     );
@@ -1243,8 +1247,22 @@
         visitorTrackingEnabled: Boolean(
           windowUiAdvanced.visitorTrackingEnabled ?? true,
         ),
-        hideOnPages: windowUiAdvanced.hideOnPages || [],
-        showOnlyOnPages: windowUiAdvanced.showOnlyOnPages || [],
+        hideOnPages:
+          windowUiAdvanced.hideOnPages ||
+          apiConfig.advancedSettings?.hideOnPages ||
+          [],
+        showOnlyOnPages:
+          windowUiAdvanced.showOnlyOnPages ||
+          apiConfig.advancedSettings?.showOnlyOnPages ||
+          [],
+        hideChatOnPages:
+          windowUiAdvanced.hideChatOnPages ||
+          apiConfig.advancedSettings?.hideChatOnPages ||
+          "",
+        showChatOnPagesOnly:
+          windowUiAdvanced.showChatOnPagesOnly ||
+          apiConfig.advancedSettings?.showChatOnPagesOnly ||
+          "",
         // Installation
         allowedDomains: windowUiInstallation.allowedDomains || [],
       };
@@ -4429,7 +4447,7 @@
       preview.secondaryColor || settings.appearance.secondaryColor || c2;
     const chromeGradientCss = `linear-gradient(272.16deg, ${primaryColor} 0.45%, ${secondaryColor} 99.8%)`;
     const accentColor = primaryColor;
-    const launcherBg = "#FFFFFF";
+    const launcherBg = primaryColor;
     const poweredByBrandGradientCss =
       "linear-gradient(272.16deg, #EF32D4 0.45%, #912FF5 45.12%, #7DBCFE 99.8%)";
 
@@ -4446,10 +4464,15 @@
           : "";
 
     const bubbleSizeMap = { small: 48, medium: 60, large: 64 };
+    const launcherPaddingMap = { small: 6, medium: 8, large: 10 };
     const launcherFacePx =
       bubbleSizeMap[
         preview.bubbleSize || settings.appearance.bubbleSize || "small"
       ] || bubbleSizeMap.small;
+    const launcherPaddingPx =
+      launcherPaddingMap[
+        preview.bubbleSize || settings.appearance.bubbleSize || "small"
+      ] || launcherPaddingMap.small;
     const pulseRingThicknessPx = 1;
     const launcherOuterPulsePx = launcherFacePx + 2 * pulseRingThicknessPx;
     const launcherLayoutPx =
@@ -4555,35 +4578,46 @@
           z-index: ${zLauncher};
         }
         .chat-widget-launcher.chat-widget-launcher-floating {
-          border-radius: 4px;
+          border-radius: 8px;
         }
         .chat-widget-launcher.chat-widget-launcher-custom {
-          border-radius: 10px;
+          border-radius: 4px;
         }
         .chat-widget-launcher.chat-widget-launcher-text {
           width: auto;
           min-width: 140px;
-          height: 44px;
-          border-radius: 999px;
-          padding: 0 16px;
+          min-height: 44px;
+          height: auto;
+          border-radius: 8px;
+          padding: ${launcherPaddingPx}px;
           background: ${launcherBg};
           box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
         }
         .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-inner {
-          border-radius: 4px;
+          border-radius: 8px;
         }
         .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-inner {
-          border-radius: 10px;
-        }
-        .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-pulse-ring {
           border-radius: 4px;
         }
+        .chat-widget-launcher.chat-widget-launcher-floating .chat-widget-launcher-pulse-ring {
+          border-radius: 8px;
+        }
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-pulse-ring {
-          border-radius: 999px;
+          border-radius: 8px;
+        }
+        .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-pulse-ring {
+          border-radius: 4px;
         }
         .chat-widget-launcher.chat-widget-launcher-pulse:not(.open) {
-          width: ${launcherOuterPulsePx}px;
-          height: ${launcherOuterPulsePx}px;
+          ${
+            launcherType === "text"
+              ? "width: auto; height: auto;"
+              : `width: ${launcherOuterPulsePx}px; height: ${launcherOuterPulsePx}px;`
+          }
+        }
+        .chat-widget-launcher.chat-widget-launcher-text.chat-widget-launcher-pulse:not(.open) {
+          width: auto;
+          height: auto;
         }
         .chat-widget-launcher-pulse-ring {
           position: absolute;
@@ -4608,13 +4642,14 @@
           justify-content: center;
           overflow: hidden;
           z-index: 1;
+          padding: ${launcherPaddingPx}px;
         }
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner {
           position: static;
           inset: auto;
           width: auto;
           height: 100%;
-          border-radius: 999px;
+          border-radius: 8px;
           padding: 0;
           gap: 8px;
         }
@@ -4640,6 +4675,7 @@
           height: 108%;
           max-width: none;
           max-height: none;
+          border-radius: 50%;
         }
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner svg,
         .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner img {
@@ -4647,12 +4683,60 @@
           height: 20px;
           flex-shrink: 0;
         }
+        .chat-widget-launcher.chat-widget-launcher-text .chat-widget-launcher-inner > img {
+          border-radius: 4px;
+          width: 20px;
+          height: 20px;
+          max-width: 20px;
+          max-height: 20px;
+          object-fit: contain;
+        }
+        .chat-widget-launcher.chat-widget-launcher-custom .chat-widget-launcher-inner > img {
+          border-radius: 4px;
+        }
         .chat-widget-launcher-text-label {
           font-size: 14px;
           line-height: 20px;
           font-weight: 600;
-          color: #18181e;
+          color: #ffffff;
           white-space: nowrap;
+        }
+        .chat-widget-launcher-tooltip {
+          position: absolute;
+          top: 50%;
+          transform: translateY(-50%);
+          background: #ffffff;
+          color: #18181e;
+          border-radius: 4px;
+          padding: 8px 16px;
+          font-size: 14px;
+          line-height: 20px;
+          font-weight: 500;
+          white-space: nowrap;
+          box-shadow: 0px 2px 7px 0px #0000001f;
+          pointer-events: none;
+          z-index: 2;
+        }
+        .chat-widget-launcher-tooltip.chat-widget-launcher-tooltip-left {
+          right: calc(100% + 12px);
+        }
+        .chat-widget-launcher-tooltip.chat-widget-launcher-tooltip-right {
+          left: calc(100% + 12px);
+        }
+        .chat-widget-launcher-tooltip::after {
+          content: "";
+          position: absolute;
+          top: 50%;
+          width: 10px;
+          height: 10px;
+          background: #ffffff;
+          transform: translateY(-50%) rotate(45deg);
+        }
+        .chat-widget-launcher-tooltip.chat-widget-launcher-tooltip-left::after {
+          right: -5px;
+        }
+        .chat-widget-launcher-tooltip.chat-widget-launcher-tooltip-right::after {
+          left: -5px;
         }
         .chat-widget-launcher.open .chat-widget-launcher-close-icon {
           width: 58%;
@@ -4661,6 +4745,9 @@
           min-height: 18px;
           max-width: 32px;
           max-height: 32px;
+        }
+        .chat-widget-launcher.open .chat-widget-launcher-tooltip {
+          display: none;
         }
 
         .chat-widget-launcher:hover {
@@ -4673,6 +4760,7 @@
         }
         .chat-widget-launcher.chat-widget-launcher-text.open .chat-widget-launcher-inner {
           position: absolute;
+          inset: 0;
           width: auto;
           height: auto;
         }
@@ -5481,37 +5569,14 @@
         }
     `;
 
-    const chatIcon = `<svg class="chat-widget-launcher-default-icon" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="32" height="32" rx="16" transform="matrix(-1 0 0 1 32 0)" fill="white"/>
-<path fill-rule="evenodd" clip-rule="evenodd" d="M16.0005 2.5625C23.4233 2.5625 29.4405 8.57979 29.4405 16.0025C29.4405 23.4252 23.4233 29.4425 16.0005 29.4425C8.57784 29.4425 2.56055 23.4252 2.56055 16.0025C2.56055 8.57979 8.57784 2.5625 16.0005 2.5625ZM16.0005 3.60977C9.15623 3.60977 3.60782 9.15819 3.60782 16.0025C3.60782 22.8468 9.15623 28.3952 16.0005 28.3952C22.8449 28.3952 28.3933 22.8468 28.3933 16.0025C28.3933 9.15819 22.8449 3.60977 16.0005 3.60977Z" fill="url(#paint0_linear_3454_252289)"/>
-<path d="M24.6986 11.5066C24.5218 10.9089 24.2263 10.4429 23.8319 10.1327C23.4154 9.80523 22.9049 9.65744 22.3206 9.71547C21.7937 9.76761 21.2089 9.99373 20.5868 10.4152L20.5573 10.4363C20.5511 10.441 17.8236 12.7353 17.8236 12.7353L18.5602 13.5205C18.5602 13.5205 21.0756 11.3966 21.2081 11.2935C21.6673 10.9851 22.0769 10.8219 22.4265 10.7872C22.7205 10.7582 22.9702 10.8269 23.1664 10.9811C23.3845 11.1525 23.5548 11.4338 23.6664 11.8107C23.8519 12.4379 23.8695 13.2938 23.6793 14.3285L23.6772 14.3413C23.6745 14.3579 23.0611 18.2028 22.8752 18.9969C22.6901 19.7877 22.4053 20.3927 22.0206 20.7699C21.821 20.9654 21.5915 21.0993 21.3319 21.164C21.0581 21.2324 20.742 21.2278 20.383 21.1436C19.329 20.8963 17.9725 19.9953 16.3004 18.2859L16.2898 18.2753L15.8948 17.8965L15.1465 18.6702L15.5418 19.05C17.3621 20.909 18.8947 21.9023 20.1382 22.194C20.6666 22.318 21.1503 22.3197 21.5887 22.2103C22.0413 22.0971 22.4364 21.8691 22.7748 21.5374C23.3106 21.0123 23.6929 20.23 23.9245 19.2412C24.1077 18.4592 24.707 14.711 24.7377 14.5182C24.959 13.3127 24.9295 12.2869 24.6986 11.5067V11.5066Z" fill="url(#paint1_linear_3454_252289)"/>
-<path d="M13.6479 18.4093L14.2517 17.8029L15.0115 17.0405L16.9154 15.1311L17.1276 15.343L17.5651 13.7132L15.9324 14.1499L16.1535 14.3706L13.4742 17.0585L12.8921 17.6429L12.1719 18.3656L12.0675 18.4706L12.0611 18.477C11.4621 19.0968 10.8194 19.6911 10.2697 19.8292C9.86458 19.931 9.45724 19.6888 9.08324 18.7817C9.00007 18.4673 8.4387 16.3472 8.27409 15.7593C8.10887 15.103 8.12019 14.6058 8.2629 14.2716C8.34286 14.0844 8.46798 13.9532 8.62607 13.8814C8.80594 13.7993 9.04313 13.7816 9.32265 13.8313C9.95673 13.9444 10.7398 14.3931 11.5464 15.2108L11.5569 15.2214L12.5811 16.2023L13.3918 15.4877L12.3043 14.4465C11.3339 13.4657 10.3449 12.9186 9.5083 12.7696C9.01557 12.682 8.56247 12.7289 8.17875 12.9037C7.7735 13.0884 7.46027 13.4065 7.27093 13.8504C7.03915 14.3931 7.00151 15.1242 7.22726 16.0206L7.23144 16.0353C7.41143 16.6754 8.04945 19.0883 8.05117 19.0953L8.0615 19.1341L8.07245 19.1605C8.71231 20.7359 9.5842 21.1126 10.5314 20.8745C11.3379 20.6716 12.1259 19.9595 12.838 19.223L12.9219 19.1385L13.6481 18.4097L13.6479 18.4093Z" fill="url(#paint2_linear_3454_252289)"/>
-<path d="M13.6514 18.4178L14.2546 17.8121L15.0136 17.0504L16.9153 15.143L17.1273 15.3546L17.5643 13.7266L15.9334 14.1628L16.1543 14.3833L13.4779 17.0684L12.8965 17.6522L12.1771 18.3742L12.0728 18.4791L12.0664 18.4854C11.468 19.1046 10.8244 19.6918 10.2769 19.8362C10.156 19.8681 10.0035 19.8724 9.84375 19.7988C9.84375 19.7988 9.26947 20.7471 9.31839 20.774C9.66642 20.9653 10.1114 20.9876 10.5381 20.8802C11.3438 20.6775 12.1309 19.9661 12.8422 19.2305L12.926 19.1461L13.6514 18.418V18.4178Z" fill="url(#paint3_linear_3454_252289)"/>
-<defs>
-<linearGradient id="paint0_linear_3454_252289" x1="29.4407" y1="26.0825" x2="1.76989" y2="25.0397" gradientUnits="userSpaceOnUse">
-<stop stop-color="#EF32D4"/>
-<stop offset="0.449646" stop-color="#912FF5"/>
-<stop offset="1" stop-color="#7DBCFE"/>
-</linearGradient>
-<linearGradient id="paint1_linear_3454_252289" x1="7.84806" y1="19.7277" x2="24.6921" y2="15.2184" gradientUnits="userSpaceOnUse">
-<stop stop-color="#7DBCFE"/>
-<stop offset="0.6" stop-color="#912FF5"/>
-<stop offset="1" stop-color="#EF32D4"/>
-</linearGradient>
-<linearGradient id="paint2_linear_3454_252289" x1="7.58231" y1="17.3497" x2="27.1331" y2="12.1016" gradientUnits="userSpaceOnUse">
-<stop stop-color="#7DBCFE"/>
-<stop offset="0.34" stop-color="#912FF5"/>
-<stop offset="1" stop-color="#EF32D4"/>
-</linearGradient>
-<linearGradient id="paint3_linear_3454_252289" x1="8.76488" y1="18.7173" x2="26.8533" y2="13.8621" gradientUnits="userSpaceOnUse">
-<stop stop-color="#21C8FF" stop-opacity="0"/>
-<stop offset="0.09" stop-color="#21C8FF" stop-opacity="0.71"/>
-<stop offset="0.14" stop-color="#21C8FF"/>
-</linearGradient>
-</defs>
+    const chatIcon = `<svg class="chat-widget-launcher-default-icon" width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<path d="M4 10C4 8.93913 4.42143 7.92172 5.17157 7.17157C5.92172 6.42143 6.93913 6 8 6H22C23.0609 6 24.0783 6.42143 24.8284 7.17157C25.5786 7.92172 26 8.93913 26 10V18C26 19.0609 25.5786 20.0783 24.8284 20.8284C24.0783 21.5786 23.0609 22 22 22H18L12 28V22H8C6.93913 22 5.92172 21.5786 5.17157 20.8284C4.42143 20.0783 4 19.0609 4 18V10Z" fill="white"/>
+<path d="M30 14V18C30 20.1217 29.1572 22.1566 27.6569 23.6569C26.1566 25.1571 24.1218 26 22 26H19.656L16.124 29.534C16.684 29.832 17.322 30 18 30H22L28 36V30H32C33.0609 30 34.0783 29.5786 34.8284 28.8284C35.5786 28.0783 36 27.0609 36 26V18C36 16.9391 35.5786 15.9217 34.8284 15.1716C34.0783 14.4214 33.0609 14 32 14H30Z" fill="white"/>
 </svg>`;
 
-    const messageBubbleIcon = `<svg class="chat-widget-launcher-default-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.3-3.7a8.5 8.5 0 0 1-1.3-4.8 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 3.8.9 8.5 8.5 0 0 1 4.7 7.6Z" stroke="#18181E" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 10.5h5M8.5 13.5h3" stroke="#18181E" stroke-width="1.35" stroke-linecap="round"/></svg>`;
+    const messageBubbleIcon = `<svg class="chat-widget-launcher-default-icon" width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<path d="M5 25C5 25.8841 5.35119 26.7319 5.97631 27.357C6.60143 27.9821 7.44928 28.3333 8.33333 28.3333H28.3333L35 35V8.33333C35 7.44928 34.6488 6.60143 34.0237 5.97631C33.3986 5.35119 32.5507 5 31.6667 5H8.33333C7.44928 5 6.60143 5.35119 5.97631 5.97631C5.35119 6.60143 5 7.44928 5 8.33333V25Z" stroke="white" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
 
     const closeIcon = `<svg class="chat-widget-launcher-close-icon" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M24 8L8 24" stroke="white" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8L24 24" stroke="white" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
@@ -5586,6 +5651,14 @@
       launcherType === "text"
         ? `${launcherIconHtml}<span class="chat-widget-launcher-text-label">${escapeHtmlWidget(launcherText)}</span>`
         : launcherIconHtml;
+    const launcherTooltipHtml =
+      launcherType !== "text" && launcherText
+        ? `<div class="chat-widget-launcher-tooltip ${
+            isRight
+              ? "chat-widget-launcher-tooltip-left"
+              : "chat-widget-launcher-tooltip-right"
+          }">${escapeHtmlWidget(launcherText)}</div>`
+        : "";
 
     const pulseRingHtml =
       bubbleAnimation === "pulse"
@@ -5602,7 +5675,7 @@
             : "";
 
     container.innerHTML = `
-      <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn">${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div></div>
+      <div class="chat-widget-launcher ${launcherAnimClass}${launcherShapeClass}" id="launcherBtn">${pulseRingHtml}<div class="chat-widget-launcher-inner" id="launcherInner">${launcherContent}</div>${launcherTooltipHtml}</div>
       <div class="chat-widget-window" id="chatWindow">
         <div class="chat-widget-header">
           <div class="chat-widget-header-content">

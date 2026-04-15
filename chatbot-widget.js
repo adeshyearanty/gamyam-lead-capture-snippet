@@ -2439,6 +2439,17 @@
           : existingMessage.readByUs;
       existingMessage.readByUsAt =
         message.readByUsAt || existingMessage.readByUsAt;
+      existingMessage.timestamp = incomingTimestampMs;
+      existingMessage.element.setAttribute(
+        "data-timestamp",
+        String(incomingTimestampMs),
+      );
+      const timeEl =
+        existingMessage.element.querySelector(".chat-widget-message-time");
+      if (timeEl) {
+        timeEl.textContent = formatTimestamp(incomingTimestampMs, true);
+      }
+      sortMessagesByTimestamp();
       return;
     }
 
@@ -2468,14 +2479,25 @@
             : optimisticMessage.readByUs;
         optimisticMessage.readByUsAt =
           message.readByUsAt || optimisticMessage.readByUsAt;
+        optimisticMessage.timestamp = incomingTimestampMs;
         optimisticMessage.element.setAttribute(
           "data-message-id",
           message.messageId,
         );
+        optimisticMessage.element.setAttribute(
+          "data-timestamp",
+          String(incomingTimestampMs),
+        );
+        const timeEl =
+          optimisticMessage.element.querySelector(".chat-widget-message-time");
+        if (timeEl) {
+          timeEl.textContent = formatTimestamp(incomingTimestampMs, true);
+        }
         if (oldId && oldId !== message.messageId) {
           messages.delete(oldId);
         }
         messages.set(message.messageId, optimisticMessage);
+        sortMessagesByTimestamp();
         return;
       }
     }

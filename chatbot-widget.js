@@ -2387,8 +2387,41 @@
   /**
    * Handle incoming message from WebSocket
    */
+  function toTimestampMs(value) {
+    if (value == null) return null;
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value < 1e12 ? value * 1000 : value;
+    }
+
+    if (typeof value === "string") {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) {
+        return numeric < 1e12 ? numeric * 1000 : numeric;
+      }
+      const parsed = Date.parse(value);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+
+    return null;
+  }
+
+  function getCanonicalMessageTimestamp(message) {
+    return (
+      toTimestampMs(message?.timestamp) ??
+      toTimestampMs(message?.timestamp_iso) ??
+      toTimestampMs(message?.timestamp_meta) ??
+      toTimestampMs(message?.createdAt) ??
+      toTimestampMs(message?.created_at) ??
+      toTimestampMs(message?.sentAt) ??
+      toTimestampMs(message?.sent_at)
+    );
+  }
+
   function handleIncomingMessage(message) {
     const isUserMessage = message.sender === "user";
+    const incomingTimestampMs =
+      getCanonicalMessageTimestamp(message) ?? Date.now();
 
     const existingMessage =
       messages.get(message.messageId) ||
@@ -2412,11 +2445,14 @@
     if (isUserMessage) {
       const optimisticMessage = Array.from(messages.values()).find((msg) => {
         if (!msg.element || msg.sender !== "user") return false;
+        const localTimestampMs =
+          getCanonicalMessageTimestamp(msg) ??
+          toTimestampMs(msg.timestamp) ??
+          Date.now();
         // RELAXED TIMING: Allow up to 30 seconds diff to account for network/server delay
         return (
           msg.text === message.text &&
-          Math.abs(new Date(msg.timestamp) - new Date(message.timestamp)) <
-            30000
+          Math.abs(localTimestampMs - incomingTimestampMs) < 30000
         );
       });
 
@@ -2467,7 +2503,7 @@
       normalizedTextValue,
       message.sender,
       message.messageId,
-      message.timestamp,
+      incomingTimestampMs,
       message.status,
       message.readAt,
       message.readByUs,

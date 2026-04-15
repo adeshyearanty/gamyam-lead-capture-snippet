@@ -5011,8 +5011,18 @@
         .chat-widget-launcher-bounce {
           animation: launcherBounce 1.6s infinite;
         }
+        @property --pulse-angle {
+          syntax: "<angle>";
+          inherits: false;
+          initial-value: 0deg;
+        }
         @keyframes launcherPulseRingRotate {
-          to { transform: rotate(360deg); }
+          from {
+            --pulse-angle: 0deg;
+          }
+          to {
+            --pulse-angle: 360deg;
+          }
         }
         @keyframes launcherBounce {
           0%, 20%, 50%, 80%, 100% { transform: translateY(0); }

@@ -4518,14 +4518,6 @@
       String(rawC3).trim().toLowerCase() === "white"
         ? "#7DBCFE"
         : rawC3;
-    const pulseRingGradientCss = `conic-gradient(
-      from var(--pulse-angle, 0deg),
-      #7DBCFE 0%,
-      #912FF5 35%,
-      #EF32D4 50%,
-      #912FF5 65%,
-      #7DBCFE 100%
-    )`;
     const preview = settings.preview || {};
     const primaryColor =
       preview.primaryColor || settings.appearance.primaryColor || c1;
@@ -4771,16 +4763,30 @@
           position: absolute;
           inset: 0;
           border-radius: inherit;
-          background: ${pulseRingGradientCss};
-          padding: ${pulseRingStrokePx}px;
-          -webkit-mask:
-            linear-gradient(#000 0 0) content-box,
-            linear-gradient(#000 0 0);
-          -webkit-mask-composite: xor;
-          mask-composite: exclude;
-          animation: launcherPulseRingRotate 4s linear infinite;
+          overflow: hidden;
           z-index: 0;
           pointer-events: none;
+        }
+        .chat-widget-launcher-pulse-ring::before {
+          content: "";
+          position: absolute;
+          inset: -100%;
+          background: conic-gradient(
+            #7DBCFE 0%,
+            #912FF5 35%,
+            #EF32D4 50%,
+            #912FF5 65%,
+            #7DBCFE 100%
+          );
+          animation: launcherPulseRingRotate 4s linear infinite;
+        }
+        .chat-widget-launcher-pulse-ring::after {
+          content: "";
+          position: absolute;
+          inset: ${pulseRingStrokePx}px;
+          border-radius: inherit;
+          background: transparent;
+          z-index: 1;
         }
         .chat-widget-launcher.open .chat-widget-launcher-pulse-ring {
           display: none;
@@ -5011,18 +5017,8 @@
         .chat-widget-launcher-bounce {
           animation: launcherBounce 1.6s infinite;
         }
-        @property --pulse-angle {
-          syntax: "<angle>";
-          inherits: false;
-          initial-value: 0deg;
-        }
         @keyframes launcherPulseRingRotate {
-          from {
-            --pulse-angle: 0deg;
-          }
-          to {
-            --pulse-angle: 360deg;
-          }
+          to { transform: rotate(360deg); }
         }
         @keyframes launcherBounce {
           0%, 20%, 50%, 80%, 100% { transform: translateY(0); }

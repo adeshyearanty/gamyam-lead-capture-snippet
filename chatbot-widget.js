@@ -363,6 +363,7 @@
   let wsConnectResolve = null; // Resolver for the connection promise
   let pendingMessages = []; // Queue of messages to send when connection is ready
   let isConnecting = false; // Flag to prevent concurrent connection attempts
+  let skipThreadFetchOnNextSocketConnect = false; // Skip history fetch after fresh conversation creation
 
   function parsePathRuleList(input) {
     if (Array.isArray(input)) {
@@ -1904,6 +1905,7 @@
       console.log("UniBox: Conversation created:", conversationId);
 
       // Connect to WebSocket and subscribe
+      skipThreadFetchOnNextSocketConnect = true;
       await connectSocket();
       subscribeToConversation(conversationId);
 
@@ -2057,62 +2059,67 @@
         // Flush any pending messages
         flushPendingMessages();
 
+        const shouldFetchThreadHistory = !skipThreadFetchOnNextSocketConnect;
+        skipThreadFetchOnNextSocketConnect = false;
+
         // Fetch message history after connection (delayed to avoid blocking)
-        setTimeout(() => {
-          if (userId && conversationId) {
-            fetch(`${API_BASE}/thread/${userId}?limit=50`, {
-              method: "GET",
-              headers: getHeaders(),
-            })
-              .then((res) => (res.ok ? res.json() : null))
-              .then((threadData) => {
-                if (
-                  threadData &&
-                  threadData.messages &&
-                  Array.isArray(threadData.messages)
-                ) {
-                  threadData.messages.forEach((msg) => {
-                    // Normalize text - convert empty string to null
-                    const textValue = msg.text || msg.text_body;
-                    const normalizedTextValue =
-                      textValue && textValue.trim() ? textValue.trim() : null;
-
-                    const canonicalTimestamp =
-                      (typeof msg.timestamp === "number" && msg.timestamp) ||
-                      (msg.timestamp_iso
-                        ? msg.timestamp_iso
-                        : typeof msg.timestamp_meta === "number"
-                          ? msg.timestamp_meta * 1000
-                          : undefined);
-
-                    appendMessageToUI(
-                      normalizedTextValue,
-                      msg.sender ||
-                        (msg.direction === "inbound" ? "user" : "agent"),
-                      msg.id || msg.messageId,
-                      canonicalTimestamp,
-                      msg.status,
-                      msg.readAt,
-                      msg.readByUs,
-                      msg.readByUsAt,
-                      msg.type,
-                      msg.media_storage_url,
-                    );
-                  });
-                  sortMessagesByTimestamp();
-                  setTimeout(() => {
-                    markVisibleMessagesAsRead();
-                  }, 500);
-                }
+        if (shouldFetchThreadHistory) {
+          setTimeout(() => {
+            if (userId && conversationId) {
+              fetch(`${API_BASE}/thread/${userId}?limit=50`, {
+                method: "GET",
+                headers: getHeaders(),
               })
-              .catch((e) =>
-                console.error(
-                  "UniBox: Failed to fetch thread after socket connect",
-                  e,
-                ),
-              );
-          }
-        }, 500);
+                .then((res) => (res.ok ? res.json() : null))
+                .then((threadData) => {
+                  if (
+                    threadData &&
+                    threadData.messages &&
+                    Array.isArray(threadData.messages)
+                  ) {
+                    threadData.messages.forEach((msg) => {
+                      // Normalize text - convert empty string to null
+                      const textValue = msg.text || msg.text_body;
+                      const normalizedTextValue =
+                        textValue && textValue.trim() ? textValue.trim() : null;
+
+                      const canonicalTimestamp =
+                        (typeof msg.timestamp === "number" && msg.timestamp) ||
+                        (msg.timestamp_iso
+                          ? msg.timestamp_iso
+                          : typeof msg.timestamp_meta === "number"
+                            ? msg.timestamp_meta * 1000
+                            : undefined);
+
+                      appendMessageToUI(
+                        normalizedTextValue,
+                        msg.sender ||
+                          (msg.direction === "inbound" ? "user" : "agent"),
+                        msg.id || msg.messageId,
+                        canonicalTimestamp,
+                        msg.status,
+                        msg.readAt,
+                        msg.readByUs,
+                        msg.readByUsAt,
+                        msg.type,
+                        msg.media_storage_url,
+                      );
+                    });
+                    sortMessagesByTimestamp();
+                    setTimeout(() => {
+                      markVisibleMessagesAsRead();
+                    }, 500);
+                  }
+                })
+                .catch((e) =>
+                  console.error(
+                    "UniBox: Failed to fetch thread after socket connect",
+                    e,
+                  ),
+                );
+            }
+          }, 500);
+        }
       };
 
       // Handle incoming WebSocket messages

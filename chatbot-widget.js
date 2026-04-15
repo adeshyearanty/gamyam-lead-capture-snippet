@@ -5011,11 +5011,6 @@
         .chat-widget-launcher-bounce {
           animation: launcherBounce 1.6s infinite;
         }
-        @property --pulse-angle {
-          syntax: "<angle>";
-          inherits: false;
-          initial-value: 0deg;
-        }
         @keyframes launcherPulseRingRotate {
           from {
             --pulse-angle: 0deg;
@@ -5957,6 +5952,23 @@
         </div>
       </div>
     `;
+
+    // @property must live in the document stylesheet — Shadow DOM stylesheets
+    // do not support @property registration so --pulse-angle would never be
+    // treated as an animatable <angle>, keeping the gradient static.
+    const pulsePropertyStyleId = "unibox-pulse-angle-property";
+    if (!document.getElementById(pulsePropertyStyleId)) {
+      const propStyle = document.createElement("style");
+      propStyle.id = pulsePropertyStyleId;
+      propStyle.textContent = `
+        @property --pulse-angle {
+          syntax: "<angle>";
+          inherits: false;
+          initial-value: 0deg;
+        }
+      `;
+      document.head.appendChild(propStyle);
+    }
 
     shadow.appendChild(styleTag);
     shadow.appendChild(container);

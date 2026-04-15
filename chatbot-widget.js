@@ -4771,24 +4771,16 @@
           position: absolute;
           inset: 0;
           border-radius: inherit;
-          overflow: hidden;
+          background: ${pulseRingGradientCss};
+          padding: ${pulseRingStrokePx}px;
+          -webkit-mask:
+            linear-gradient(#000 0 0) content-box,
+            linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor;
+          mask-composite: exclude;
+          animation: launcherPulseRingRotate 4s linear infinite;
           z-index: 0;
           pointer-events: none;
-        }
-        .chat-widget-launcher-pulse-ring::before {
-          content: "";
-          position: absolute;
-          inset: -100%;
-          background: ${pulseRingGradientCss};
-          animation: launcherPulseRingRotate 4s linear infinite;
-        }
-        .chat-widget-launcher-pulse-ring::after {
-          content: "";
-          position: absolute;
-          inset: ${pulseRingStrokePx}px;
-          border-radius: inherit;
-          background: transparent;
-          z-index: 1;
         }
         .chat-widget-launcher.open .chat-widget-launcher-pulse-ring {
           display: none;

@@ -3982,6 +3982,8 @@
     // Convert empty string to null for consistent handling
     const normalizedText = text && text.trim() ? text.trim() : null;
 
+    let preservedStaticWelcomeTimestamp = null;
+
     // Handle welcome message replacement: if static welcome is shown and this is a real welcome message,
     // REPLACE the static welcome with the real one (which has a real server message ID)
     if (
@@ -3997,6 +3999,18 @@
         (msg) => msg.id && msg.id.startsWith("static_welcome_"),
       );
       if (staticWelcome) {
+        const staticTsFromData = new Date(staticWelcome.timestamp).getTime();
+        const staticTsFromDom = staticWelcome.element
+          ? Number.parseInt(
+              staticWelcome.element.getAttribute("data-timestamp") || "",
+              10,
+            )
+          : NaN;
+        preservedStaticWelcomeTimestamp = Number.isFinite(staticTsFromData)
+          ? staticTsFromData
+          : Number.isFinite(staticTsFromDom)
+            ? staticTsFromDom
+            : null;
         if (staticWelcome.element) {
           staticWelcome.element.remove();
         }
@@ -4013,9 +4027,12 @@
     }
 
     const normalizedId = messageId || `msg_${Date.now()}`;
-    const normalizedTimestamp = timestamp
-      ? new Date(timestamp).getTime()
-      : Date.now();
+    const incomingTimestamp = timestamp ? new Date(timestamp).getTime() : NaN;
+    const normalizedTimestamp = Number.isFinite(preservedStaticWelcomeTimestamp)
+      ? preservedStaticWelcomeTimestamp
+      : Number.isFinite(incomingTimestamp)
+        ? incomingTimestamp
+        : Date.now();
 
     // Debug: Log message being added
     console.log("UniBox: appendMessageToUI called:", {

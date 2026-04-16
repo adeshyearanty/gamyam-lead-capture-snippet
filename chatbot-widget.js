@@ -730,14 +730,10 @@
   // Track if we've subscribed to avoid duplicate subscriptions
   let subscribedConversationId = null;
 
-  /**
-   * Dedupes in-thread handoff banners per conversation + agent (or generic placeholder).
-   * Reset when the live session clears (see clearLiveAgentDisplayName).
-   */
-  let lastAgentHandoffNoticeKey = null;
-
   /** After live handoff, virtual agent display name from WebSocket; cleared on new/ended session. */
   let liveAgentDisplayName = null;
+  /** After live handoff, agent principal id from WebSocket; used for platform linkage. */
+  let liveAgentId = null;
   /** Launcher badge for unseen inbound events while chat is closed. */
   let launcherEventBadgeVisible = false;
 
@@ -760,7 +756,7 @@
 
   function clearLiveAgentDisplayName() {
     liveAgentDisplayName = null;
-    lastAgentHandoffNoticeKey = null;
+    liveAgentId = null;
     isAgentOnline = false;
     syncAgentTitleUi();
   }
@@ -771,6 +767,13 @@
     if (!t) return;
     liveAgentDisplayName = t;
     syncAgentTitleUi();
+  }
+
+  function setLiveAgentId(agentId) {
+    if (agentId == null) return;
+    const t = String(agentId).trim();
+    if (!t) return;
+    liveAgentId = t;
   }
 
   function setLauncherEventBadgeVisible(visible) {
@@ -816,12 +819,40 @@
     return t.length ? t : null;
   }
 
+  function extractVirtualAgentId(evt) {
+    if (!evt || typeof evt !== "object") return null;
+    const flat =
+      evt.payload && typeof evt.payload === "object"
+        ? Object.assign({}, evt, evt.payload)
+        : evt;
+    const id =
+      flat.agentId ??
+      flat.agent_id ??
+      flat.virtualAgentId ??
+      flat.virtual_agent_id ??
+      flat.assignedAgentId ??
+      flat.assigned_agent_id ??
+      flat.principalId ??
+      flat.principal_id ??
+      (flat.agent && (flat.agent.id || flat.agent.agentId)) ??
+      (flat.assignedAgent &&
+        (flat.assignedAgent.id || flat.assignedAgent.agentId)) ??
+      (flat.assigned_to &&
+        (typeof flat.assigned_to === "string"
+          ? null
+          : flat.assigned_to.id || flat.assigned_to.agentId));
+    if (id == null) return null;
+    const t = String(id).trim();
+    return t || null;
+  }
+
   /**
    * Apply agent identity when the payload targets the active conversation (or omits conversation id).
    */
   function maybeApplyVirtualAgentFromEvent(evt, eventConversationId) {
     const name = extractVirtualAgentDisplayName(evt);
-    if (!name) return;
+    const id = extractVirtualAgentId(evt);
+    if (!name && !id) return;
     if (
       eventConversationId &&
       conversationId &&
@@ -829,13 +860,13 @@
     ) {
       return;
     }
-    setLiveAgentDisplayName(name);
+    if (name) setLiveAgentDisplayName(name);
+    if (id) setLiveAgentId(id);
   }
 
   /**
-   * Live agent assignment: update bot message labels (Pulse AI → agent name) and insert a
-   * centered status line in the thread. Safe to call from dedicated WS events or the first
-   * non-AI agent message if no assignment event was received.
+   * Live agent assignment: update bot message labels (Pulse AI → agent name).
+   * No additional in-thread handoff UI is rendered.
    */
   function handleAgentAssignmentHandshake(evt, rawEnvelope) {
     const convId =
@@ -848,67 +879,7 @@
       return;
     }
 
-    const name = extractVirtualAgentDisplayName(evt);
-
     maybeApplyVirtualAgentFromEvent(evt, convId);
-
-    const convStr = String(conversationId || convId || "");
-    const noticeKey = name
-      ? `${convStr}::${name.toLowerCase()}`
-      : `${convStr}::__agent__`;
-
-    if (noticeKey === lastAgentHandoffNoticeKey) {
-      isAgentOnline = true;
-      refreshHeaderPresence();
-      return;
-    }
-
-    const host = document.getElementById("unibox-root");
-    if (!host || !host.shadowRoot) return;
-    const body = host.shadowRoot.getElementById("chatBody");
-    if (!body) return;
-
-    if (name) {
-      body
-        .querySelectorAll(
-          '.chat-widget-handoff-notice[data-handoff-tier="generic"]',
-        )
-        .forEach((el) => el.remove());
-    }
-
-    lastAgentHandoffNoticeKey = noticeKey;
-
-    const ts = Date.now();
-    const wrap = document.createElement("div");
-    wrap.className = "chat-widget-handoff-notice";
-    wrap.setAttribute(
-      "data-message-id",
-      `handoff_notice_${ts}_${Math.random().toString(36).slice(2, 11)}`,
-    );
-    wrap.setAttribute("data-timestamp", String(ts));
-    wrap.setAttribute("role", "status");
-    wrap.setAttribute("data-handoff-tier", name ? "named" : "generic");
-
-    const inner = document.createElement("div");
-    inner.className = "chat-widget-handoff-notice-inner";
-    inner.textContent = name
-      ? `You're now connected with ${name}.`
-      : "You're now connected with a live agent.";
-
-    wrap.appendChild(inner);
-
-    const typingIndicator = body.querySelector("#typingIndicator");
-    if (typingIndicator) {
-      body.insertBefore(wrap, typingIndicator);
-    } else {
-      body.appendChild(wrap);
-    }
-
-    sortMessagesByTimestamp();
-    requestAnimationFrame(() => {
-      body.scrollTop = body.scrollHeight;
-    });
-
     isAgentOnline = true;
     refreshHeaderPresence();
   }
@@ -2420,6 +2391,10 @@
 
   function handleIncomingMessage(message) {
     const isUserMessage = message.sender === "user";
+    const incomingAgentName =
+      message.sender === "agent" ? extractVirtualAgentDisplayName(message) : null;
+    const incomingAgentId =
+      message.sender === "agent" ? extractVirtualAgentId(message) : null;
     const incomingTimestampMs =
       getCanonicalMessageTimestamp(message) ?? Date.now();
 
@@ -2439,6 +2414,8 @@
           : existingMessage.readByUs;
       existingMessage.readByUsAt =
         message.readByUsAt || existingMessage.readByUsAt;
+      if (incomingAgentName) existingMessage.agentName = incomingAgentName;
+      if (incomingAgentId) existingMessage.agentId = incomingAgentId;
       existingMessage.timestamp = incomingTimestampMs;
       existingMessage.element.setAttribute(
         "data-timestamp",
@@ -2479,6 +2456,8 @@
             : optimisticMessage.readByUs;
         optimisticMessage.readByUsAt =
           message.readByUsAt || optimisticMessage.readByUsAt;
+        if (incomingAgentName) optimisticMessage.agentName = incomingAgentName;
+        if (incomingAgentId) optimisticMessage.agentId = incomingAgentId;
         optimisticMessage.timestamp = incomingTimestampMs;
         optimisticMessage.element.setAttribute(
           "data-message-id",
@@ -2534,6 +2513,14 @@
       message.media_storage_url,
     );
 
+    if (!isUserMessage) {
+      const storedMessage = messages.get(message.messageId);
+      if (storedMessage) {
+        if (incomingAgentName) storedMessage.agentName = incomingAgentName;
+        if (incomingAgentId) storedMessage.agentId = incomingAgentId;
+      }
+    }
+
     sortMessagesByTimestamp();
 
     if (!isUserMessage) {
@@ -2542,22 +2529,10 @@
         const aiReply =
           message.is_ai_reply === true || message.isAiReply === true;
         if (!aiReply) {
-          const convStr = String(conversationId || "");
-          const genericKey = `${convStr}::__agent__`;
-          const hasConvNotice =
-            lastAgentHandoffNoticeKey &&
-            lastAgentHandoffNoticeKey.startsWith(`${convStr}::`);
-          const shouldHandoffNotice =
-            convStr &&
-            (!hasConvNotice || lastAgentHandoffNoticeKey === genericKey);
-          if (shouldHandoffNotice) {
-            handleAgentAssignmentHandshake(message, message);
-          } else {
-            maybeApplyVirtualAgentFromEvent(
-              message,
-              message.conversationId ?? message.conversation_id,
-            );
-          }
+          maybeApplyVirtualAgentFromEvent(
+            message,
+            message.conversationId ?? message.conversation_id,
+          );
         }
       }
       // AI/agent replied — clear all typing UI (optimistic AI + server-driven)
@@ -3639,8 +3614,7 @@
                 "chat-widget-typing-indicator hidden";
               newTypingIndicator.id = "typingIndicator";
               newTypingIndicator.innerHTML = `
-              <div class="chat-widget-typing-label hidden" aria-live="polite"></div>
-              <div class="chat-widget-typing-dots">
+              <div class="chat-widget-typing-dots" aria-live="polite" aria-label="Typing">
                 <div class="chat-widget-typing-dot"></div>
                 <div class="chat-widget-typing-dot"></div>
                 <div class="chat-widget-typing-dot"></div>
@@ -4125,6 +4099,8 @@
           messageId: normalizedId,
           text: normalizedText,
           sender: type,
+          agentName: type === "agent" ? liveAgentDisplayName || null : null,
+          agentId: type === "agent" ? liveAgentId || null : null,
           timestamp: timestamp || new Date(),
           status: status || "sent",
           readAt,
@@ -4254,6 +4230,8 @@
           messageId: normalizedId,
           text: normalizedText,
           sender: type,
+          agentName: type === "agent" ? liveAgentDisplayName || null : null,
+          agentId: type === "agent" ? liveAgentId || null : null,
           timestamp: timestamp || new Date(),
           status: status || "sent",
           readAt,
@@ -4321,6 +4299,8 @@
         messageId: normalizedId,
         text: normalizedText,
         sender: type,
+        agentName: type === "agent" ? liveAgentDisplayName || null : null,
+        agentId: type === "agent" ? liveAgentId || null : null,
         timestamp: timestamp || new Date(),
         status: status || "sent",
         readAt,
@@ -4523,18 +4503,8 @@
     if (!host || !host.shadowRoot) return;
     const typingIndicator = host.shadowRoot.getElementById("typingIndicator");
     if (!typingIndicator) return;
-    const labelEl = typingIndicator.querySelector(".chat-widget-typing-label");
     if (show) {
       const kind = options?.kind === "agent" ? "agent" : "ai";
-      let label = "Pulse AI is typing…";
-      if (kind === "agent") {
-        const n = liveAgentDisplayName && String(liveAgentDisplayName).trim();
-        label = n ? `${n} is typing…` : "Agent is typing…";
-      }
-      if (labelEl) {
-        labelEl.textContent = label;
-        labelEl.classList.remove("hidden");
-      }
       typingIndicator.classList.remove("hidden");
       typingIndicator.setAttribute("data-typing-kind", kind);
       const body = host.shadowRoot.getElementById("chatBody");
@@ -4546,10 +4516,6 @@
     } else {
       typingIndicator.classList.add("hidden");
       typingIndicator.removeAttribute("data-typing-kind");
-      if (labelEl) {
-        labelEl.textContent = "";
-        labelEl.classList.add("hidden");
-      }
     }
   }
 
@@ -5343,28 +5309,6 @@
           align-items: flex-end;
         }
 
-        .chat-widget-handoff-notice {
-          align-self: stretch;
-          width: 100%;
-          max-width: 100%;
-          margin: 10px 0;
-          display: flex;
-          justify-content: center;
-          box-sizing: border-box;
-        }
-
-        .chat-widget-handoff-notice-inner {
-          padding: 8px 14px;
-          border-radius: 20px;
-          background: rgba(0, 0, 0, 0.06);
-          color: #6b7280;
-          font-size: ${fontSizes.meta};
-          line-height: 16px;
-          text-align: center;
-          font-family: ${resolvedFontFamily} !important;
-          max-width: 92%;
-        }
-
         .chat-widget-message-content {
           display: inline-block;
           padding: 6px 10px;
@@ -5495,18 +5439,6 @@
         }
 
         .chat-widget-typing-indicator.hidden {
-          display: none;
-        }
-
-        .chat-widget-typing-label {
-          font-size: ${fontSizes.meta};
-          line-height: 16px;
-          color: #6b7280;
-          font-weight: 500;
-          font-family: ${resolvedFontFamily} !important;
-        }
-
-        .chat-widget-typing-label.hidden {
           display: none;
         }
 
@@ -6082,8 +6014,7 @@
       typingIndicator.className = "chat-widget-typing-indicator hidden";
       typingIndicator.id = "typingIndicator";
       typingIndicator.innerHTML = `
-        <div class="chat-widget-typing-label hidden" aria-live="polite"></div>
-        <div class="chat-widget-typing-dots">
+        <div class="chat-widget-typing-dots" aria-live="polite" aria-label="Typing">
           <div class="chat-widget-typing-dot"></div>
           <div class="chat-widget-typing-dot"></div>
           <div class="chat-widget-typing-dot"></div>

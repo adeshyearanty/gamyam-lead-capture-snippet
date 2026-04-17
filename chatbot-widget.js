@@ -1079,6 +1079,11 @@
         {};
       const windowUiInstallation = windowUiApi.installation || {};
       const widgetAppearanceApi = apiConfig.widgetAppearance || {};
+      const flowWelcomeMessage =
+        typeof apiConfig.flowWelcomeMessage === "string" &&
+        apiConfig.flowWelcomeMessage.trim()
+          ? apiConfig.flowWelcomeMessage.trim()
+          : "";
 
       // Normalise launcher icon type (chat | message | custom)
       const launcherIconTypeRaw = String(
@@ -1141,6 +1146,7 @@
             "",
           subtitle: windowUiLayout.subtitle || "",
           welcomeMessage:
+            flowWelcomeMessage ||
             windowUiMessages.welcomeMessage ||
             (widgetAppearanceApi.header || {}).welcomeMessage ||
             "",
@@ -1154,6 +1160,7 @@
         },
         // Top-level welcome message for the chat view
         welcomeMessage:
+          flowWelcomeMessage ||
           windowUiMessages.welcomeMessage ||
           widgetAppearanceApi.welcomeMessage ||
           undefined,
@@ -5540,31 +5547,38 @@
         }
 
         .chat-widget-typing-dot {
-          width: 8px;
-          height: 8px;
+          width: 6px;
+          height: 6px;
           background: #9ca3af;
-          border-radius: 50%;
-          animation: typing 1.4s infinite;
+          border-radius: 9999px;
+          transform-origin: center;
+          animation: chat-widget-typing-dots 1.15s infinite ease-in-out;
         }
 
         .chat-widget-typing-dots .chat-widget-typing-dot:nth-child(2) {
-          animation-delay: 0.2s;
+          animation-delay: 0.18s;
         }
 
         .chat-widget-typing-dots .chat-widget-typing-dot:nth-child(3) {
-          animation-delay: 0.4s;
+          animation-delay: 0.36s;
         }
 
-        @keyframes typing {
+        @keyframes chat-widget-typing-dots {
           0%,
-          60%,
           100% {
-            transform: translateY(0);
-            opacity: 0.7;
+            transform: scale(1);
+            background: #9ca3af;
+            opacity: 0.78;
           }
           30% {
-            transform: translateY(-10px);
+            transform: scale(1.33);
+            background: #8d53f8;
             opacity: 1;
+          }
+          60% {
+            transform: scale(1.08);
+            background: #b5bac4;
+            opacity: 0.92;
           }
         }
 

@@ -2214,7 +2214,34 @@
       case "message_created":
       case "message":
         console.log("UniBox: Processing MESSAGE_CREATED:", data || message);
-        handleIncomingMessage(data || message);
+        {
+          const evt = data || message;
+          // Some backends piggyback typing stop on message envelopes.
+          // Apply stop immediately, then continue processing the message payload.
+          if (evt && (evt.isTyping === false || evt.typing === false)) {
+            handleTypingIndicator({
+              ...evt,
+              isAgent:
+                evt.isAgent === true ||
+                evt.sender === "agent" ||
+                evt.role === "agent",
+              isAi:
+                evt.isAi === true ||
+                evt.sender === "ai" ||
+                evt.is_ai_reply === true,
+              from:
+                evt.from ||
+                (evt.sender === "agent"
+                  ? "agent"
+                  : evt.sender === "ai" || evt.is_ai_reply === true
+                    ? "ai"
+                    : undefined),
+            });
+          }
+          if (evt.messageId || evt.text || evt.sender) {
+            handleIncomingMessage(evt);
+          }
+        }
         break;
 
       case "typing":
@@ -2688,11 +2715,13 @@
       if (!liveAgentDisplayName && isAiEnabled()) {
         agentTyping = true;
         showTypingIndicator(true, { kind: "ai" });
+        // Keep optimistic AI typing visible longer and rely on explicit stop
+        // (typing:false) or actual reply arrival to clear it.
         agentTypingTimeout = setTimeout(() => {
           agentTyping = false;
           showTypingIndicator(false);
           agentTypingTimeout = null;
-        }, 15000);
+        }, 45000);
       }
     }, delayMs);
   }
@@ -2713,6 +2742,18 @@
     }
 
     if (data.isTyping === false || data.typing === false) {
+      const hasExplicitTypingActor =
+        data.isAgent === true ||
+        data.isAi === true ||
+        (data.from && String(data.from).trim().length > 0) ||
+        data.role === "agent" ||
+        data.principalType === "agent" ||
+        data.participant === "agent";
+      // Ignore ambiguous generic stop-typing events (often presence churn).
+      // We only stop typing for explicit agent/AI typing-stop signals.
+      if (!hasExplicitTypingActor) {
+        return;
+      }
       clearOptimisticAiTypingSchedule();
       if (agentTypingTimeout) {
         clearTimeout(agentTypingTimeout);

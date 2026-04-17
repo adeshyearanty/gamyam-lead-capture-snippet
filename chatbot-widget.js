@@ -2389,7 +2389,98 @@
     );
   }
 
+  function normalizeSocketMessagePayload(message) {
+    if (!message || typeof message !== "object") return message;
+    const nested = message.message && typeof message.message === "object" ? message.message : null;
+    const source = nested || message;
+    const payload =
+      source.payload && typeof source.payload === "object" ? source.payload : {};
+
+    const normalized = Object.assign({}, source);
+
+    normalized.messageId =
+      source.messageId ??
+      source.message_id ??
+      source.id ??
+      message.messageId ??
+      message.message_id ??
+      message.id;
+
+    normalized.conversationId =
+      source.conversationId ??
+      source.conversation_id ??
+      message.conversationId ??
+      message.conversation_id;
+
+    normalized.sender =
+      source.sender ??
+      (source.direction === "inbound" ? "user" : null) ??
+      (source.direction === "outbound" ? "agent" : null) ??
+      (String(source.direction || "").toUpperCase() === "INBOUND" ? "user" : null) ??
+      (String(source.direction || "").toUpperCase() === "OUTBOUND" ? "agent" : null) ??
+      (source.role === "agent" ? "agent" : null) ??
+      (source.role === "user" ? "user" : null) ??
+      message.sender;
+
+    normalized.text =
+      source.text ??
+      source.textBody ??
+      source.text_body ??
+      payload.text ??
+      payload.body ??
+      message.text;
+
+    normalized.type = source.type ?? payload.type ?? message.type;
+    normalized.media_storage_url =
+      source.media_storage_url ??
+      source.mediaStorageUrl ??
+      message.media_storage_url ??
+      message.mediaStorageUrl ??
+      null;
+    normalized.status = source.status ?? message.status;
+
+    normalized.agent_id =
+      source.agent_id ??
+      source.agentId ??
+      payload.agent_id ??
+      payload.agentId ??
+      (source.agent && (source.agent.id ?? source.agent.agentId)) ??
+      (payload.agent && (payload.agent.id ?? payload.agent.agentId)) ??
+      message.agent_id ??
+      message.agentId;
+
+    normalized.agent_name =
+      source.agent_name ??
+      source.agentName ??
+      payload.agent_name ??
+      payload.agentName ??
+      (source.agent && (source.agent.name ?? source.agent.agentName)) ??
+      (payload.agent && (payload.agent.name ?? payload.agent.agentName)) ??
+      message.agent_name ??
+      message.agentName;
+
+    normalized.agent = source.agent ?? payload.agent ?? message.agent;
+    normalized.is_ai_reply =
+      source.is_ai_reply === true ||
+      source.isAiReply === true ||
+      payload.is_ai_reply === true ||
+      payload.isAiReply === true ||
+      message.is_ai_reply === true ||
+      message.isAiReply === true;
+
+    normalized.timestamp =
+      source.timestamp ??
+      source.createdAt ??
+      source.created_at ??
+      source.sentAt ??
+      source.sent_at ??
+      message.timestamp;
+
+    return normalized;
+  }
+
   function handleIncomingMessage(message) {
+    message = normalizeSocketMessagePayload(message);
     const isUserMessage = message.sender === "user";
     const incomingAgentName =
       message.sender === "agent" ? extractVirtualAgentDisplayName(message) : null;

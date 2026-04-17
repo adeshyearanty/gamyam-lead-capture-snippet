@@ -2695,7 +2695,10 @@
    */
   function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
     if (!wsDelivered || !settings?.behavior?.typingIndicator) return;
-    if (!isAiEnabled() || liveAgentDisplayName) return;
+    // For widget UX consistency, show optimistic typing whenever the chat is in
+    // AI mode (i.e., no live agent takeover), even if upstream config flags are
+    // temporarily out of sync.
+    if (liveAgentDisplayName) return;
 
     clearOptimisticAiTypingSchedule();
     if (agentTypingTimeout) {
@@ -2712,7 +2715,7 @@
 
     optimisticAiTypingTimer = setTimeout(() => {
       optimisticAiTypingTimer = null;
-      if (!liveAgentDisplayName && isAiEnabled()) {
+      if (!liveAgentDisplayName) {
         agentTyping = true;
         showTypingIndicator(true, { kind: "ai" });
         // Keep optimistic AI typing visible longer and rely on explicit stop
@@ -2771,6 +2774,12 @@
     const isFromAi =
       data.isAi === true ||
       (data.from && String(data.from).toLowerCase() === "ai");
+    const isGenericTypingStart =
+      (data.isTyping === true || data.typing === true) && !isFromAgent && !isFromAi;
+
+    // Many backends send generic typing start events without actor metadata.
+    // Treat them as AI typing while the thread is not handed off to a live agent.
+    const treatGenericAsAi = isGenericTypingStart && !liveAgentDisplayName;
 
     if (liveAgentDisplayName && isFromAi && !isFromAgent) {
       return;
@@ -2781,7 +2790,7 @@
     if (isFromAgent) {
       showTyping = true;
       typingKind = "agent";
-    } else if (isFromAi && isAiEnabled() && !liveAgentDisplayName) {
+    } else if ((isFromAi || treatGenericAsAi) && !liveAgentDisplayName) {
       showTyping = true;
       typingKind = "ai";
     }

@@ -2236,8 +2236,14 @@
       if (showLoading) {
         setLoading(false);
       }
-      waitingForFirstInboundMessage = true;
-      setInitialBodyLoading(true);
+      // Do NOT force the initial body loader here. Conversation creation is
+      // triggered AFTER the user has already sent their first message — at
+      // this point the chat body has the static welcome + the outbound user
+      // bubble already rendered, and the bot's reply will surface via the
+      // normal typing indicator flow. Forcing the full-body spinner on top
+      // of real content creates the "loading in between" artefact.
+      waitingForFirstInboundMessage = false;
+      setInitialBodyLoading(false);
     } catch (error) {
       console.error("UniBox: Init Error", error);
       if (showLoading) {
@@ -5296,12 +5302,12 @@
         btn.className = "chat-widget-flow-option-btn";
         btn.textContent = label;
         btn.onclick = () => {
-          const allButtons = optionsWrap.querySelectorAll("button");
-          allButtons.forEach((el) => {
-            el.disabled = true;
-            el.style.opacity = "0.65";
-            el.style.cursor = "default";
-          });
+          // Hide the entire options wrap after a selection — keeping the
+          // disabled buttons visible is confusing once the user has picked
+          // one (and is explicitly called out as bad UX on the widget).
+          if (optionsWrap && optionsWrap.parentNode) {
+            optionsWrap.parentNode.removeChild(optionsWrap);
+          }
           const outgoingText = opt.title || opt.id || "";
           if (!outgoingText) return;
           const localMessageId = `msg_${Date.now()}_${Math.random()
@@ -5355,12 +5361,12 @@
         btn.className = "chat-widget-flow-option-btn";
         btn.textContent = String(optValue);
         btn.onclick = () => {
-          const allButtons = dropdownWrap.querySelectorAll("button");
-          allButtons.forEach((el) => {
-            el.disabled = true;
-            el.style.opacity = "0.65";
-            el.style.cursor = "default";
-          });
+          // Hide the dropdown options after the user picks one; keeping them
+          // around (disabled) is visually noisy and matches the quick-options
+          // behaviour above.
+          if (dropdownWrap && dropdownWrap.parentNode) {
+            dropdownWrap.parentNode.removeChild(dropdownWrap);
+          }
           const selected = String(optValue);
           const localMessageId = `msg_${Date.now()}_${Math.random()
             .toString(36)

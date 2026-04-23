@@ -87,6 +87,8 @@
 
   // Storage Keys (using tenantId from userConfig)
   const SESSION_KEY_FORM = `unibox_form_submitted_${userConfig.tenantId}`;
+  const SESSION_KEY_FORM_DATA = `unibox_form_data_${userConfig.tenantId}`;
+  const SESSION_KEY_FORM_MAPPINGS = `unibox_form_mappings_${userConfig.tenantId}`;
   const STORAGE_KEY_OPEN = `unibox_open_${userConfig.tenantId}`;
   const STORAGE_KEY_USER = `unibox_guest_${userConfig.tenantId}`;
   const STORAGE_KEY_ENGAGEMENT = `unibox_engagement_${userConfig.tenantId}`;
@@ -348,6 +350,8 @@
   /** Peer (human agent) online — driven by assignment + presence events */
   let isAgentOnline = false;
   let staticWelcomeShown = false;
+  let showQuickReplies = true;
+  let demoQuickReplies = [];
   let realWelcomeMessageId = null; // Track the real welcome message ID once it replaces static welcome
   let typingTimeout = null;
   let isTyping = false;
@@ -356,14 +360,28 @@
   /** Fires after botDelayMs so "Pulse AI" typing only shows once the AI path is likely active */
   let optimisticAiTypingTimer = null;
   let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
+  let previewMediaRefreshTimer = null;
+  // Cache access URLs briefly; refresh before they expire.
+  // key -> { url: string, expiresAt: number|null }
+  const mediaUrlCache = new Map();
   let previewFile = null; // @deprecated - Not used. Was for single file upload preview modal.
   let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - ACTIVE file upload flow (shows as chips)
+  let currentView = "chat";
+  let activePopupFormConfig = null;
+  let popupFormValues = {};
+  let popupFormError = "";
+  let isSubmittingPopupForm = false;
   let fetchedConfig = null; // Store fetched config for WebSocket URL
   let wsConnectPromise = null; // Promise that resolves when WebSocket is connected
   let wsConnectResolve = null; // Resolver for the connection promise
   let pendingMessages = []; // Queue of messages to send when connection is ready
   let isConnecting = false; // Flag to prevent concurrent connection attempts
   let skipThreadFetchOnNextSocketConnect = false; // Skip history fetch after fresh conversation creation
+  let workflowAutoStarted = false; // Prevent duplicate auto-starts of the workflow engine
+  let waitingForFirstInboundMessage = true; // Show body loader until first real inbound bot message
+  let liveAgentProfileKey = "";
+  let liveAgentProfileUrl = "";
+  let liveAgentProfileFetchToken = 0;
 
   function parsePathRuleList(input) {
     if (Array.isArray(input)) {
@@ -754,9 +772,16 @@
     return liveAgentDisplayName || "Pulse AI";
   }
 
+  function isLiveAgentAssigned() {
+    return Boolean(liveAgentDisplayName || liveAgentId);
+  }
+
   function clearLiveAgentDisplayName() {
     liveAgentDisplayName = null;
     liveAgentId = null;
+    liveAgentProfileKey = "";
+    liveAgentProfileUrl = "";
+    liveAgentProfileFetchToken++;
     isAgentOnline = false;
     syncAgentTitleUi();
   }
@@ -766,6 +791,14 @@
     const t = name.trim();
     if (!t) return;
     liveAgentDisplayName = t;
+    // Once assigned, suppress optimistic bot typing; rely on explicit agent typing events.
+    clearOptimisticAiTypingSchedule();
+    if (agentTypingTimeout) {
+      clearTimeout(agentTypingTimeout);
+      agentTypingTimeout = null;
+    }
+    agentTyping = false;
+    showTypingIndicator(false);
     syncAgentTitleUi();
   }
 
@@ -774,6 +807,87 @@
     const t = String(agentId).trim();
     if (!t) return;
     liveAgentId = t;
+    // Assignment can arrive with id before display name.
+    clearOptimisticAiTypingSchedule();
+    if (agentTypingTimeout) {
+      clearTimeout(agentTypingTimeout);
+      agentTypingTimeout = null;
+    }
+    agentTyping = false;
+    showTypingIndicator(false);
+    syncAgentTitleUi();
+  }
+
+  function getNameInitials(name) {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return "AG";
+    const parts = trimmed.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) {
+      return parts[0].slice(0, 2).toUpperCase();
+    }
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+
+  const SOFT_AVATAR_COLORS = [
+    { bg: "#DDD6FE", text: "#8D53F8" },
+    { bg: "#FECACA", text: "#B91C1C" },
+    { bg: "#BFDBFE", text: "#1D4ED8" },
+    { bg: "#C7D2FE", text: "#4338CA" },
+    { bg: "#A5F3FC", text: "#0E7490" },
+    { bg: "#FED7AA", text: "#C2410C" },
+    { bg: "#BBF7D0", text: "#15803D" },
+    { bg: "#FBCFE8", text: "#BE185D" },
+    { bg: "#FEF08A", text: "#A16207" },
+    { bg: "#99F6E4", text: "#0F766E" },
+  ];
+
+  function hashName(name) {
+    let hash = 0;
+    const raw = String(name || "");
+    for (let i = 0; i < raw.length; i++) {
+      hash = (raw.codePointAt(i) || 0) + ((hash << 5) - hash);
+    }
+    return Math.abs(hash);
+  }
+
+  function getHeaderAvatarFallbackStyle(name) {
+    const color = SOFT_AVATAR_COLORS[hashName(name) % SOFT_AVATAR_COLORS.length];
+    return `background:${color.bg};color:${color.text};font-size:11px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;font-family:'DM Sans',sans-serif;`;
+  }
+
+  function renderHeaderAgentProfile() {
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const profileWrap = host.shadowRoot.getElementById("chatHeaderAgentProfile");
+    if (!profileWrap) return;
+    if (!isLiveAgentAssigned()) {
+      profileWrap.classList.add("hidden");
+      profileWrap.innerHTML = "";
+      return;
+    }
+
+    profileWrap.classList.remove("hidden");
+    const label = liveAgentDisplayName || "Agent";
+    if (liveAgentProfileUrl) {
+      profileWrap.innerHTML = `<img src="${liveAgentProfileUrl}" class="chat-widget-header-agent-profile" alt="${escapeHtmlWidget(label)}" />`;
+      return;
+    }
+    const initials = getNameInitials(label);
+    const fallbackStyle = getHeaderAvatarFallbackStyle(label);
+    profileWrap.innerHTML = `<div class="chat-widget-header-agent-profile chat-widget-header-agent-profile-fallback" aria-label="${escapeHtmlWidget(label)}" style="${fallbackStyle}">${escapeHtmlWidget(initials)}</div>`;
+  }
+
+  async function setLiveAgentProfileKey(profileKey) {
+    const nextKey = String(profileKey || "").trim();
+    liveAgentProfileKey = nextKey;
+    liveAgentProfileUrl = "";
+    const fetchToken = ++liveAgentProfileFetchToken;
+    renderHeaderAgentProfile();
+    if (!nextKey) return;
+    const resolved = await fetchLogoUrl(nextKey);
+    if (fetchToken !== liveAgentProfileFetchToken) return;
+    liveAgentProfileUrl = resolved || "";
+    renderHeaderAgentProfile();
   }
 
   function setLauncherEventBadgeVisible(visible) {
@@ -846,13 +960,48 @@
     return t || null;
   }
 
+  function extractVirtualAgentProfileKey(evt) {
+    if (!evt || typeof evt !== "object") return null;
+    const flat =
+      evt.payload && typeof evt.payload === "object"
+        ? Object.assign({}, evt, evt.payload)
+        : evt;
+    const profileKey =
+      flat.agentProfileKey ??
+      flat.agent_profile_key ??
+      flat.profileKey ??
+      flat.profile_key ??
+      flat.avatarKey ??
+      flat.avatar_key ??
+      (flat.agent &&
+        (flat.agent.profileKey ||
+          flat.agent.profile_key ||
+          flat.agent.avatarKey ||
+          flat.agent.avatar_key)) ??
+      (flat.assignedAgent &&
+        (flat.assignedAgent.profileKey ||
+          flat.assignedAgent.profile_key ||
+          flat.assignedAgent.avatarKey ||
+          flat.assignedAgent.avatar_key)) ??
+      (flat.assigned_to &&
+        typeof flat.assigned_to === "object" &&
+        (flat.assigned_to.profileKey ||
+          flat.assigned_to.profile_key ||
+          flat.assigned_to.avatarKey ||
+          flat.assigned_to.avatar_key));
+    if (typeof profileKey !== "string") return null;
+    const t = profileKey.trim();
+    return t || null;
+  }
+
   /**
    * Apply agent identity when the payload targets the active conversation (or omits conversation id).
    */
   function maybeApplyVirtualAgentFromEvent(evt, eventConversationId) {
     const name = extractVirtualAgentDisplayName(evt);
     const id = extractVirtualAgentId(evt);
-    if (!name && !id) return;
+    const profileKey = extractVirtualAgentProfileKey(evt);
+    if (!name && !id && !profileKey) return;
     if (
       eventConversationId &&
       conversationId &&
@@ -862,6 +1011,39 @@
     }
     if (name) setLiveAgentDisplayName(name);
     if (id) setLiveAgentId(id);
+    if (profileKey !== null) void setLiveAgentProfileKey(profileKey);
+  }
+
+  function maybeApplyVirtualAgentFromConversation(conversation) {
+    if (!conversation || typeof conversation !== "object") return;
+    const assigned =
+      conversation.assignedAgent && typeof conversation.assignedAgent === "object"
+        ? conversation.assignedAgent
+        : null;
+    const assignment =
+      conversation.assignment && typeof conversation.assignment === "object"
+        ? conversation.assignment
+        : null;
+
+    const hydrated = {
+      agentId:
+        (assigned && (assigned.id || assigned.agentId || assigned.agent_id)) ||
+        (assignment && (assignment.agent_id || assignment.agentId)) ||
+        null,
+      agentName:
+        (assigned && (assigned.name || assigned.displayName)) ||
+        conversation.assignedAgentName ||
+        null,
+      agentProfileKey:
+        (assigned &&
+          (assigned.profileKey ||
+            assigned.profile_key ||
+            assigned.avatarKey ||
+            assigned.avatar_key)) ||
+        null,
+      conversationId: conversation.id || conversation.conversationId || null,
+    };
+    maybeApplyVirtualAgentFromEvent(hydrated, hydrated.conversationId);
   }
 
   /**
@@ -896,6 +1078,11 @@
       .forEach((el) => {
         el.textContent = agentLabel;
       });
+    const poweredByEl = host.shadowRoot.querySelector(".chat-widget-powered-by");
+    if (poweredByEl) {
+      poweredByEl.style.display = isLiveAgentAssigned() ? "none" : "";
+    }
+    renderHeaderAgentProfile();
     refreshHeaderPresence();
   }
 
@@ -965,6 +1152,37 @@
     } else {
       const loader = body.querySelector(".chat-widget-loader");
       if (loader) loader.remove();
+    }
+  }
+
+  function isRealInboundBotMessage(sender, messageId) {
+    const id = String(messageId || "");
+    return (
+      sender === "agent" &&
+      !id.startsWith("static_welcome_") &&
+      !id.startsWith("temp_")
+    );
+  }
+
+  function setInitialBodyLoading(isLoading) {
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const body = host.shadowRoot.getElementById("chatBody");
+    if (!body) return;
+
+    let loader = body.querySelector("#initialBodyLoader");
+    if (isLoading) {
+      if (!loader) {
+        loader = document.createElement("div");
+        loader.id = "initialBodyLoader";
+        loader.className = "chat-widget-initial-loader";
+        loader.innerHTML = `
+          <div class="chat-widget-initial-loader-spinner" role="status" aria-label="Loading"></div>
+        `;
+        body.appendChild(loader);
+      }
+    } else if (loader) {
+      loader.remove();
     }
   }
 
@@ -1079,11 +1297,17 @@
         {};
       const windowUiInstallation = windowUiApi.installation || {};
       const widgetAppearanceApi = apiConfig.widgetAppearance || {};
+      const startFlowFromBotFlow = resolveStartFlowFromBotFlow(apiConfig.botFlow);
       const flowWelcomeMessage =
-        typeof apiConfig.flowWelcomeMessage === "string" &&
+        (startFlowFromBotFlow?.welcomeText &&
+        typeof startFlowFromBotFlow.welcomeText === "string" &&
+        startFlowFromBotFlow.welcomeText.trim()
+          ? startFlowFromBotFlow.welcomeText.trim()
+          : "") ||
+        (typeof apiConfig.flowWelcomeMessage === "string" &&
         apiConfig.flowWelcomeMessage.trim()
           ? apiConfig.flowWelcomeMessage.trim()
-          : "";
+          : "");
 
       // Normalise launcher icon type (chat | message | custom)
       const launcherIconTypeRaw = String(
@@ -1264,6 +1488,19 @@
         botIntroductionMessage: String(
           windowUiMessages.botIntroductionMessage || "",
         ),
+        quickReplyOptions: Array.isArray(windowUiMessages.quickReplyOptions)
+          ? windowUiMessages.quickReplyOptions
+              .map((opt) => String(opt || "").trim())
+              .filter(Boolean)
+          : [],
+        demoFlow:
+          (windowUiMessages.demoFlow &&
+          typeof windowUiMessages.demoFlow === "object"
+            ? windowUiMessages.demoFlow
+            : null) ||
+          (windowUiApi.demoFlow && typeof windowUiApi.demoFlow === "object"
+            ? windowUiApi.demoFlow
+            : null),
         offlineMessage: String(windowUiMessages.offlineMessage || ""),
         fallbackMessage: String(windowUiMessages.fallbackMessage || ""),
         // Engagement triggers
@@ -1413,6 +1650,7 @@
         preview: normalizedPreview,
         // Store additional config that might be useful
         botFlow: apiConfig.botFlow,
+        initialFlow: startFlowFromBotFlow?.flow || null,
         defaultLanguage: apiConfig.defaultLanguage,
         timezone: apiConfig.timezone,
       };
@@ -1507,16 +1745,29 @@
       const appear = settings.appearance || {};
       const previewSnap = settings.preview || {};
 
-      // Resolve the base brand/logo key (used as fallback)
-      const legacyLogoKey = String(
-        appear.logoUrl || previewSnap.logoUrl || "",
-      ).trim();
-      const brandLogoKey = String(
-        appear.brandLogoUrl || previewSnap.brandLogoUrl || legacyLogoKey || "",
-      ).trim();
-      const headerLogoKey = String(
-        appear.headerLogoUrl || previewSnap.headerLogoUrl || brandLogoKey || "",
-      ).trim();
+      const firstNonEmpty = (...values) => {
+        for (const value of values) {
+          const normalized = String(value || "").trim();
+          if (normalized) return normalized;
+        }
+        return "";
+      };
+
+      // Keep header logo resolution independent from launcher type/icon selection.
+      const headerLogoKey = firstNonEmpty(
+        appear.headerLogoUrl,
+        previewSnap.headerLogoUrl,
+        appear.brandLogoUrl,
+        previewSnap.brandLogoUrl,
+        appear.logoUrl,
+        previewSnap.logoUrl,
+      );
+      const brandLogoKey = firstNonEmpty(
+        appear.brandLogoUrl,
+        previewSnap.brandLogoUrl,
+        appear.logoUrl,
+        previewSnap.logoUrl,
+      );
 
       // Header icon: prefer headerLogoUrl, then fallback to brand/logo.
       if (headerLogoKey) {
@@ -1536,9 +1787,10 @@
       }
 
       // Launcher icon: uses launcherIconUrl if provided, otherwise falls back to brandLogoUrl / logoUrl
-      const launcherCustomKey = String(
-        appear.launcherIconUrl || previewSnap.launcherIconUrl || "",
-      ).trim();
+      const launcherCustomKey = firstNonEmpty(
+        previewSnap.launcherIconUrl,
+        appear.launcherIconUrl,
+      );
       if (launcherCustomKey) {
         try {
           resolvedLauncherCustomUrl = await fetchLogoUrl(launcherCustomKey);
@@ -1618,12 +1870,53 @@
    * @param {string} key - The S3 key
    * @returns {Promise<string | null>} - The presigned URL or null if error
    */
-  async function fetchMediaUrl(key) {
+  function parsePresignedExpiry(url) {
+    if (!url || typeof url !== "string") return null;
+    try {
+      const parsed = new URL(url);
+      const amzDateRaw = parsed.searchParams.get("X-Amz-Date");
+      const amzExpiresRaw = parsed.searchParams.get("X-Amz-Expires");
+      if (!amzDateRaw || !amzExpiresRaw) return null;
+      const d = String(amzDateRaw);
+      if (d.length < 15) return null;
+      const year = Number(d.slice(0, 4));
+      const month = Number(d.slice(4, 6)) - 1;
+      const day = Number(d.slice(6, 8));
+      const hour = Number(d.slice(9, 11));
+      const minute = Number(d.slice(11, 13));
+      const second = Number(d.slice(13, 15));
+      const startTs = Date.UTC(year, month, day, hour, minute, second);
+      const ttlSeconds = Number(amzExpiresRaw);
+      if (!Number.isFinite(startTs) || !Number.isFinite(ttlSeconds)) return null;
+      return startTs + ttlSeconds * 1000;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function isCachedMediaUrlUsable(cached) {
+    if (!cached || !cached.url) return false;
+    // If expiry is unknown, allow a short-lived cache window.
+    if (!cached.expiresAt) return true;
+    // Refresh 2 minutes before expiry to avoid edge failures.
+    return Date.now() < cached.expiresAt - 2 * 60 * 1000;
+  }
+
+  async function fetchMediaUrl(key, options) {
     if (!key) return null;
+    const forceRefresh = Boolean(options && options.forceRefresh);
 
     // If a full URL is passed, return it as-is
     if (key.startsWith("http://") || key.startsWith("https://")) {
       return key;
+    }
+
+    const cacheKey = String(key);
+    if (!forceRefresh) {
+      const cached = mediaUrlCache.get(cacheKey);
+      if (isCachedMediaUrlUsable(cached)) {
+        return cached.url;
+      }
     }
 
     try {
@@ -1647,6 +1940,10 @@
         throw new Error("Invalid URL format returned from server");
       }
 
+      mediaUrlCache.set(cacheKey, {
+        url,
+        expiresAt: parsePresignedExpiry(url),
+      });
       return url;
     } catch (error) {
       console.error("UniBox: Error getting media access URL:", error);
@@ -1674,6 +1971,7 @@
         const data = await restoreRes.json();
         if (data.conversation) {
           conversationId = data.conversation.id;
+          maybeApplyVirtualAgentFromConversation(data.conversation);
           setLoading(false);
 
           if (data.messages && Array.isArray(data.messages)) {
@@ -1716,6 +2014,7 @@
                 msg.readByUsAt,
                 msg.type,
                 msg.media_storage_url,
+                extractFlowPayload(msg),
               );
             });
             setTimeout(() => {
@@ -1774,6 +2073,7 @@
           if (restoreRes.ok) {
             const data = await restoreRes.json();
             if (data.conversation) {
+              maybeApplyVirtualAgentFromConversation(data.conversation);
               const latestStatus = data.conversation.status || "active";
               const isEndedSession = latestStatus !== "active";
 
@@ -1817,8 +2117,17 @@
                     msg.readByUsAt,
                     msg.type,
                     msg.media_storage_url,
+                    extractFlowPayload(msg),
                   );
                 });
+                const hasInboundBotMessage = data.messages.some((msg) => {
+                  const sender =
+                    msg.sender || (msg.direction === "inbound" ? "user" : "agent");
+                  return isRealInboundBotMessage(sender, msg.id || msg.messageId);
+                });
+                if (hasInboundBotMessage) {
+                  waitingForFirstInboundMessage = false;
+                }
                 markVisibleMessagesAsRead();
               }
 
@@ -1854,6 +2163,7 @@
               if (showLoading) {
                 setLoading(false);
               }
+              setInitialBodyLoading(waitingForFirstInboundMessage);
 
               // Connect to WebSocket AND subscribe for real-time updates
               connectSocket().then(() => {
@@ -1873,6 +2183,9 @@
           userName: userDetails.name || "Guest User",
           userEmail: userDetails.email || "",
           testMode: settings.testMode,
+          // Required so the backend stores chatbotId in conversation.metadata
+          // and can resolve the published workflow for this chatbot.
+          chatbotId: userConfig.chatbotId || undefined,
         }),
       });
 
@@ -1891,6 +2204,8 @@
       if (showLoading) {
         setLoading(false);
       }
+      waitingForFirstInboundMessage = true;
+      setInitialBodyLoading(true);
     } catch (error) {
       console.error("UniBox: Init Error", error);
       if (showLoading) {
@@ -2081,6 +2396,7 @@
                         msg.readByUsAt,
                         msg.type,
                         msg.media_storage_url,
+                        extractFlowPayload(msg),
                       );
                     });
                     sortMessagesByTimestamp();
@@ -2285,6 +2601,7 @@
             if (evt.conversationId && conversationId === evt.conversationId) {
               conversationId = null;
               subscribedConversationId = null;
+              workflowAutoStarted = false; // Allow workflow to re-boot on next open
               clearLiveAgentDisplayName();
             }
 
@@ -2446,7 +2763,7 @@
       message.conversationId ??
       message.conversation_id;
 
-    normalized.sender =
+    const senderRaw =
       source.sender ??
       (source.direction === "inbound" ? "user" : null) ??
       (source.direction === "outbound" ? "agent" : null) ??
@@ -2455,6 +2772,14 @@
       (source.role === "agent" ? "agent" : null) ??
       (source.role === "user" ? "user" : null) ??
       message.sender;
+    normalized.sender =
+      typeof senderRaw === "string"
+        ? senderRaw.toLowerCase() === "agent" || senderRaw.toUpperCase() === "AGENT"
+          ? "agent"
+          : senderRaw.toLowerCase() === "user" || senderRaw.toUpperCase() === "USER"
+            ? "user"
+            : senderRaw
+        : senderRaw;
 
     normalized.text =
       source.text ??
@@ -2464,7 +2789,10 @@
       payload.body ??
       message.text;
 
-    normalized.type = source.type ?? payload.type ?? message.type;
+    normalized.type =
+      typeof (source.type ?? payload.type ?? message.type) === "string"
+        ? String(source.type ?? payload.type ?? message.type).toLowerCase()
+        : source.type ?? payload.type ?? message.type;
     normalized.media_storage_url =
       source.media_storage_url ??
       source.mediaStorageUrl ??
@@ -2510,7 +2838,296 @@
       source.sent_at ??
       message.timestamp;
 
+    normalized.flow = extractFlowPayload(source) || extractFlowPayload(message);
+
     return normalized;
+  }
+
+  function normalizeFlowPayload(candidate) {
+    if (!candidate || typeof candidate !== "object") return null;
+
+    // ── Already-normalized object (second pass) ────────────────────────────
+    // extractFlowPayload (called by normalizeSocketMessagePayload) already
+    // runs normalizeFlowPayload on incoming WebSocket payloads.  When
+    // appendMessageToUI subsequently calls normalizeFlowPayload on that same
+    // object, we must not strip the richer fields (inputType, dropdownOptions,
+    // isEnd, typingDelayMs, nodeId).  Detect this by checking for `nodeType`
+    // (the output key) together with at least one enriched field.
+    if (
+      typeof candidate.nodeType === "string" &&
+      candidate.nodeType.length > 0 &&
+      (candidate.nodeId !== undefined ||
+        candidate.inputType !== undefined ||
+        candidate.isEnd !== undefined ||
+        candidate.dropdownOptions !== undefined ||
+        candidate.typingDelayMs !== undefined ||
+        candidate.emojiSupport !== undefined ||
+        candidate.form !== undefined)
+    ) {
+      return {
+        nodeType: candidate.nodeType,
+        nodeId: candidate.nodeId ?? null,
+        inputType: candidate.inputType ?? null,
+        dropdownOptions: candidate.dropdownOptions ?? null,
+        form: candidate.form ?? null,
+        isEnd: Boolean(candidate.isEnd),
+        emojiSupport:
+          typeof candidate.emojiSupport === "boolean"
+            ? candidate.emojiSupport
+            : null,
+        typingDelayMs: candidate.typingDelayMs
+          ? Number(candidate.typingDelayMs)
+          : null,
+        options: Array.isArray(candidate.options) ? candidate.options : [],
+      };
+    }
+
+    // ── New workflow engine format ──────────────────────────────────────────
+    // Shape: { nodeId, type, options:[{label,value}], inputType, dropdownOptions,
+    //          isEnd, typingDelayMs }
+    const isWorkflowShape =
+      typeof candidate.type === "string" &&
+      candidate.type.length > 0 &&
+      (candidate.nodeId !== undefined ||
+        candidate.inputType !== undefined ||
+        candidate.isEnd !== undefined ||
+        (Array.isArray(candidate.options) &&
+          candidate.options.length > 0 &&
+          candidate.options[0] &&
+          (candidate.options[0].label !== undefined ||
+            candidate.options[0].value !== undefined)));
+
+    if (isWorkflowShape) {
+      const rawOpts = Array.isArray(candidate.options) ? candidate.options : [];
+      const options = rawOpts
+        .map((opt) => {
+          if (!opt || typeof opt !== "object") return null;
+          const label =
+            typeof opt.label === "string"
+              ? opt.label.trim()
+              : typeof opt.title === "string"
+                ? opt.title.trim()
+                : "";
+          const value =
+            typeof opt.value === "string"
+              ? opt.value.trim()
+              : typeof opt.id === "string"
+                ? opt.id.trim()
+                : label;
+          if (!label && !value) return null;
+          return { id: value, title: label || value, value, nextNodeId: "" };
+        })
+        .filter(Boolean);
+
+      return {
+        nodeType: candidate.type,
+        nodeId:
+          typeof candidate.nodeId === "string" ? candidate.nodeId : null,
+        inputType:
+          typeof candidate.inputType === "string"
+            ? candidate.inputType
+            : null,
+        dropdownOptions:
+          Array.isArray(candidate.dropdownOptions)
+            ? candidate.dropdownOptions.map(String).filter(Boolean)
+            : null,
+        form:
+          candidate.form && typeof candidate.form === "object"
+            ? candidate.form
+            : null,
+        isEnd: Boolean(candidate.isEnd),
+        emojiSupport:
+          typeof candidate.emojiSupport === "boolean"
+            ? candidate.emojiSupport
+            : null,
+        typingDelayMs: candidate.typingDelayMs
+          ? Number(candidate.typingDelayMs)
+          : null,
+        options,
+      };
+    }
+
+    // ── Legacy botFlow format ───────────────────────────────────────────────
+    // Shape: { nodeType, options:[{id, title, nextNodeId}] }
+    const nodeType =
+      typeof candidate.nodeType === "string"
+        ? candidate.nodeType
+        : typeof candidate.node_type === "string"
+          ? candidate.node_type
+          : null;
+    const rawOptions = Array.isArray(candidate.options) ? candidate.options : [];
+    if (!rawOptions.length) return null;
+    const options = rawOptions
+      .map((opt) => {
+        if (!opt || typeof opt !== "object") return null;
+        const id = typeof opt.id === "string" ? opt.id.trim() : "";
+        const title = typeof opt.title === "string" ? opt.title.trim() : "";
+        const nextNodeId =
+          typeof opt.nextNodeId === "string"
+            ? opt.nextNodeId.trim()
+            : typeof opt.next_node_id === "string"
+              ? opt.next_node_id.trim()
+              : "";
+        if (!id && !title) return null;
+        return { id, title, nextNodeId, value: id };
+      })
+      .filter(Boolean);
+    if (!options.length) return null;
+    return {
+      nodeType,
+      nodeId: null,
+      inputType: null,
+      dropdownOptions: null,
+      form: null,
+      isEnd: false,
+      emojiSupport: null,
+      typingDelayMs: null,
+      options,
+    };
+  }
+
+  function resolveStartFlowFromBotFlow(botFlow) {
+    if (!botFlow || typeof botFlow !== "object") return null;
+    const startNodeId =
+      typeof botFlow.startNodeId === "string" ? botFlow.startNodeId.trim() : "";
+    const nodes = Array.isArray(botFlow.nodes) ? botFlow.nodes : [];
+    if (!startNodeId || nodes.length === 0) return null;
+
+    const startNode = nodes.find(
+      (node) =>
+        node &&
+        typeof node === "object" &&
+        String(node.nodeId || "").trim() === startNodeId,
+    );
+    if (!startNode || typeof startNode !== "object") return null;
+
+    const welcomeText =
+      typeof startNode.text === "string" && startNode.text.trim()
+        ? startNode.text.trim()
+        : null;
+    const flow = normalizeFlowPayload({
+      nodeType:
+        typeof startNode.type === "string" ? String(startNode.type).trim() : "",
+      options: Array.isArray(startNode.options) ? startNode.options : [],
+    });
+
+    if (!welcomeText && !flow) return null;
+    return { welcomeText, flow };
+  }
+
+  /**
+   * Apply workflow engine flow state to the chat input area.
+   * Called whenever a bot message with flow metadata is rendered.
+   */
+  function applyFlowState(flow) {
+    if (!flow) return;
+    const host = document.getElementById("unibox-root");
+    if (!host || !host.shadowRoot) return;
+    const msgInput = host.shadowRoot.getElementById("msgInput");
+    const sendBtn = host.shadowRoot.getElementById("sendBtn");
+    if (!msgInput) return;
+
+    if (flow.isEnd) {
+      msgInput.disabled = true;
+      msgInput.placeholder = "Conversation ended";
+      if (sendBtn) sendBtn.disabled = true;
+      return;
+    }
+
+    // Re-enable in case a previous end state was reset (e.g. new conversation)
+    msgInput.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+
+    if (flow.inputType === "dropdown") {
+      // Dropdown is answered via buttons — typing is not expected
+      msgInput.disabled = true;
+      msgInput.placeholder = "Select an option above…";
+    } else if (
+      flow.nodeType === "form" &&
+      flow.form &&
+      flow.form.mode === "popup"
+    ) {
+      msgInput.disabled = true;
+      msgInput.placeholder = "Complete the form below…";
+    } else if (flow.inputType === "email") {
+      msgInput.placeholder = "Enter your email address…";
+    } else if (flow.inputType === "phone") {
+      msgInput.placeholder = "Enter your phone number…";
+    } else if (
+      flow.nodeType === "question" ||
+      flow.nodeType === "form"
+    ) {
+      msgInput.placeholder = "Type your answer…";
+    } else if (flow.nodeType === "options" || flow.options?.length > 0) {
+      // Options are answered via buttons — disable free text input
+      msgInput.disabled = true;
+      msgInput.placeholder = "Choose an option above…";
+    } else {
+      // Default / AI node — restore normal placeholder
+      msgInput.placeholder =
+        settings?.behavior?.inputPlaceholder || "Type a message…";
+    }
+  }
+
+  /**
+   * Auto-start the workflow engine when the widget is first opened.
+   * Sends a silent space character that boots the workflow from the start node.
+   * The space is trimmed to null inside the widget renderer so it never
+   * appears in the chat UI, but the backend receives a non-empty string which
+   * triggers WorkflowExecutionService.handleMessage.
+   */
+  async function autoStartWorkflow() {
+    if (workflowAutoStarted) return;
+    if (!userConfig.chatbotId) return;
+    workflowAutoStarted = true;
+
+    try {
+      if (!userId) {
+        userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        try { localStorage.setItem(STORAGE_KEY_USER, userId); } catch (_e) {}
+      }
+      if (!conversationId) {
+        await initializeConversation();
+      }
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        const result = await connectSocket();
+        if (result !== true) {
+          await waitForWsConnection(5000);
+        }
+      }
+      // Send a space — trimmed to null in widget rendering so it won't display
+      // in the chat, but the backend workflow engine will treat it as the first
+      // user message and boot from the start node.
+      waitingForFirstInboundMessage = true;
+      setInitialBodyLoading(true);
+      wsSend({
+        action: "sendMessage",
+        conversationId,
+        payload: {
+          text: " ",
+          chatbotId: userConfig.chatbotId || undefined,
+        },
+        userId,
+      });
+    } catch (err) {
+      console.error("UniBox: Failed to auto-start workflow", err);
+      workflowAutoStarted = false; // Allow retry on next open
+    }
+  }
+
+  function extractFlowPayload(message) {
+    if (!message || typeof message !== "object") return null;
+    const direct = normalizeFlowPayload(message.flow);
+    if (direct) return direct;
+    const rawPayload =
+      message.raw_payload && typeof message.raw_payload === "object"
+        ? message.raw_payload
+        : null;
+    const fromRaw = normalizeFlowPayload(rawPayload?.flow);
+    if (fromRaw) return fromRaw;
+    const payload =
+      message.payload && typeof message.payload === "object" ? message.payload : null;
+    return normalizeFlowPayload(payload?.flow);
   }
 
   function handleIncomingMessage(message) {
@@ -2541,6 +3158,7 @@
         message.readByUsAt || existingMessage.readByUsAt;
       if (incomingAgentName) existingMessage.agentName = incomingAgentName;
       if (incomingAgentId) existingMessage.agentId = incomingAgentId;
+      if (message.flow) existingMessage.flow = message.flow;
       existingMessage.timestamp = incomingTimestampMs;
       existingMessage.element.setAttribute(
         "data-timestamp",
@@ -2625,61 +3243,77 @@
       });
     }
 
-    appendMessageToUI(
-      normalizedTextValue,
-      message.sender,
-      message.messageId,
-      incomingTimestampMs,
-      message.status,
-      message.readAt,
-      message.readByUs,
-      message.readByUsAt,
-      message.type,
-      message.media_storage_url,
-    );
+    const renderIncomingMessage = () => {
+      appendMessageToUI(
+        normalizedTextValue,
+        message.sender,
+        message.messageId,
+        incomingTimestampMs,
+        message.status,
+        message.readAt,
+        message.readByUs,
+        message.readByUsAt,
+        message.type,
+        message.media_storage_url,
+        message.flow,
+      );
 
-    if (!isUserMessage) {
-      const storedMessage = messages.get(message.messageId);
-      if (storedMessage) {
-        if (incomingAgentName) storedMessage.agentName = incomingAgentName;
-        if (incomingAgentId) storedMessage.agentId = incomingAgentId;
-      }
-    }
-
-    sortMessagesByTimestamp();
-
-    if (!isUserMessage) {
-      const fromPayload = extractVirtualAgentDisplayName(message);
-      if (fromPayload) {
-        const aiReply =
-          message.is_ai_reply === true || message.isAiReply === true;
-        if (!aiReply) {
-          maybeApplyVirtualAgentFromEvent(
-            message,
-            message.conversationId ?? message.conversation_id,
-          );
+      if (!isUserMessage) {
+        const storedMessage = messages.get(message.messageId);
+        if (storedMessage) {
+          if (incomingAgentName) storedMessage.agentName = incomingAgentName;
+          if (incomingAgentId) storedMessage.agentId = incomingAgentId;
         }
       }
-      // AI/agent replied — clear all typing UI (optimistic AI + server-driven)
-      clearOptimisticAiTypingSchedule();
-      if (agentTypingTimeout) {
-        clearTimeout(agentTypingTimeout);
-        agentTypingTimeout = null;
+
+      sortMessagesByTimestamp();
+
+      if (!isUserMessage) {
+        const fromPayload = extractVirtualAgentDisplayName(message);
+        const profileKeyFromPayload = extractVirtualAgentProfileKey(message);
+        if (fromPayload || profileKeyFromPayload) {
+          const aiReply =
+            message.is_ai_reply === true || message.isAiReply === true;
+          if (!aiReply) {
+            maybeApplyVirtualAgentFromEvent(
+              message,
+              message.conversationId ?? message.conversation_id,
+            );
+          }
+        }
+        // AI/agent replied — clear all typing UI (optimistic AI + server-driven)
+        clearOptimisticAiTypingSchedule();
+        if (agentTypingTimeout) {
+          clearTimeout(agentTypingTimeout);
+          agentTypingTimeout = null;
+        }
+        agentTyping = false;
+        showTypingIndicator(false);
+        markVisibleMessagesAsRead();
       }
-      agentTyping = false;
-      showTypingIndicator(false);
-      markVisibleMessagesAsRead();
+    };
+
+    const normalizedFlow = extractFlowPayload(message);
+    const delayMs =
+      !isUserMessage &&
+      normalizedFlow &&
+      normalizedFlow.nodeType === "message" &&
+      Number.isFinite(normalizedFlow.typingDelayMs) &&
+      normalizedFlow.typingDelayMs > 0
+        ? Math.max(0, Math.floor(normalizedFlow.typingDelayMs))
+        : 0;
+    if (delayMs > 0) {
+      setTimeout(renderIncomingMessage, delayMs);
+      return;
     }
+    renderIncomingMessage();
   }
 
   /**
    * Whether AI replies are enabled for this chat (bot flow or explicit aiEnabled).
    */
   function isAiEnabled() {
-    return !!(
-      settings &&
-      (settings.botFlow || settings.behavior?.aiEnabled === true)
-    );
+    return !!(settings && settings.behavior?.aiEnabled === true);
   }
 
   function clearOptimisticAiTypingSchedule() {
@@ -2690,15 +3324,13 @@
   }
 
   /**
-   * After a successful WS send, show "Pulse AI is typing…" only following botDelayMs
-   * and only while no human agent has taken over the thread.
+   * After a successful WS send, show typing immediately and keep it visible
+   * until an explicit stop/response arrives (with a safety timeout fallback).
    */
   function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
-    if (!wsDelivered || !settings?.behavior?.typingIndicator) return;
-    // For widget UX consistency, show optimistic typing whenever the chat is in
-    // AI mode (i.e., no live agent takeover), even if upstream config flags are
-    // temporarily out of sync.
-    if (liveAgentDisplayName) return;
+    if (!wsDelivered) return;
+    // Live-agent sessions should rely on explicit agent typing events.
+    if (isLiveAgentAssigned()) return;
 
     clearOptimisticAiTypingSchedule();
     if (agentTypingTimeout) {
@@ -2708,25 +3340,21 @@
     agentTyping = false;
     showTypingIndicator(false);
 
-    const delayMs = Math.min(
-      Math.max(200, Number(settings.behavior?.botDelayMs) || 600),
-      2000,
-    );
-
+    // Show immediately for workflow UX: user should see bot is processing
+    // until the next bot response arrives.
     optimisticAiTypingTimer = setTimeout(() => {
       optimisticAiTypingTimer = null;
-      if (!liveAgentDisplayName) {
+      if (!isLiveAgentAssigned()) {
         agentTyping = true;
-        showTypingIndicator(true, { kind: "ai" });
-        // Keep optimistic AI typing visible longer and rely on explicit stop
-        // (typing:false) or actual reply arrival to clear it.
+        showTypingIndicator(true, { kind: "ai", force: true });
+        // Fallback auto-clear in case a downstream event is missed.
         agentTypingTimeout = setTimeout(() => {
           agentTyping = false;
           showTypingIndicator(false);
           agentTypingTimeout = null;
         }, 45000);
       }
-    }, delayMs);
+    }, 80);
   }
 
   /**
@@ -2779,9 +3407,9 @@
 
     // Many backends send generic typing start events without actor metadata.
     // Treat them as AI typing while the thread is not handed off to a live agent.
-    const treatGenericAsAi = isGenericTypingStart && !liveAgentDisplayName;
+    const treatGenericAsAi = isGenericTypingStart && !isLiveAgentAssigned();
 
-    if (liveAgentDisplayName && isFromAi && !isFromAgent) {
+    if (isLiveAgentAssigned() && isFromAi && !isFromAgent) {
       return;
     }
 
@@ -2790,7 +3418,7 @@
     if (isFromAgent) {
       showTyping = true;
       typingKind = "agent";
-    } else if ((isFromAi || treatGenericAsAi) && !liveAgentDisplayName) {
+    } else if ((isFromAi || treatGenericAsAi) && !isLiveAgentAssigned()) {
       showTyping = true;
       typingKind = "ai";
     }
@@ -3604,9 +4232,8 @@
       })();
     }
 
-    if (anyMediaWsSent) {
-      scheduleOptimisticAiTypingAfterSend(true);
-    }
+    // Typing state is now controlled by explicit backend typing events.
+    // No optimistic typing from the widget send path.
   }
 
   /**
@@ -3630,7 +4257,7 @@
    * Send text message via WebSocket
    * Falls back to HTTP API if WebSocket is not available
    */
-  async function sendMessageToApi(text) {
+  async function sendMessageToApi(text, payloadOverrides) {
     if (!userId) {
       userId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       localStorage.setItem(STORAGE_KEY_USER, userId);
@@ -3644,6 +4271,28 @@
       const storedEmail = sessionStorage.getItem(`${SESSION_KEY_FORM}_email`);
       if (storedName) userDetails.userName = storedName;
       if (storedEmail) userDetails.userEmail = storedEmail;
+    }
+
+    let preChatContext = null;
+    if (hasSubmittedForm) {
+      try {
+        const storedFormData = sessionStorage.getItem(SESSION_KEY_FORM_DATA);
+        const storedFieldMappings = sessionStorage.getItem(SESSION_KEY_FORM_MAPPINGS);
+        const parsedFormData = storedFormData ? JSON.parse(storedFormData) : null;
+        const parsedFieldMappings = storedFieldMappings
+          ? JSON.parse(storedFieldMappings)
+          : null;
+        if (parsedFormData && typeof parsedFormData === "object") {
+          preChatContext = {
+            formData: parsedFormData,
+            fieldMappings: Array.isArray(parsedFieldMappings)
+              ? parsedFieldMappings
+              : [],
+          };
+        }
+      } catch (err) {
+        console.warn("UniBox: Failed to parse pre-chat context", err);
+      }
     }
 
     try {
@@ -3680,9 +4329,31 @@
       const wsSent = wsSend({
         action: "sendMessage",
         conversationId: conversationId,
-        payload: {
-          text: text,
-        },
+        payload: Object.assign(
+          {
+            text: text,
+            // Always include chatbotId so the backend can resolve the published
+            // workflow even when conversation metadata hasn't been set yet.
+            chatbotId: userConfig.chatbotId || undefined,
+          },
+          (() => {
+            const basePayload =
+              payloadOverrides && typeof payloadOverrides === "object"
+                ? payloadOverrides
+                : {};
+            if (!preChatContext) return basePayload;
+            const mergedInteractivePayload =
+              basePayload.interactivePayload &&
+              typeof basePayload.interactivePayload === "object"
+                ? Object.assign({}, basePayload.interactivePayload, {
+                    preChatContext,
+                  })
+                : { preChatContext };
+            return Object.assign({}, basePayload, {
+              interactivePayload: mergedInteractivePayload,
+            });
+          })(),
+        ),
         userId: userId,
         userName: userDetails.userName,
         userEmail: userDetails.userEmail,
@@ -3690,7 +4361,6 @@
 
       if (wsSent) {
         console.log("UniBox: Message sent via WebSocket");
-        scheduleOptimisticAiTypingAfterSend(true);
       } else {
         // WebSocket not ready - message is queued and will be sent when connected
         console.log("UniBox: Message queued for WebSocket delivery");
@@ -3799,6 +4469,7 @@
             msg.readByUsAt,
             msg.type,
             msg.media_storage_url,
+            extractFlowPayload(msg),
           );
         });
 
@@ -3815,6 +4486,10 @@
    * Show media preview in popup modal
    */
   async function showMediaPreview(mediaKey, mediaType, caption) {
+    if (previewMediaRefreshTimer) {
+      clearInterval(previewMediaRefreshTimer);
+      previewMediaRefreshTimer = null;
+    }
     // Check if this is a local blob URL (for optimistic display)
     const isBlobUrl = mediaKey && mediaKey.startsWith("blob:");
 
@@ -3841,6 +4516,20 @@
         previewMedia.url = url;
         previewMedia.isLoading = false;
         renderPreviewModal();
+        // Refresh URL periodically while preview stays open; signed links expire in 30-60 mins.
+        previewMediaRefreshTimer = setInterval(async () => {
+          if (!previewMedia || previewMedia.mediaKey !== mediaKey) return;
+          try {
+            const refreshed = await fetchMediaUrl(mediaKey, { forceRefresh: true });
+            if (refreshed && previewMedia && previewMedia.mediaKey === mediaKey) {
+              previewMedia.url = refreshed;
+              previewMedia.error = false;
+              renderPreviewModal();
+            }
+          } catch (e) {
+            // Keep current preview URL until the next refresh attempt.
+          }
+        }, 25 * 60 * 1000);
       } else {
         throw new Error("Failed to load media");
       }
@@ -3939,8 +4628,7 @@
         loadingDiv.style.padding = "40px";
         loadingDiv.style.textAlign = "center";
         loadingDiv.innerHTML = `
-          <div style="width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top-color: ${settings.appearance.gradientColor1 || settings.appearance.primaryColor || "#912FF5"}; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px;"></div>
-          <div style="color: #6b7280; font-size: ${fontSizes.body};">Loading media...</div>
+          <div style="width: 32px; height: 32px; border: 3px solid transparent; border-bottom-color: #8D53F8; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto;" role="status" aria-label="Loading"></div>
         `;
         previewContainer.appendChild(loadingDiv);
       } else if (previewMedia.error) {
@@ -4017,6 +4705,10 @@
    * Close preview modal
    */
   function closePreviewModal() {
+    if (previewMediaRefreshTimer) {
+      clearInterval(previewMediaRefreshTimer);
+      previewMediaRefreshTimer = null;
+    }
     previewMedia = null;
 
     const host = document.getElementById("unibox-root");
@@ -4082,6 +4774,59 @@
     return text.trim().toLowerCase() === welcomeText.trim().toLowerCase();
   }
 
+  function extractPopupFormConfig(flow) {
+    if (
+      !flow ||
+      flow.nodeType !== "form" ||
+      !flow.form ||
+      String(flow.form.mode || "").trim().toLowerCase() !== "popup" ||
+      !Array.isArray(flow.form.fields)
+    ) {
+      return null;
+    }
+    const nodeId =
+      typeof flow.nodeId === "string" && flow.nodeId.trim()
+        ? flow.nodeId.trim()
+        : "";
+    const fields = flow.form.fields
+      .map((field) => {
+        if (!field || typeof field !== "object") return null;
+        const key =
+          typeof field.key === "string" && field.key.trim()
+            ? field.key.trim()
+            : "";
+        if (!key) return null;
+        return {
+          key,
+          prompt: typeof field.prompt === "string" ? field.prompt.trim() : key,
+          inputType:
+            typeof field.inputType === "string" ? field.inputType : "text",
+          required: Boolean(field.required),
+          retryMessage:
+            typeof field.retryMessage === "string"
+              ? field.retryMessage.trim()
+              : "",
+          crmPath:
+            typeof field.crmPath === "string" ? field.crmPath.trim() : "",
+          options: Array.isArray(field.options)
+            ? field.options
+                .map((option) => String(option ?? "").trim())
+                .filter(Boolean)
+            : [],
+        };
+      })
+      .filter(Boolean);
+    if (!nodeId || fields.length === 0) return null;
+    return {
+      nodeId,
+      formTitle:
+        typeof flow.form.formTitle === "string" && flow.form.formTitle.trim()
+          ? flow.form.formTitle.trim()
+          : "Please fill the form",
+      fields,
+    };
+  }
+
   // --- UPDATED APPEND MESSAGE FUNCTION WITH FIX ---
   function appendMessageToUI(
     text,
@@ -4094,6 +4839,7 @@
     readByUsAt,
     messageType,
     mediaStorageUrl,
+    flowData,
   ) {
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
@@ -4103,6 +4849,7 @@
     // Normalize text - handle null/undefined/empty string
     // Convert empty string to null for consistent handling
     const normalizedText = text && text.trim() ? text.trim() : null;
+    const normalizedFlow = normalizeFlowPayload(flowData);
 
     let preservedStaticWelcomeTimestamp = null;
 
@@ -4387,6 +5134,7 @@
           readByUsAt,
           type: messageType,
           mediaStorageUrl: mediaStorageUrl,
+          flow: normalizedFlow,
           element: msgDiv,
         };
         messages.set(normalizedId, messageData);
@@ -4414,17 +5162,169 @@
       if (normalizedText) {
         msgContent.textContent = normalizedText;
       } else {
-        // Empty message with no media - don't render the message at all
-        return; // Don't append empty messages
+        // No text — only keep going if the flow payload has renderable content
+        // (options buttons, dropdown choices, or a question/form prompt).
+        const hasFlowContent =
+          normalizedFlow &&
+          (normalizedFlow.options?.length > 0 ||
+            normalizedFlow.dropdownOptions?.length > 0 ||
+            (normalizedFlow.form &&
+              normalizedFlow.form.mode === "popup" &&
+              Array.isArray(normalizedFlow.form.fields) &&
+              normalizedFlow.form.fields.length > 0) ||
+            normalizedFlow.inputType ||
+            normalizedFlow.isEnd);
+        if (!hasFlowContent) {
+          return; // Truly empty — skip rendering
+        }
       }
     }
 
-    // Only append if we have content (text or media)
-    if (!hasMedia && !normalizedText) {
+    // ── Quick-option buttons (options node) ──────────────────────────────────
+    let optionsWrap = null;
+    if (
+      type === "agent" &&
+      normalizedFlow &&
+      Array.isArray(normalizedFlow.options) &&
+      normalizedFlow.options.length > 0
+    ) {
+      optionsWrap = document.createElement("div");
+      optionsWrap.className = "chat-widget-flow-options";
+      normalizedFlow.options.forEach((opt) => {
+        const label = opt.title || opt.id || "";
+        if (!label) return;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chat-widget-flow-option-btn";
+        btn.textContent = label;
+        btn.onclick = () => {
+          const allButtons = optionsWrap.querySelectorAll("button");
+          allButtons.forEach((el) => {
+            el.disabled = true;
+            el.style.opacity = "0.65";
+            el.style.cursor = "default";
+          });
+          const outgoingText = opt.title || opt.id || "";
+          if (!outgoingText) return;
+          const localMessageId = `msg_${Date.now()}_${Math.random()
+            .toString(36)
+            .substr(2, 9)}`;
+          appendMessageToUI(
+            outgoingText,
+            "user",
+            localMessageId,
+            new Date(),
+            "sent",
+            null,
+            false,
+            null,
+            "text",
+            null,
+          );
+          // Send value (workflow interactivePayload) + legacy interactive fields
+          const optionValue = opt.value || opt.id || outgoingText;
+          sendMessageToApi(outgoingText, {
+            interactivePayload: { value: optionValue },
+            interactive: {
+              button_reply: { id: optionValue, title: outgoingText },
+            },
+          }).catch((err) => {
+            console.error("UniBox: Failed to send flow option", err);
+          });
+        };
+        optionsWrap.appendChild(btn);
+      });
+      if (!optionsWrap.childElementCount) {
+        optionsWrap = null;
+      }
+    }
+
+    // ── Dropdown option buttons (question node with inputType:"dropdown") ────
+    let dropdownWrap = null;
+    if (
+      type === "agent" &&
+      normalizedFlow &&
+      normalizedFlow.inputType === "dropdown" &&
+      Array.isArray(normalizedFlow.dropdownOptions) &&
+      normalizedFlow.dropdownOptions.length > 0
+    ) {
+      dropdownWrap = document.createElement("div");
+      dropdownWrap.className = "chat-widget-flow-options";
+      normalizedFlow.dropdownOptions.forEach((optValue) => {
+        if (!optValue) return;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chat-widget-flow-option-btn";
+        btn.textContent = String(optValue);
+        btn.onclick = () => {
+          const allButtons = dropdownWrap.querySelectorAll("button");
+          allButtons.forEach((el) => {
+            el.disabled = true;
+            el.style.opacity = "0.65";
+            el.style.cursor = "default";
+          });
+          const selected = String(optValue);
+          const localMessageId = `msg_${Date.now()}_${Math.random()
+            .toString(36)
+            .substr(2, 9)}`;
+          appendMessageToUI(
+            selected,
+            "user",
+            localMessageId,
+            new Date(),
+            "sent",
+            null,
+            false,
+            null,
+            "text",
+            null,
+          );
+          sendMessageToApi(selected, {
+            interactivePayload: { value: selected },
+          }).catch((err) => {
+            console.error("UniBox: Failed to send dropdown selection", err);
+          });
+        };
+        dropdownWrap.appendChild(btn);
+      });
+      if (!dropdownWrap.childElementCount) dropdownWrap = null;
+    }
+
+    // ── Popup form (form node with formMode:"popup") ────────────────────────
+    if (type === "agent") {
+      const popupFormConfig = extractPopupFormConfig(normalizedFlow);
+      if (popupFormConfig) {
+        const bubbleText =
+          normalizedText ||
+          (typeof popupFormConfig.formTitle === "string" &&
+          popupFormConfig.formTitle.trim()
+            ? popupFormConfig.formTitle.trim()
+            : "Form");
+        msgContent.textContent = bubbleText;
+        activePopupFormConfig = popupFormConfig;
+        popupFormValues = {};
+        popupFormError = "";
+        isSubmittingPopupForm = false;
+        // Keep chat thread minimal: show a simple form bubble, and open
+        // popup view for interaction.
+        currentView = "popup-form";
+        renderView();
+      }
+    }
+
+    // Only append if we have content (text or media or flow UI)
+    const hasFlowUI = !!(optionsWrap || dropdownWrap);
+    if (!hasMedia && !normalizedText && !hasFlowUI) {
       return; // Safety check - don't render empty messages
     }
 
     msgDiv.appendChild(msgContent);
+    if (optionsWrap) {
+      msgDiv.appendChild(optionsWrap);
+    }
+    if (dropdownWrap) {
+      msgDiv.appendChild(dropdownWrap);
+    }
 
     const msgMeta = document.createElement("div");
     msgMeta.className = "chat-widget-message-meta";
@@ -4456,6 +5356,7 @@
         readByUsAt,
         type: messageType,
         mediaStorageUrl: mediaStorageUrl,
+        flow: normalizedFlow,
         element: msgDiv,
       };
       messages.set(normalizedId, messageData);
@@ -4475,6 +5376,16 @@
     requestAnimationFrame(() => {
       body.scrollTop = body.scrollHeight;
     });
+
+    if (waitingForFirstInboundMessage && isRealInboundBotMessage(type, normalizedId)) {
+      waitingForFirstInboundMessage = false;
+      setInitialBodyLoading(false);
+    }
+
+    // Apply workflow-driven input state changes (disable on end, hint on question)
+    if (type === "agent" && normalizedFlow) {
+      applyFlowState(normalizedFlow);
+    }
   }
 
   function sortMessagesByTimestamp() {
@@ -4646,7 +5557,7 @@
   }
 
   function showTypingIndicator(show, options) {
-    if (!settings?.behavior?.typingIndicator) return;
+    if (show && !settings?.behavior?.typingIndicator && !options?.force) return;
     const host = document.getElementById("unibox-root");
     if (!host || !host.shadowRoot) return;
     const typingIndicator = host.shadowRoot.getElementById("typingIndicator");
@@ -4849,6 +5760,15 @@
     const subtitle = String(preview.subtitle || "").trim();
 
     const styleTag = document.createElement("style");
+
+    const getMessageMapFromDemoFlow = (flow) => {
+      if (!flow || !Array.isArray(flow.messages)) return new Map();
+      return new Map(flow.messages.map((m) => [String(m.id || ""), m]));
+    };
+    const getQuickActionMapFromDemoFlow = (flow) => {
+      if (!flow || !Array.isArray(flow.quickActions)) return new Map();
+      return new Map(flow.quickActions.map((q) => [String(q.id || ""), q]));
+    };
 
     // Updated CSS to match the provided JSX UI exactly
     styleTag.textContent = `
@@ -5280,15 +6200,67 @@
           flex-direction: column;
           justify-content: center;
         }
+        .chat-widget-header-close {
+          border: none;
+          background: transparent;
+          color: #ffffff;
+          width: 24px;
+          height: 24px;
+          border-radius: 4px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          flex-shrink: 0;
+          margin-left: 8px;
+        }
+        .chat-widget-header-close:hover {
+          background: rgba(255, 255, 255, 0.16);
+        }
 
         .chat-widget-header-logo {
           width: 32px;
           height: 32px;
           border-radius: 50%;
+          border: 1px solid #ffffff;
           object-fit: cover;
           display: flex;
           align-items: center;
           justify-content: center;
+        }
+
+        .chat-widget-header-agent-profile-wrap {
+          width: 32px;
+          height: 32px;
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-left: 8px;
+        }
+
+        .chat-widget-header-agent-profile-wrap.hidden {
+          display: none;
+        }
+
+        .chat-widget-header-agent-profile {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          border: 1px solid #ffffff;
+          object-fit: cover;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .chat-widget-header-agent-profile-fallback {
+          background: rgba(255, 255, 255, 0.2);
+          color: #ffffff;
+          font-size: 11px;
+          font-weight: 600;
+          letter-spacing: 0.4px;
+          text-transform: uppercase;
         }
 
         .chat-widget-online-dot {
@@ -5373,6 +6345,7 @@
         .chat-widget-body {
           flex: 1;
           min-height: 0;
+          position: relative;
           overflow-y: auto;
           overflow-x: hidden;
           display: flex;
@@ -5425,6 +6398,28 @@
           border-radius: 50%;
           width: 24px;
           height: 24px;
+          animation: spin 1s linear infinite;
+        }
+
+        .chat-widget-initial-loader {
+          position: absolute;
+          inset: 0;
+          z-index: 5;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          align-items: center;
+          justify-content: center;
+          background: rgba(255, 255, 255, 0.86);
+          pointer-events: none;
+        }
+
+        .chat-widget-initial-loader-spinner {
+          width: 32px;
+          height: 32px;
+          border: 3px solid transparent;
+          border-bottom: 3px solid #8D53F8;
+          border-radius: 50%;
           animation: spin 1s linear infinite;
         }
 
@@ -5559,6 +6554,68 @@
           text-align: right;
         }
 
+        .chat-widget-quick-replies {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin-top: -8px;
+          margin-bottom: 12px;
+          max-width: 80%;
+          align-self: flex-start;
+          position: relative;
+          z-index: 1;
+        }
+        .chat-widget-quick-reply-btn {
+          border: 1px solid #EAEBF2;
+          background: #ffffff;
+          color: #525261;
+          border-radius: 4px;
+          padding: 6px 10px;
+          font-family: ${resolvedFontFamily} !important;
+          font-size: ${fontSizes.meta};
+          line-height: 20px;
+          font-weight: 400;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+        .chat-widget-quick-reply-btn:hover {
+          background: #f8f3ff;
+          border-color: #c9a7ff;
+        }
+        .chat-widget-flow-options {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin-top: 8px;
+          margin-bottom: 12px;
+          max-width: 100%;
+          align-self: stretch;
+          position: relative;
+          z-index: 1;
+        }
+        .chat-widget-flow-option-btn {
+          border: 1px solid #EAEBF2;
+          background: #ffffff;
+          color: #525261;
+          border-radius: 4px;
+          padding: 6px 10px;
+          font-family: ${resolvedFontFamily} !important;
+          font-size: ${fontSizes.meta};
+          line-height: 1.5;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          text-align: left;
+        }
+        .chat-widget-flow-option-btn:hover {
+          background: #f8f3ff;
+          border-color: #c9a7ff;
+        }
+        .chat-widget-flow-option-btn:disabled {
+          opacity: 0.65;
+          cursor: default;
+        }
+
         .chat-widget-read-receipt {
           display: inline-flex;
           align-items: center;
@@ -5635,17 +6692,17 @@
         .chat-widget-form-container {
           display: flex;
           flex-direction: column;
-          gap: 15px;
+          gap: 16px;
           background: #ffffff;
-          padding: 24px;
           border-radius: 8px;
         }
 
         .chat-widget-form-input {
           width: 100%;
-          padding: 10px;
+          padding: 0px 16px;
+          height: 32px;
           border: 1px solid #e5e7eb;
-          border-radius: 6px;
+          border-radius: 4px;
           font-size: ${fontSizes.body};
         }
 
@@ -5656,12 +6713,17 @@
 
         .chat-widget-form-btn {
           width: 100%;
-          padding: 12px;
+          padding: 0px 16px;
           background: ${accentColor};
+          height: 32px;
           color: white;
           border: none;
-          border-radius: 6px;
+          border-radius: 4px;
           cursor: pointer;
+          font-size: ${fontSizes.body};
+          font-weight: 400;
+          line-height: 20px;
+          box-sizing: border-box;
         }
 
         .chat-widget-footer-section {
@@ -5979,6 +7041,15 @@
     const headerSubtitleHtml = subtitle
       ? `<div class="chat-widget-header-subtitle" style="font-size:${fontSizes.meta};opacity:0.9">${escapeHtmlWidget(subtitle)}</div>`
       : "";
+    const showHeaderClose = Boolean(preview.showHeaderClose);
+    const headerCloseHtml = showHeaderClose
+      ? `<button type="button" class="chat-widget-header-close" id="chatHeaderClose" aria-label="Close widget">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>`
+      : "";
 
     const poweredByMarkSvg = `<svg class="chat-widget-powered-by-mark" width="16" height="16" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <rect width="32" height="32" rx="16" transform="matrix(-1 0 0 1 32 0)" fill="white"/>
@@ -6080,6 +7151,8 @@
               <div class="chat-widget-header-title" id="chatHeaderTitle">${escapeHtmlWidget(headerTitle)}</div>
               ${headerSubtitleHtml}
             </div>
+            <div class="chat-widget-header-agent-profile-wrap hidden" id="chatHeaderAgentProfile"></div>
+            ${headerCloseHtml}
           </div>
         </div>
         <div class="chat-widget-messages-pane" id="chatMessagesPane">
@@ -6146,7 +7219,50 @@
     const isFormEnabled = settings.preChatForm.enabled;
     const hasSubmittedForm =
       sessionStorage.getItem(SESSION_KEY_FORM) === "true";
-    let currentView = isFormEnabled && !hasSubmittedForm ? "form" : "chat";
+    currentView = isFormEnabled && !hasSubmittedForm ? "form" : "chat";
+    activePopupFormConfig = null;
+    popupFormValues = {};
+    popupFormError = "";
+    isSubmittingPopupForm = false;
+
+    const removeQuickRepliesFromBody = (bodyEl) => {
+      if (!bodyEl) return;
+      const existing = bodyEl.querySelectorAll(".chat-widget-quick-replies");
+      existing.forEach((node) => node.remove());
+    };
+
+    const renderQuickRepliesInBody = (bodyEl, options, onSelect) => {
+      removeQuickRepliesFromBody(bodyEl);
+      const safeOptions = Array.isArray(options)
+        ? options.filter(
+            (o) =>
+              o &&
+              typeof o.title === "string" &&
+              o.title.trim().length > 0 &&
+              typeof o.onSelect === "function",
+          )
+        : [];
+      if (safeOptions.length === 0) return;
+      const wrap = document.createElement("div");
+      wrap.className = "chat-widget-quick-replies";
+      safeOptions.forEach((opt, idx) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chat-widget-quick-reply-btn";
+        btn.textContent = opt.title;
+        btn.addEventListener("click", () => onSelect(opt, idx));
+        wrap.appendChild(btn);
+      });
+      const typingIndicator = bodyEl.querySelector("#typingIndicator");
+      if (typingIndicator) {
+        bodyEl.insertBefore(wrap, typingIndicator);
+      } else {
+        bodyEl.appendChild(wrap);
+      }
+      requestAnimationFrame(() => {
+        bodyEl.scrollTop = bodyEl.scrollHeight;
+      });
+    };
 
     const renderView = () => {
       const body = shadow.getElementById("chatBody");
@@ -6160,7 +7276,7 @@
 
       body.className =
         "chat-widget-body " +
-        (currentView === "form"
+        (currentView === "form" || currentView === "popup-form"
           ? "chat-widget-body--form"
           : "chat-widget-body--chat");
 
@@ -6213,10 +7329,8 @@
             }
 
             return `
-            <div style="margin-bottom: 15px;">
-              <label style="display: block; margin-bottom: 5px;">${f.label}${
-                f.required ? ' <span style="color:red">*</span>' : ""
-              }</label>
+            <div style="margin-bottom: 16px;">
+              <label style="display: block; margin-bottom: 8px; font-size: 14px; line-height: 16px; color: #4D4D58;">${f.label}</label>
               ${inputHtml}
             </div>
           `;
@@ -6234,22 +7348,42 @@
         const formContainer = document.createElement("div");
         formContainer.className = "chat-widget-form-container";
         formContainer.innerHTML = `
-          <div style="text-align:center; margin-bottom:5px; font-weight:600; font-size:${fontSizes.title}; color:#111;">${escapeHtmlWidget(composedWelcomeMessageForm)}</div>
-          <div style="text-align:center; margin-bottom:20px; font-size:${fontSizes.body}; color:#666;">Please fill in your details to continue.</div>
           <form id="preChatForm">
             ${fieldsHtml}
             ${consentHtml}
-            <button type="submit" class="chat-widget-form-btn">Start Chat</button>
+            <button type="submit" class="chat-widget-form-btn" disabled>Start Chat</button>
           </form>
         `;
         body.appendChild(formContainer);
 
         const formEl = formContainer.querySelector("#preChatForm");
         const consentEl = formContainer.querySelector("#preChatConsent");
+        const submitBtn = formContainer.querySelector(".chat-widget-form-btn");
+        const syncPreChatSubmitState = () => {
+          if (!submitBtn) return;
+          const consentOk = !consentEnabled || !consentEl || consentEl.checked;
+          const formValid =
+            typeof formEl.checkValidity === "function"
+              ? formEl.checkValidity()
+              : true;
+          submitBtn.disabled = !(consentOk && formValid);
+        };
+        formEl
+          .querySelectorAll("input, textarea, select")
+          .forEach((fieldEl) => {
+            fieldEl.addEventListener("input", syncPreChatSubmitState);
+            fieldEl.addEventListener("change", syncPreChatSubmitState);
+          });
+        syncPreChatSubmitState();
         formEl.addEventListener("submit", (e) => {
           e.preventDefault();
+          if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = "Submitting...";
+          }
           if (consentEnabled && consentEl && !consentEl.checked) {
             alert("Please accept the consent checkbox to continue.");
+            syncPreChatSubmitState();
             return;
           }
           const formData = new FormData(formEl);
@@ -6276,7 +7410,21 @@
 
           if (!capturedName && capturedEmail) capturedName = capturedEmail;
 
+          const preChatFieldMappings = settings.preChatForm.fields.map((field) => ({
+            key: field.id,
+            crmPath:
+              typeof field.crmPath === "string" && field.crmPath.trim()
+                ? field.crmPath.trim()
+                : `lead.${field.id}`,
+            inputType: field.type,
+          }));
+
           sessionStorage.setItem(SESSION_KEY_FORM, "true");
+          sessionStorage.setItem(SESSION_KEY_FORM_DATA, JSON.stringify(data));
+          sessionStorage.setItem(
+            SESSION_KEY_FORM_MAPPINGS,
+            JSON.stringify(preChatFieldMappings),
+          );
           if (capturedName)
             sessionStorage.setItem(`${SESSION_KEY_FORM}_name`, capturedName);
           if (capturedEmail)
@@ -6284,9 +7432,178 @@
 
           currentView = "chat";
           renderView();
+          appendMessageToUI(
+            "Form submitted",
+            "user",
+            `prechat_submit_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            new Date(),
+            "sent",
+            null,
+            false,
+            null,
+            "text",
+            null,
+          );
         });
+      } else if (currentView === "popup-form" && activePopupFormConfig) {
+        footerSection.classList.add("hidden");
+        const formContainer = document.createElement("div");
+        formContainer.className = "chat-widget-form-container";
+
+        const titleEl = document.createElement("div");
+        titleEl.style.fontSize = "14px";
+        titleEl.style.lineHeight = "24px";
+        titleEl.style.fontWeight = "600";
+        titleEl.style.color = "#18181E";
+        titleEl.textContent = activePopupFormConfig.formTitle;
+        formContainer.appendChild(titleEl);
+
+        const formEl = document.createElement("form");
+        activePopupFormConfig.fields.forEach((field) => {
+          const wrapper = document.createElement("div");
+          wrapper.style.marginBottom = "16px";
+
+          const label = document.createElement("label");
+          label.style.display = "block";
+          label.style.marginBottom = "8px";
+          label.style.fontSize = "12px";
+          label.style.lineHeight = "16px";
+          label.style.color = "#4b5563";
+          label.textContent = field.prompt;
+          wrapper.appendChild(label);
+
+          if (field.inputType === "dropdown" && field.options.length > 0) {
+            const select = document.createElement("select");
+            select.className = "chat-widget-form-input";
+            select.required = field.required;
+            select.value = String(popupFormValues[field.key] || "");
+            const emptyOption = document.createElement("option");
+            emptyOption.value = "";
+            emptyOption.textContent = "Select";
+            select.appendChild(emptyOption);
+            field.options.forEach((option) => {
+              const optionEl = document.createElement("option");
+              optionEl.value = option;
+              optionEl.textContent = option;
+              select.appendChild(optionEl);
+            });
+            select.addEventListener("change", (event) => {
+              popupFormValues[field.key] = String(event.target.value || "");
+            });
+            wrapper.appendChild(select);
+          } else {
+            const input = document.createElement("input");
+            input.className = "chat-widget-form-input";
+            input.type =
+              field.inputType === "phone"
+                ? "tel"
+                : field.inputType === "email"
+                  ? "email"
+                  : "text";
+            input.required = field.required;
+            input.placeholder = field.prompt;
+            input.value = String(popupFormValues[field.key] || "");
+            input.addEventListener("input", (event) => {
+              popupFormValues[field.key] = String(event.target.value || "");
+            });
+            wrapper.appendChild(input);
+          }
+          formEl.appendChild(wrapper);
+        });
+
+        const errorEl = document.createElement("div");
+        errorEl.style.marginBottom = "8px";
+        errorEl.style.color = "#B91C1C";
+        errorEl.style.fontSize = "12px";
+        errorEl.style.lineHeight = "16px";
+        errorEl.style.display = popupFormError ? "block" : "none";
+        errorEl.textContent = popupFormError || "";
+        formEl.appendChild(errorEl);
+
+        const submitBtn = document.createElement("button");
+        submitBtn.type = "submit";
+        submitBtn.className = "chat-widget-form-btn";
+        submitBtn.textContent = isSubmittingPopupForm ? "Submitting..." : "Submit";
+        submitBtn.disabled = isSubmittingPopupForm;
+        formEl.appendChild(submitBtn);
+
+        formEl.addEventListener("submit", (event) => {
+          event.preventDefault();
+          if (!activePopupFormConfig || isSubmittingPopupForm) return;
+
+          const formData = {};
+          let firstError = "";
+          activePopupFormConfig.fields.forEach((field) => {
+            const rawValue = String(popupFormValues[field.key] || "").trim();
+            formData[field.key] = rawValue;
+            if (!firstError && field.required && !rawValue) {
+              firstError =
+                field.retryMessage || `Please enter a valid value for ${field.prompt}`;
+            } else if (!firstError && rawValue) {
+              if (
+                field.inputType === "email" &&
+                !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawValue)
+              ) {
+                firstError =
+                  field.retryMessage ||
+                  `Please enter a valid value for ${field.prompt}`;
+              }
+              if (
+                !firstError &&
+                field.inputType === "phone" &&
+                !/^\+?\d{7,15}$/.test(rawValue.replace(/[\s-]/g, ""))
+              ) {
+                firstError =
+                  field.retryMessage ||
+                  `Please enter a valid value for ${field.prompt}`;
+              }
+            }
+          });
+          if (firstError) {
+            popupFormError = firstError;
+            renderView();
+            return;
+          }
+
+          popupFormError = "";
+          isSubmittingPopupForm = true;
+          renderView();
+          const fieldMappings = activePopupFormConfig.fields.map((field) => ({
+            key: field.key,
+            crmPath: field.crmPath || "",
+            inputType: field.inputType,
+          }));
+          sendMessageToApi("Message submitted", {
+            interactivePayload: {
+              event: "workflow_form_submit",
+              mode: "popup",
+              nodeId: activePopupFormConfig.nodeId,
+              formData,
+              fieldMappings,
+            },
+          })
+            .then(() => {
+              activePopupFormConfig = null;
+              popupFormValues = {};
+              popupFormError = "";
+              isSubmittingPopupForm = false;
+              currentView = "chat";
+              renderView();
+            })
+            .catch((err) => {
+              console.error("UniBox: Failed to submit popup form", err);
+              isSubmittingPopupForm = false;
+              popupFormError = "Unable to submit form. Please try again.";
+              renderView();
+            });
+        });
+
+        formContainer.appendChild(formEl);
+        body.appendChild(formContainer);
       } else {
         footerSection.classList.remove("hidden");
+        setInitialBodyLoading(waitingForFirstInboundMessage);
+        syncAgentTitleUi();
 
         // Re-render file chips if there are selected files
         if (selectedFiles.length > 0) {
@@ -6298,6 +7615,7 @@
           const welcomeText =
             settings.appearance.header?.welcomeMessage ||
             settings.appearance.welcomeMessage;
+          const initialFlow = normalizeFlowPayload(settings.initialFlow);
           if (welcomeText) {
             // Check if there are any existing messages
             const hasMessages = Array.from(messages.values()).length > 0;
@@ -6313,10 +7631,240 @@
                 null,
                 "text",
                 undefined,
+                initialFlow,
               );
               staticWelcomeShown = true;
             }
           }
+        }
+
+        // ── Auto-start the workflow engine on first open ──────────────────
+        // When there is no existing conversation, send a silent trigger so the
+        // workflow boots from the start node and delivers the real welcome
+        // message + options (or questions) via WebSocket without requiring the
+        // user to type first.
+        if (!conversationId && !workflowAutoStarted && userConfig.chatbotId) {
+          autoStartWorkflow();
+        }
+
+        const previewCfg = settings.preview || {};
+        const quickReplyOptions = Array.isArray(previewCfg.quickReplyOptions)
+          ? previewCfg.quickReplyOptions
+              .map((opt) => String(opt || "").trim())
+              .filter(Boolean)
+          : [];
+        const botIntroMessage = String(
+          previewCfg.botIntroductionMessage || "",
+        ).trim();
+        const demoFlow = previewCfg.demoFlow;
+        const hasDemoFlow =
+          demoFlow &&
+          Array.isArray(demoFlow.messages) &&
+          demoFlow.messages.length > 0;
+
+        const handleDemoQuickReply = (pickedOption) => {
+          const messageMap = getMessageMapFromDemoFlow(demoFlow);
+          const qaMap = getQuickActionMapFromDemoFlow(demoFlow);
+          const userText = String(pickedOption?.title || "").trim();
+          if (!userText) return;
+          const flowOptionId = String(
+            pickedOption?.id || pickedOption?.optionId || userText,
+          ).trim();
+          appendMessageToUI(
+            userText,
+            "user",
+            `demo_user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            new Date(),
+            "sent",
+            null,
+            false,
+            null,
+            "text",
+            null,
+          );
+          sendMessageToApi(userText, {
+            type: "interactive",
+            flowSelection: {
+              id: flowOptionId || null,
+              title: userText,
+              nextNodeId: String(pickedOption?.nextMessageId || "").trim() || null,
+              source: "quick_reply_demo_flow",
+            },
+            interactive: {
+              button_reply: {
+                id: flowOptionId || userText,
+                title: userText,
+              },
+            },
+          }).catch((err) => {
+            console.error("UniBox: Failed to send demo quick reply", err);
+          });
+          const target = messageMap.get(String(pickedOption.nextMessageId || ""));
+          if (target && String(target.text || "").trim()) {
+            appendMessageToUI(
+              String(target.text || "").trim(),
+              "agent",
+              `demo_agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              new Date(),
+              "sent",
+              null,
+              false,
+              null,
+              "text",
+              null,
+            );
+          }
+          if (target && String(target.nextEndText || "").trim()) {
+            appendMessageToUI(
+              String(target.nextEndText || "").trim(),
+              "agent",
+              `demo_end_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              new Date(),
+              "sent",
+              null,
+              false,
+              null,
+              "text",
+              null,
+            );
+          }
+          const qa =
+            target && target.nextQuickActionId != null
+              ? qaMap.get(String(target.nextQuickActionId))
+              : null;
+          demoQuickReplies = (qa?.options || [])
+            .map((nextOpt) => ({
+              title: String(nextOpt.title || "").trim(),
+              nextMessageId: String(nextOpt.nextMessageId || "").trim(),
+            }))
+            .filter(
+              (nextOpt) =>
+                nextOpt.title &&
+                nextOpt.nextMessageId &&
+                messageMap.has(nextOpt.nextMessageId),
+            );
+          showQuickReplies = demoQuickReplies.length > 0;
+          if (!showQuickReplies) {
+            removeQuickRepliesFromBody(body);
+            return;
+          }
+          renderQuickRepliesInBody(
+            body,
+            demoQuickReplies.map((opt) => ({
+              title: opt.title,
+              onSelect: () => {},
+              nextMessageId: opt.nextMessageId,
+            })),
+            (nextPicked) => handleDemoQuickReply(nextPicked),
+          );
+        };
+
+        if (hasDemoFlow && messages.size === 0) {
+          const messageMap = getMessageMapFromDemoFlow(demoFlow);
+          const qaMap = getQuickActionMapFromDemoFlow(demoFlow);
+          const start = messageMap.get(String(demoFlow.startMessageId || ""));
+          if (start && String(start.text || "").trim()) {
+            appendMessageToUI(
+              String(start.text || "").trim(),
+              "agent",
+              `demo_start_${Date.now()}`,
+              new Date(),
+              "sent",
+              null,
+              false,
+              null,
+              "text",
+              null,
+            );
+          }
+          const qa =
+            start && start.nextQuickActionId != null
+              ? qaMap.get(String(start.nextQuickActionId))
+              : null;
+          demoQuickReplies = (qa?.options || [])
+            .map((opt) => ({
+              title: String(opt.title || "").trim(),
+              nextMessageId: String(opt.nextMessageId || "").trim(),
+            }))
+            .filter(
+              (opt) =>
+                opt.title &&
+                opt.nextMessageId &&
+                messageMap.has(opt.nextMessageId),
+            );
+          showQuickReplies = demoQuickReplies.length > 0;
+        } else if (!hasDemoFlow && botIntroMessage && messages.size === 0) {
+          appendMessageToUI(
+            botIntroMessage,
+            "agent",
+            `bot_intro_${Date.now()}`,
+            new Date(),
+            "sent",
+            null,
+            false,
+            null,
+            "text",
+            null,
+          );
+        }
+
+        if (hasDemoFlow && showQuickReplies && demoQuickReplies.length > 0) {
+          renderQuickRepliesInBody(
+            body,
+            demoQuickReplies.map((opt) => ({
+              title: opt.title,
+              onSelect: () => {},
+              nextMessageId: opt.nextMessageId,
+            })),
+            (picked) => handleDemoQuickReply(picked),
+          );
+        } else if (!hasDemoFlow && showQuickReplies && quickReplyOptions.length > 0) {
+          renderQuickRepliesInBody(
+            body,
+            quickReplyOptions.map((opt) => ({
+              id: opt,
+              title: opt,
+              onSelect: () => {},
+            })),
+            (opt) => {
+              const picked = String(opt.title || "").trim();
+              if (!picked) return;
+              const flowOptionId = String(opt.id || picked).trim();
+              appendMessageToUI(
+                picked,
+                "user",
+                `quick_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                new Date(),
+                "sent",
+                null,
+                false,
+                null,
+                "text",
+                null,
+              );
+              sendMessageToApi(picked, {
+                type: "interactive",
+                flowSelection: {
+                  id: flowOptionId || null,
+                  title: picked,
+                  nextNodeId: null,
+                  source: "quick_reply",
+                },
+                interactive: {
+                  button_reply: {
+                    id: flowOptionId || picked,
+                    title: picked,
+                  },
+                },
+              }).catch((err) => {
+                console.error("UniBox: Failed to send quick reply", err);
+              });
+              showQuickReplies = false;
+              removeQuickRepliesFromBody(body);
+            },
+          );
+        } else {
+          removeQuickRepliesFromBody(body);
         }
       }
     };
@@ -6328,6 +7876,7 @@
     const launcherInner = shadow.getElementById("launcherInner");
     const windowEl = shadow.getElementById("chatWindow");
     const closeBtn = shadow.getElementById("closeBtn");
+    const headerCloseBtn = shadow.getElementById("chatHeaderClose");
     const sendBtn = shadow.getElementById("sendBtn");
     const msgInput = shadow.getElementById("msgInput");
     const attachBtn = shadow.getElementById("attachBtn");
@@ -6385,6 +7934,8 @@
       toggle();
     });
     if (closeBtn) closeBtn.addEventListener("click", () => toggle(false));
+    if (headerCloseBtn)
+      headerCloseBtn.addEventListener("click", () => toggle(false));
 
     const handleSend = () => {
       const text = msgInput.value.trim();

@@ -4463,6 +4463,13 @@
         userEmail: userDetails.userEmail,
       });
 
+      // Optimistic typing: show the "bot is processing" indicator immediately
+      // after every user send.  The indicator is cleared automatically when the
+      // first bot reply arrives (see renderIncomingMessage) or when the server
+      // sends an explicit typing:false event (handleTypingIndicator).
+      // In live-agent sessions scheduleOptimisticAiTypingAfterSend is a no-op.
+      scheduleOptimisticAiTypingAfterSend(true);
+
       if (wsSent) {
         console.log("UniBox: Message sent via WebSocket");
       } else {

@@ -2878,17 +2878,19 @@
   function normalizeFlowPayload(candidate) {
     if (!candidate || typeof candidate !== "object") return null;
 
-    // ── Already-normalized object (second pass) ────────────────────────────
-    // extractFlowPayload (called by normalizeSocketMessagePayload) already
-    // runs normalizeFlowPayload on incoming WebSocket payloads.  When
-    // appendMessageToUI subsequently calls normalizeFlowPayload on that same
-    // object, we must not strip the richer fields (inputType, dropdownOptions,
-    // isEnd, typingDelayMs, nodeId).  Detect this by checking for `nodeType`
-    // (the output key) together with at least one enriched field.
+    // ── Already-normalized object OR Kinesis/Lambda enriched format ─────────
+    // The backend now emits a single "Kinesis-compatible" shape that carries
+    // BOTH the legacy Lambda-readable field (`nodeType`) and all rich fields
+    // (`nodeId`, `type`, `inputType`, `dropdownOptions`, …).
+    //
+    // Detect this shape by: nodeType is a non-empty string AND at least one of
+    // the enriched fields is present (including `type`, which the old botFlow
+    // format never set alongside `nodeType`).
     if (
       typeof candidate.nodeType === "string" &&
       candidate.nodeType.length > 0 &&
       (candidate.nodeId !== undefined ||
+        candidate.type !== undefined ||
         candidate.inputType !== undefined ||
         candidate.isEnd !== undefined ||
         candidate.dropdownOptions !== undefined ||
@@ -2896,12 +2898,46 @@
         candidate.emojiSupport !== undefined ||
         candidate.form !== undefined)
     ) {
+      // Options in this shape already use the old {id, title, next_node_id}
+      // keys (set by toKinesisFlowFormat on the backend).  Normalise them into
+      // the internal {id, title, nextNodeId, value} form used by renderOptions.
+      const rawOpts = Array.isArray(candidate.options) ? candidate.options : [];
+      const options = rawOpts
+        .map((opt) => {
+          if (!opt || typeof opt !== "object") return null;
+          const title =
+            typeof opt.title === "string"
+              ? opt.title.trim()
+              : typeof opt.label === "string"
+                ? opt.label.trim()
+                : "";
+          const id =
+            typeof opt.id === "string"
+              ? opt.id.trim()
+              : typeof opt.value === "string"
+                ? opt.value.trim()
+                : title;
+          if (!id && !title) return null;
+          const nextNodeId =
+            typeof opt.nextNodeId === "string"
+              ? opt.nextNodeId.trim()
+              : typeof opt.next_node_id === "string"
+                ? opt.next_node_id.trim()
+                : id;
+          return { id, title: title || id, nextNodeId, value: id };
+        })
+        .filter(Boolean);
       return {
         nodeType: candidate.nodeType,
         nodeId: candidate.nodeId ?? null,
         inputType: candidate.inputType ?? null,
-        dropdownOptions: candidate.dropdownOptions ?? null,
-        form: candidate.form ?? null,
+        dropdownOptions: Array.isArray(candidate.dropdownOptions)
+          ? candidate.dropdownOptions.map(String).filter(Boolean)
+          : null,
+        form:
+          candidate.form && typeof candidate.form === "object"
+            ? candidate.form
+            : null,
         isEnd: Boolean(candidate.isEnd),
         emojiSupport:
           typeof candidate.emojiSupport === "boolean"
@@ -2910,7 +2946,7 @@
         typingDelayMs: candidate.typingDelayMs
           ? Number(candidate.typingDelayMs)
           : null,
-        options: Array.isArray(candidate.options) ? candidate.options : [],
+        options,
       };
     }
 
@@ -2979,16 +3015,41 @@
       };
     }
 
-    // ── Legacy botFlow format ───────────────────────────────────────────────
-    // Shape: { nodeType, options:[{id, title, nextNodeId}] }
+    // ── Legacy / Kinesis-normalised botFlow format ──────────────────────────
+    // Shape: { nodeType, options:[{id, title, next_node_id}] }
+    // The Kinesis → Lambda pipeline re-emits the flow using these legacy field
+    // names regardless of what enriched extra fields the backend included.
+    // We therefore also accept nodeType-only objects (no options) so that
+    // question / form / end nodes are not silently dropped.
     const nodeType =
       typeof candidate.nodeType === "string"
         ? candidate.nodeType
         : typeof candidate.node_type === "string"
           ? candidate.node_type
           : null;
+
+    // Gather any enriched fields that the Lambda may have passed through.
+    const enrichedNodeId =
+      typeof candidate.nodeId === "string" ? candidate.nodeId : null;
+    const enrichedInputType =
+      typeof candidate.inputType === "string" ? candidate.inputType : null;
+    const enrichedDropdownOptions = Array.isArray(candidate.dropdownOptions)
+      ? candidate.dropdownOptions.map(String).filter(Boolean)
+      : null;
+    const enrichedForm =
+      candidate.form && typeof candidate.form === "object"
+        ? candidate.form
+        : null;
+    const enrichedIsEnd = Boolean(candidate.isEnd);
+    const enrichedTypingDelayMs = candidate.typingDelayMs
+      ? Number(candidate.typingDelayMs)
+      : null;
+    const enrichedEmojiSupport =
+      typeof candidate.emojiSupport === "boolean"
+        ? candidate.emojiSupport
+        : null;
+
     const rawOptions = Array.isArray(candidate.options) ? candidate.options : [];
-    if (!rawOptions.length) return null;
     const options = rawOptions
       .map((opt) => {
         if (!opt || typeof opt !== "object") return null;
@@ -3004,16 +3065,21 @@
         return { id, title, nextNodeId, value: id };
       })
       .filter(Boolean);
-    if (!options.length) return null;
+
+    // Return null only when there is truly nothing useful (no nodeType and no
+    // valid options).  A nodeType alone is enough to carry flow metadata for
+    // non-options node types (question, form, end, handoff).
+    if (!nodeType && !options.length) return null;
+
     return {
       nodeType,
-      nodeId: null,
-      inputType: null,
-      dropdownOptions: null,
-      form: null,
-      isEnd: false,
-      emojiSupport: null,
-      typingDelayMs: null,
+      nodeId: enrichedNodeId,
+      inputType: enrichedInputType,
+      dropdownOptions: enrichedDropdownOptions,
+      form: enrichedForm,
+      isEnd: enrichedIsEnd,
+      emojiSupport: enrichedEmojiSupport,
+      typingDelayMs: enrichedTypingDelayMs,
       options,
     };
   }

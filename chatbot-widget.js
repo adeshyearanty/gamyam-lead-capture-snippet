@@ -1298,6 +1298,36 @@
       const windowUiInstallation = windowUiApi.installation || {};
       const widgetAppearanceApi = apiConfig.widgetAppearance || {};
       const startFlowFromBotFlow = resolveStartFlowFromBotFlow(apiConfig.botFlow);
+      const initialFlowFromApi = normalizeFlowPayload(apiConfig.initialFlow);
+      const initialFollowUpMessagesFromApi = Array.isArray(
+        apiConfig.initialFollowUpMessages,
+      )
+        ? apiConfig.initialFollowUpMessages
+            .map((item) => {
+              if (!item || typeof item !== "object") return null;
+              const text = String(item.text || "").trim();
+              const flow = normalizeFlowPayload(item.flow);
+              if (!text && !flow) return null;
+              return { text, flow };
+            })
+            .filter(Boolean)
+        : [];
+      const hasFollowUpOptionsFromApi = initialFollowUpMessagesFromApi.some(
+        (msg) =>
+          msg &&
+          msg.flow &&
+          Array.isArray(msg.flow.options) &&
+          msg.flow.options.length > 0,
+      );
+      const initialFlowWithoutDuplicateOptions =
+        hasFollowUpOptionsFromApi &&
+        initialFlowFromApi &&
+        initialFlowFromApi.nodeType === "message"
+          ? {
+              ...initialFlowFromApi,
+              options: [],
+            }
+          : initialFlowFromApi;
       const flowWelcomeMessage =
         (startFlowFromBotFlow?.welcomeText &&
         typeof startFlowFromBotFlow.welcomeText === "string" &&
@@ -1650,7 +1680,9 @@
         preview: normalizedPreview,
         // Store additional config that might be useful
         botFlow: apiConfig.botFlow,
-        initialFlow: startFlowFromBotFlow?.flow || null,
+        initialFlow:
+          initialFlowWithoutDuplicateOptions || startFlowFromBotFlow?.flow || null,
+        initialFollowUpMessages: initialFollowUpMessagesFromApi,
         defaultLanguage: apiConfig.defaultLanguage,
         timezone: apiConfig.timezone,
       };
@@ -7633,18 +7665,34 @@
                 undefined,
                 initialFlow,
               );
+              const initialFollowUps = Array.isArray(settings.initialFollowUpMessages)
+                ? settings.initialFollowUpMessages
+                : [];
+              if (initialFollowUps.length > 0) {
+                initialFollowUps.forEach((followUp, idx) => {
+                  const followUpText = String(followUp?.text || "").trim();
+                  const followUpFlow = normalizeFlowPayload(followUp?.flow);
+                  if (!followUpText && !followUpFlow) return;
+                  appendMessageToUI(
+                    followUpText || "",
+                    "agent",
+                    `static_welcome_followup_${Date.now()}_${idx}`,
+                    new Date(),
+                    "sent",
+                    null,
+                    false,
+                    null,
+                    "text",
+                    undefined,
+                    followUpFlow,
+                  );
+                });
+              }
               staticWelcomeShown = true;
+              waitingForFirstInboundMessage = false;
+              setInitialBodyLoading(false);
             }
           }
-        }
-
-        // ── Auto-start the workflow engine on first open ──────────────────
-        // When there is no existing conversation, send a silent trigger so the
-        // workflow boots from the start node and delivers the real welcome
-        // message + options (or questions) via WebSocket without requiring the
-        // user to type first.
-        if (!conversationId && !workflowAutoStarted && userConfig.chatbotId) {
-          autoStartWorkflow();
         }
 
         const previewCfg = settings.preview || {};

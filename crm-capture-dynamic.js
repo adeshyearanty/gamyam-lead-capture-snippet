@@ -11,14 +11,64 @@
   const ENCRYPTION_PASSPHRASE = "capture-widget-encryption-key-2026";
 
   // --- Encryption helpers (decrypt only, UI does encrypt) ---
+  function normalizeBase64(str) {
+    if (typeof str !== "string") return "";
+    const trimmed = str.trim().replace(/\s+/g, "");
+    // Support base64url payloads as well.
+    const b64 = trimmed.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = b64.length % 4;
+    if (!padding) return b64;
+    return b64 + "=".repeat(4 - padding);
+  }
+
   function base64Decode(str) {
-    const binary = atob(str);
+    const binary = atob(normalizeBase64(str));
     const len = binary.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
       bytes[i] = binary.charCodeAt(i);
     }
     return bytes;
+  }
+
+  function tryParseJson(value) {
+    if (typeof value !== "string") return null;
+    try {
+      return JSON.parse(value);
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function resolveEncryptedPayload(rawValue) {
+    // Accept string payloads or object payloads.
+    if (!rawValue) return null;
+
+    if (typeof rawValue === "object") {
+      const iv = rawValue.iv || rawValue.nonce || rawValue.initializationVector;
+      const ciphertext =
+        rawValue.ciphertext ||
+        rawValue.data ||
+        rawValue.encryptedData ||
+        rawValue.payload;
+      if (iv && ciphertext) {
+        return { ivBytes: base64Decode(iv), cipherBytes: base64Decode(ciphertext) };
+      }
+      return null;
+    }
+
+    if (typeof rawValue !== "string") return null;
+
+    const parsed = tryParseJson(rawValue);
+    if (parsed && typeof parsed === "object") {
+      return resolveEncryptedPayload(parsed);
+    }
+
+    const combined = base64Decode(rawValue);
+    if (combined.length <= 12) {
+      throw new Error("Encrypted payload too short");
+    }
+    return { ivBytes: combined.slice(0, 12), cipherBytes: combined.slice(12) };
   }
 
   async function getEncryptionKey(passphrase) {
@@ -35,20 +85,20 @@
   }
 
   async function decryptConfig(encryptedBase64, passphrase) {
-    if (!encryptedBase64 || !passphrase || !window.crypto?.subtle) {
+    if (!encryptedBase64 || !passphrase || !window.crypto?.subtle || !window.atob) {
       throw new Error("Decryption not available");
     }
-
-    const combined = base64Decode(encryptedBase64);
-    const iv = combined.slice(0, 12);
-    const ciphertext = combined.slice(12);
+    const payload = resolveEncryptedPayload(encryptedBase64);
+    if (!payload) {
+      throw new Error("Unsupported encrypted config format");
+    }
 
     const key = await getEncryptionKey(passphrase);
 
     const plaintext = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
+      { name: "AES-GCM", iv: payload.ivBytes },
       key,
-      ciphertext
+      payload.cipherBytes
     );
 
     const decoder = new TextDecoder();
@@ -60,9 +110,9 @@
   const defaults = {
     siteId: "",
     apiToken: "09FwQAlQL37yaYMYBifrw9m8TkIWoK3228uELTc3",
-    // Canonical endpoint for public lead creation
-    baseUrl: "https://dev-api.salesastra.ai/pulse/v1/leads",
-    endpointPath: "",
+    // Base URL and endpoint for public lead creation
+    baseUrl: "https://dev-api.salesastra.ai/pulse/v1",
+    endpointPath: "/leads",
     // If endpoint is null, it'll be derived from baseUrl + endpointPath
     endpoint: null,
     tenantId: "",
@@ -113,14 +163,9 @@
       this.config = { ...defaults, ...options };
 
       // Derive endpoint from baseUrl + endpointPath if not explicitly provided
-      if (!this.config.endpoint && this.config.baseUrl) {
+      if (!this.config.endpoint && this.config.baseUrl && this.config.endpointPath) {
         const trimmedBase = this.config.baseUrl.replace(/\/+$/, "");
-        const normalizedPath = this.config.endpointPath
-          ? this.config.endpointPath.startsWith("/")
-            ? this.config.endpointPath
-            : `/${this.config.endpointPath}`
-          : "";
-        this.config.endpoint = `${trimmedBase}${normalizedPath}`;
+        this.config.endpoint = `${trimmedBase}${this.config.endpointPath}`;
       }
 
       this.initialize();
@@ -483,12 +528,25 @@
         const encryptedConfig = globalCfg?.encryptedConfig;
 
         if (encryptedConfig) {
-          const decrypted = await decryptConfig(
-            encryptedConfig,
-            ENCRYPTION_PASSPHRASE
-          );
-          // Decrypted values override baseOptions, but data-* can still act as fallback
-          finalOptions = { ...baseOptions, ...decrypted };
+          try {
+            const decrypted = await decryptConfig(
+              encryptedConfig,
+              ENCRYPTION_PASSPHRASE
+            );
+            // Decrypted values override baseOptions, but data-* can still act as fallback
+            finalOptions = { ...baseOptions, ...decrypted };
+          } catch (decryptErr) {
+            // Some publishers accidentally pass plain JSON as encryptedConfig.
+            const parsed =
+              typeof encryptedConfig === "string"
+                ? tryParseJson(encryptedConfig)
+                : null;
+            if (parsed && typeof parsed === "object") {
+              finalOptions = { ...baseOptions, ...parsed };
+            } else {
+              throw decryptErr;
+            }
+          }
         } else if (globalCfg && typeof globalCfg === "object") {
           // Allow passing plain config via global as well
           const { encryptedConfig: _ignored, ...plain } = globalCfg;

@@ -526,6 +526,13 @@
         const globalCfg =
           window.UniBoxEmbedConfig || window.CRMLeadCaptureConfig || null;
         const encryptedConfig = globalCfg?.encryptedConfig;
+        const plainGlobal =
+          globalCfg && typeof globalCfg === "object"
+            ? (() => {
+                const { encryptedConfig: _ignored, ...plain } = globalCfg;
+                return plain;
+              })()
+            : {};
 
         if (encryptedConfig) {
           try {
@@ -534,7 +541,7 @@
               ENCRYPTION_PASSPHRASE
             );
             // Decrypted values override baseOptions, but data-* can still act as fallback
-            finalOptions = { ...baseOptions, ...decrypted };
+            finalOptions = { ...baseOptions, ...plainGlobal, ...decrypted };
           } catch (decryptErr) {
             // Some publishers accidentally pass plain JSON as encryptedConfig.
             const parsed =
@@ -542,15 +549,19 @@
                 ? tryParseJson(encryptedConfig)
                 : null;
             if (parsed && typeof parsed === "object") {
-              finalOptions = { ...baseOptions, ...parsed };
+              finalOptions = { ...baseOptions, ...plainGlobal, ...parsed };
             } else {
-              throw decryptErr;
+              finalOptions = { ...baseOptions, ...plainGlobal };
+              const reason =
+                decryptErr instanceof Error ? decryptErr.message : String(decryptErr);
+              console.warn(
+                `[Gamyam CRM] Encrypted config could not be decrypted (${reason}). Falling back to non-encrypted config/data-* attributes.`
+              );
             }
           }
         } else if (globalCfg && typeof globalCfg === "object") {
           // Allow passing plain config via global as well
-          const { encryptedConfig: _ignored, ...plain } = globalCfg;
-          finalOptions = { ...baseOptions, ...plain };
+          finalOptions = { ...baseOptions, ...plainGlobal };
         }
       } catch (e) {
         console.error("[Gamyam CRM] Failed to decrypt config", e);

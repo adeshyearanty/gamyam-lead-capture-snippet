@@ -2053,6 +2053,8 @@
           setLoading(false);
 
           if (data.messages && Array.isArray(data.messages)) {
+            const replayActivePopupFormMessageId =
+              getReplayActivePopupFormMessageId(data.messages);
             if (staticWelcomeShown) {
               const staticWelcome = Array.from(messages.values()).find(
                 (msg) => msg.id && msg.id.startsWith("static_welcome_"),
@@ -2095,6 +2097,7 @@
                 extractFlowPayload(msg),
                 msg.agentName ?? msg.agent_name ?? null,
                 msg.is_ai_reply === true || msg.isAiReply === true,
+                (msg.id || msg.messageId) === replayActivePopupFormMessageId,
               );
             });
             setTimeout(() => {
@@ -2171,6 +2174,8 @@
 
               // Render historical messages for this user (even if the last session is ended)
               if (data.messages && Array.isArray(data.messages)) {
+                const replayActivePopupFormMessageId =
+                  getReplayActivePopupFormMessageId(data.messages);
                 data.messages.forEach((msg) => {
                   // Normalize text - convert empty string to null
                   const textValue = msg.text || msg.text_body;
@@ -2200,6 +2205,7 @@
                     extractFlowPayload(msg),
                     msg.agentName ?? msg.agent_name ?? null,
                     msg.is_ai_reply === true || msg.isAiReply === true,
+                    (msg.id || msg.messageId) === replayActivePopupFormMessageId,
                   );
                 });
                 const hasInboundBotMessage = data.messages.some((msg) => {
@@ -2458,6 +2464,8 @@
                     threadData.messages &&
                     Array.isArray(threadData.messages)
                   ) {
+                    const replayActivePopupFormMessageId =
+                      getReplayActivePopupFormMessageId(threadData.messages);
                     threadData.messages.forEach((msg) => {
                       // Normalize text - convert empty string to null
                       const textValue = msg.text || msg.text_body;
@@ -2487,6 +2495,7 @@
                         extractFlowPayload(msg),
                         msg.agentName ?? msg.agent_name ?? null,
                         msg.is_ai_reply === true || msg.isAiReply === true,
+                        (msg.id || msg.messageId) === replayActivePopupFormMessageId,
                       );
                     });
                     sortMessagesByTimestamp();
@@ -4667,6 +4676,8 @@
         }
 
         // Now render all messages from thread in correct order
+        const replayActivePopupFormMessageId =
+          getReplayActivePopupFormMessageId(threadData.messages);
         threadData.messages.forEach((msg) => {
           // Normalize text - convert empty string to null
           const textValue = msg.text || msg.text_body;
@@ -4693,6 +4704,9 @@
             msg.type,
             msg.media_storage_url,
             extractFlowPayload(msg),
+            msg.agentName ?? msg.agent_name ?? null,
+            msg.is_ai_reply === true || msg.isAiReply === true,
+            (msg.id || msg.messageId) === replayActivePopupFormMessageId,
           );
         });
 
@@ -5101,6 +5115,20 @@
     });
   }
 
+  function getReplayActivePopupFormMessageId(threadMessages) {
+    if (!Array.isArray(threadMessages) || threadMessages.length === 0) return null;
+    const lastMessage = threadMessages[threadMessages.length - 1];
+    if (!lastMessage || String(lastMessage.sender || "").toLowerCase() !== "agent") {
+      return null;
+    }
+    const flow = extractFlowPayload(lastMessage);
+    const mode = String(flow?.form?.mode || flow?.form?.formMode || "")
+      .trim()
+      .toLowerCase();
+    if (flow?.nodeType !== "form" || mode !== "popup") return null;
+    return String(lastMessage.id || lastMessage.messageId || "").trim() || null;
+  }
+
   // --- UPDATED APPEND MESSAGE FUNCTION WITH FIX ---
   function appendMessageToUI(
     text,
@@ -5116,6 +5144,7 @@
     flowData,
     agentLabelOverride,
     isAiReply,
+    allowPopupFormActivation = true,
   ) {
     const normalizedAgentLabel =
       typeof agentLabelOverride === "string" && agentLabelOverride.trim()
@@ -5588,15 +5617,17 @@
             ? popupFormConfig.formTitle.trim()
             : "Form");
         msgContent.textContent = threadBubbleText;
-        activePopupFormConfig = popupFormConfig;
-        popupFormValues = {};
-        popupFormError = "";
-        isSubmittingPopupForm = false;
-        // Keep the form title as a thread bubble, but defer inserting it while
-        // popup form view is active.
-        currentView = "popup-form";
-        deferBubbleInsertForPopupForm = true;
-        renderView();
+        if (allowPopupFormActivation) {
+          activePopupFormConfig = popupFormConfig;
+          popupFormValues = {};
+          popupFormError = "";
+          isSubmittingPopupForm = false;
+          // Keep the form title as a thread bubble, but defer inserting it while
+          // popup form view is active.
+          currentView = "popup-form";
+          deferBubbleInsertForPopupForm = true;
+          renderView();
+        }
       }
     }
 

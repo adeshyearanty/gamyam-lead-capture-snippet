@@ -4998,6 +4998,36 @@
   }
 
   function extractPopupFormConfig(flow) {
+    const toTitleCaseWords = (input) => {
+      return String(input || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word) => {
+          if (!word) return word;
+          return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        })
+        .join(" ");
+    };
+    const humanizeFieldKey = (rawKey) => {
+      const key = String(rawKey || "").trim();
+      if (!key) return "";
+      return toTitleCaseWords(
+        key
+          .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+          .replace(/[_-]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim(),
+      );
+    };
+    const normalizeFieldPrompt = (rawPrompt, key) => {
+      const prompt = String(rawPrompt || "").trim();
+      const fallback = humanizeFieldKey(key);
+      if (!prompt) return fallback;
+      // If prompt is provided but key-like (e.g., "contactNumber"), normalize it too.
+      const looksLikeKey = /^[a-z0-9_-]+$/.test(prompt) || /[a-z][A-Z]/.test(prompt);
+      return looksLikeKey ? humanizeFieldKey(prompt) : toTitleCaseWords(prompt);
+    };
     const mode = String(flow?.form?.mode || flow?.form?.formMode || "")
       .trim()
       .toLowerCase();
@@ -5023,9 +5053,10 @@
             : "";
         if (!key) return null;
         const promptText =
-          typeof field.prompt === "string" && field.prompt.trim()
-            ? field.prompt.trim()
-            : key;
+          normalizeFieldPrompt(
+            typeof field.prompt === "string" ? field.prompt : "",
+            key,
+          ) || humanizeFieldKey(key);
         return {
           key,
           prompt: promptText,
@@ -5057,6 +5088,17 @@
           : "Please fill the form",
       fields,
     };
+  }
+
+  function isPopupFormReadyToSubmit(config) {
+    if (!config || !Array.isArray(config.fields) || config.fields.length === 0) {
+      return false;
+    }
+    return config.fields.every((field) => {
+      if (!field || !field.required) return true;
+      const value = String(popupFormValues[field.key] || "").trim();
+      return value.length > 0;
+    });
   }
 
   // --- UPDATED APPEND MESSAGE FUNCTION WITH FIX ---
@@ -5094,6 +5136,7 @@
     // Convert empty string to null for consistent handling
     const normalizedText = text && text.trim() ? text.trim() : null;
     const normalizedFlow = normalizeFlowPayload(flowData);
+    let suppressBubbleForPopupForm = false;
 
     let preservedStaticWelcomeTimestamp = null;
 
@@ -5538,22 +5581,19 @@
     if (type === "agent") {
       const popupFormConfig = extractPopupFormConfig(normalizedFlow);
       if (popupFormConfig) {
-        const bubbleText =
-          normalizedText ||
-          (typeof popupFormConfig.formTitle === "string" &&
-          popupFormConfig.formTitle.trim()
-            ? popupFormConfig.formTitle.trim()
-            : "Form");
-        msgContent.textContent = bubbleText;
         activePopupFormConfig = popupFormConfig;
         popupFormValues = {};
         popupFormError = "";
         isSubmittingPopupForm = false;
-        // Keep chat thread minimal: show a simple form bubble, and open
-        // popup view for interaction.
+        // Popup form nodes should render only as the form view, not a chat bubble.
         currentView = "popup-form";
+        suppressBubbleForPopupForm = true;
         renderView();
       }
+    }
+
+    if (suppressBubbleForPopupForm) {
+      return;
     }
 
     // Only append if we have content (text or media or flow UI)
@@ -7705,6 +7745,7 @@
         footerSection.classList.add("hidden");
         const formContainer = document.createElement("div");
         formContainer.className = "chat-widget-form-container";
+        let syncPopupSubmitState = () => {};
 
         const titleEl = document.createElement("div");
         titleEl.style.fontSize = "14px";
@@ -7745,6 +7786,7 @@
             });
             select.addEventListener("change", (event) => {
               popupFormValues[field.key] = String(event.target.value || "");
+              syncPopupSubmitState();
             });
             wrapper.appendChild(select);
           } else {
@@ -7761,6 +7803,7 @@
             input.value = String(popupFormValues[field.key] || "");
             input.addEventListener("input", (event) => {
               popupFormValues[field.key] = String(event.target.value || "");
+              syncPopupSubmitState();
             });
             wrapper.appendChild(input);
           }
@@ -7780,7 +7823,16 @@
         submitBtn.type = "submit";
         submitBtn.className = "chat-widget-form-btn";
         submitBtn.textContent = isSubmittingPopupForm ? "Submitting..." : "Submit";
-        submitBtn.disabled = isSubmittingPopupForm;
+        const syncPopupSubmitStateImpl = () => {
+          const canSubmit =
+            !isSubmittingPopupForm && isPopupFormReadyToSubmit(activePopupFormConfig);
+          submitBtn.disabled = !canSubmit;
+          submitBtn.style.background = canSubmit ? "" : "#D1D5DB";
+          submitBtn.style.color = canSubmit ? "" : "#6B7280";
+          submitBtn.style.cursor = canSubmit ? "pointer" : "not-allowed";
+        };
+        syncPopupSubmitState = syncPopupSubmitStateImpl;
+        syncPopupSubmitState();
         formEl.appendChild(submitBtn);
 
         formEl.addEventListener("submit", (event) => {

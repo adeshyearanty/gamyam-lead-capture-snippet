@@ -7560,6 +7560,40 @@
       });
     };
 
+    const restoreThreadMessagesInBody = (bodyEl) => {
+      if (!bodyEl) return;
+      const uniqueMessages = [];
+      const seenIds = new Set();
+      messages.forEach((messageData, mapKey) => {
+        if (!messageData || !messageData.element) return;
+        const stableId = String(
+          messageData.id || messageData.messageId || mapKey || "",
+        ).trim();
+        if (!stableId || seenIds.has(stableId)) return;
+        seenIds.add(stableId);
+        uniqueMessages.push(messageData);
+      });
+      uniqueMessages.sort((a, b) => {
+        const aTs = toTimestampMs(
+          getCanonicalMessageTimestamp(a) ?? a.timestamp ?? 0,
+        );
+        const bTs = toTimestampMs(
+          getCanonicalMessageTimestamp(b) ?? b.timestamp ?? 0,
+        );
+        return aTs - bTs;
+      });
+      const typingIndicator = bodyEl.querySelector("#typingIndicator");
+      uniqueMessages.forEach((messageData) => {
+        const el = messageData.element;
+        if (!el) return;
+        if (typingIndicator) {
+          bodyEl.insertBefore(el, typingIndicator);
+        } else {
+          bodyEl.appendChild(el);
+        }
+      });
+    };
+
     renderView = () => {
       const body = shadow.getElementById("chatBody");
       const footerSection = shadow.getElementById("chatFooterSection");
@@ -7912,6 +7946,7 @@
         footerSection.classList.remove("hidden");
         setInitialBodyLoading(waitingForFirstInboundMessage);
         syncAgentTitleUi();
+        restoreThreadMessagesInBody(body);
 
         // Re-render file chips if there are selected files
         if (selectedFiles.length > 0) {

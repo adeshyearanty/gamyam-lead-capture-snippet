@@ -5136,7 +5136,7 @@
     // Convert empty string to null for consistent handling
     const normalizedText = text && text.trim() ? text.trim() : null;
     const normalizedFlow = normalizeFlowPayload(flowData);
-    let suppressBubbleForPopupForm = false;
+    let deferBubbleInsertForPopupForm = false;
 
     let preservedStaticWelcomeTimestamp = null;
 
@@ -5581,24 +5581,28 @@
     if (type === "agent") {
       const popupFormConfig = extractPopupFormConfig(normalizedFlow);
       if (popupFormConfig) {
+        const threadBubbleText =
+          normalizedText ||
+          (typeof popupFormConfig.formTitle === "string" &&
+          popupFormConfig.formTitle.trim()
+            ? popupFormConfig.formTitle.trim()
+            : "Form");
+        msgContent.textContent = threadBubbleText;
         activePopupFormConfig = popupFormConfig;
         popupFormValues = {};
         popupFormError = "";
         isSubmittingPopupForm = false;
-        // Popup form nodes should render only as the form view, not a chat bubble.
+        // Keep the form title as a thread bubble, but defer inserting it while
+        // popup form view is active.
         currentView = "popup-form";
-        suppressBubbleForPopupForm = true;
+        deferBubbleInsertForPopupForm = true;
         renderView();
       }
     }
 
-    if (suppressBubbleForPopupForm) {
-      return;
-    }
-
     // Only append if we have content (text or media or flow UI)
     const hasFlowUI = !!(optionsWrap || dropdownWrap);
-    if (!hasMedia && !normalizedText && !hasFlowUI) {
+    if (!hasMedia && !normalizedText && !hasFlowUI && !deferBubbleInsertForPopupForm) {
       return; // Safety check - don't render empty messages
     }
 
@@ -5649,12 +5653,16 @@
       }
     }
 
-    // Insert message BEFORE typing indicator (so indicator stays at the end)
-    const typingIndicator = body.querySelector("#typingIndicator");
-    if (typingIndicator) {
-      body.insertBefore(msgDiv, typingIndicator);
-    } else {
-      body.appendChild(msgDiv);
+    // Insert message BEFORE typing indicator (so indicator stays at the end).
+    // For popup forms, keep this bubble in thread state and insert it later
+    // when chat view is shown again.
+    if (!deferBubbleInsertForPopupForm) {
+      const typingIndicator = body.querySelector("#typingIndicator");
+      if (typingIndicator) {
+        body.insertBefore(msgDiv, typingIndicator);
+      } else {
+        body.appendChild(msgDiv);
+      }
     }
 
     requestAnimationFrame(() => {

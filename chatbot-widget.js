@@ -2055,6 +2055,8 @@
           if (data.messages && Array.isArray(data.messages)) {
             const replayActivePopupFormMessageId =
               getReplayActivePopupFormMessageId(data.messages);
+            const replayActiveChoiceMessageId =
+              getReplayActiveChoiceMessageId(data.messages);
             if (staticWelcomeShown) {
               const staticWelcome = Array.from(messages.values()).find(
                 (msg) => msg.id && msg.id.startsWith("static_welcome_"),
@@ -2098,6 +2100,7 @@
                 msg.agentName ?? msg.agent_name ?? null,
                 msg.is_ai_reply === true || msg.isAiReply === true,
                 (msg.id || msg.messageId) === replayActivePopupFormMessageId,
+                (msg.id || msg.messageId) === replayActiveChoiceMessageId,
               );
             });
             setTimeout(() => {
@@ -2176,6 +2179,8 @@
               if (data.messages && Array.isArray(data.messages)) {
                 const replayActivePopupFormMessageId =
                   getReplayActivePopupFormMessageId(data.messages);
+                const replayActiveChoiceMessageId =
+                  getReplayActiveChoiceMessageId(data.messages);
                 data.messages.forEach((msg) => {
                   // Normalize text - convert empty string to null
                   const textValue = msg.text || msg.text_body;
@@ -2206,6 +2211,7 @@
                     msg.agentName ?? msg.agent_name ?? null,
                     msg.is_ai_reply === true || msg.isAiReply === true,
                     (msg.id || msg.messageId) === replayActivePopupFormMessageId,
+                    (msg.id || msg.messageId) === replayActiveChoiceMessageId,
                   );
                 });
                 const hasInboundBotMessage = data.messages.some((msg) => {
@@ -2466,6 +2472,8 @@
                   ) {
                     const replayActivePopupFormMessageId =
                       getReplayActivePopupFormMessageId(threadData.messages);
+                    const replayActiveChoiceMessageId =
+                      getReplayActiveChoiceMessageId(threadData.messages);
                     threadData.messages.forEach((msg) => {
                       // Normalize text - convert empty string to null
                       const textValue = msg.text || msg.text_body;
@@ -2496,6 +2504,7 @@
                         msg.agentName ?? msg.agent_name ?? null,
                         msg.is_ai_reply === true || msg.isAiReply === true,
                         (msg.id || msg.messageId) === replayActivePopupFormMessageId,
+                        (msg.id || msg.messageId) === replayActiveChoiceMessageId,
                       );
                     });
                     sortMessagesByTimestamp();
@@ -4678,6 +4687,8 @@
         // Now render all messages from thread in correct order
         const replayActivePopupFormMessageId =
           getReplayActivePopupFormMessageId(threadData.messages);
+        const replayActiveChoiceMessageId =
+          getReplayActiveChoiceMessageId(threadData.messages);
         threadData.messages.forEach((msg) => {
           // Normalize text - convert empty string to null
           const textValue = msg.text || msg.text_body;
@@ -4707,6 +4718,7 @@
             msg.agentName ?? msg.agent_name ?? null,
             msg.is_ai_reply === true || msg.isAiReply === true,
             (msg.id || msg.messageId) === replayActivePopupFormMessageId,
+            (msg.id || msg.messageId) === replayActiveChoiceMessageId,
           );
         });
 
@@ -5129,6 +5141,23 @@
     return String(lastMessage.id || lastMessage.messageId || "").trim() || null;
   }
 
+  function getReplayActiveChoiceMessageId(threadMessages) {
+    if (!Array.isArray(threadMessages) || threadMessages.length === 0) return null;
+    const lastMessage = threadMessages[threadMessages.length - 1];
+    if (!lastMessage || String(lastMessage.sender || "").toLowerCase() !== "agent") {
+      return null;
+    }
+    const flow = extractFlowPayload(lastMessage);
+    const hasOptions =
+      Array.isArray(flow?.options) && flow.options.filter(Boolean).length > 0;
+    const hasDropdownOptions =
+      String(flow?.inputType || "").toLowerCase() === "dropdown" &&
+      Array.isArray(flow?.dropdownOptions) &&
+      flow.dropdownOptions.filter(Boolean).length > 0;
+    if (!hasOptions && !hasDropdownOptions) return null;
+    return String(lastMessage.id || lastMessage.messageId || "").trim() || null;
+  }
+
   // --- UPDATED APPEND MESSAGE FUNCTION WITH FIX ---
   function appendMessageToUI(
     text,
@@ -5145,6 +5174,7 @@
     agentLabelOverride,
     isAiReply,
     allowPopupFormActivation = true,
+    allowFlowChoiceUi = true,
   ) {
     const normalizedAgentLabel =
       typeof agentLabelOverride === "string" && agentLabelOverride.trim()
@@ -5500,6 +5530,7 @@
     let optionsWrap = null;
     if (
       type === "agent" &&
+      allowFlowChoiceUi &&
       normalizedFlow &&
       Array.isArray(normalizedFlow.options) &&
       normalizedFlow.options.length > 0
@@ -5559,6 +5590,7 @@
     let dropdownWrap = null;
     if (
       type === "agent" &&
+      allowFlowChoiceUi &&
       normalizedFlow &&
       normalizedFlow.inputType === "dropdown" &&
       Array.isArray(normalizedFlow.dropdownOptions) &&

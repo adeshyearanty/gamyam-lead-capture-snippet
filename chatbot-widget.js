@@ -769,6 +769,12 @@
   let liveAgentDisplayName = null;
   /** After live handoff, agent principal id from WebSocket; used for platform linkage. */
   let liveAgentId = null;
+  /**
+   * True only after explicit human live-chat handoff WebSocket events — not when the
+   * thread merely has an assignedAgentName (workflow / AI persona). Used for typing
+   * logic so named bots still get optimistic + server AI typing indicators.
+   */
+  let humanLiveAgentHandoff = false;
   /** Launcher badge for unseen inbound events while chat is closed. */
   let launcherEventBadgeVisible = false;
 
@@ -796,6 +802,7 @@
   function clearLiveAgentDisplayName() {
     liveAgentDisplayName = null;
     liveAgentId = null;
+    humanLiveAgentHandoff = false;
     liveAgentProfileKey = "";
     liveAgentProfileUrl = "";
     liveAgentProfileFetchToken++;
@@ -808,14 +815,16 @@
     const t = name.trim();
     if (!t) return;
     liveAgentDisplayName = t;
-    // Once assigned, suppress optimistic bot typing; rely on explicit agent typing events.
-    clearOptimisticAiTypingSchedule();
-    if (agentTypingTimeout) {
-      clearTimeout(agentTypingTimeout);
-      agentTypingTimeout = null;
+    // Human handoff: suppress optimistic bot typing; rely on explicit agent typing events.
+    if (humanLiveAgentHandoff) {
+      clearOptimisticAiTypingSchedule();
+      if (agentTypingTimeout) {
+        clearTimeout(agentTypingTimeout);
+        agentTypingTimeout = null;
+      }
+      agentTyping = false;
+      showTypingIndicator(false);
     }
-    agentTyping = false;
-    showTypingIndicator(false);
     syncAgentTitleUi();
   }
 
@@ -824,14 +833,15 @@
     const t = String(agentId).trim();
     if (!t) return;
     liveAgentId = t;
-    // Assignment can arrive with id before display name.
-    clearOptimisticAiTypingSchedule();
-    if (agentTypingTimeout) {
-      clearTimeout(agentTypingTimeout);
-      agentTypingTimeout = null;
+    if (humanLiveAgentHandoff) {
+      clearOptimisticAiTypingSchedule();
+      if (agentTypingTimeout) {
+        clearTimeout(agentTypingTimeout);
+        agentTypingTimeout = null;
+      }
+      agentTyping = false;
+      showTypingIndicator(false);
     }
-    agentTyping = false;
-    showTypingIndicator(false);
     syncAgentTitleUi();
   }
 
@@ -2257,7 +2267,9 @@
               if (showLoading) {
                 setLoading(false);
               }
-              setInitialBodyLoading(waitingForFirstInboundMessage);
+              // Never overlay the full-body spinner while waiting for bot text —
+              // use the in-thread typing indicator (optimistic or server-driven) instead.
+              setInitialBodyLoading(false);
 
               // Connect to WebSocket AND subscribe for real-time updates
               connectSocket().then(() => {
@@ -2702,6 +2714,11 @@
       case "conversation_agent_assigned":
       case "live_chat_agent_assigned": {
         const evt = data || message;
+        // Human takeover: suppress optimistic AI dots and interpret typing events
+        // as agent-side. Skip virtual_agent_assigned — often an AI persona, not a human.
+        if (normalizedType !== "virtual_agent_assigned") {
+          humanLiveAgentHandoff = true;
+        }
         handleAgentAssignmentHandshake(evt, message);
         break;
       }
@@ -3331,8 +3348,8 @@
       // in the chat, but the backend workflow engine will treat it as the first
       // user message and boot from the start node.
       waitingForFirstInboundMessage = true;
-      setInitialBodyLoading(true);
-      wsSend({
+      setInitialBodyLoading(false);
+      const wsSent = wsSend({
         action: "sendMessage",
         conversationId,
         payload: {
@@ -3341,6 +3358,7 @@
         },
         userId,
       });
+      scheduleOptimisticAiTypingAfterSend(wsSent);
     } catch (err) {
       console.error("UniBox: Failed to auto-start workflow", err);
       workflowAutoStarted = false; // Allow retry on next open
@@ -3563,8 +3581,8 @@
    */
   function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
     if (!wsDelivered) return;
-    // Live-agent sessions should rely on explicit agent typing events.
-    if (isLiveAgentAssigned()) return;
+    // Human live-chat: rely on explicit agent typing events from the server.
+    if (humanLiveAgentHandoff) return;
 
     clearOptimisticAiTypingSchedule();
     if (agentTypingTimeout) {
@@ -3578,7 +3596,7 @@
     // until the next bot response arrives.
     optimisticAiTypingTimer = setTimeout(() => {
       optimisticAiTypingTimer = null;
-      if (!isLiveAgentAssigned()) {
+      if (!humanLiveAgentHandoff) {
         agentTyping = true;
         showTypingIndicator(true, { kind: "ai", force: true });
         // Fallback auto-clear in case a downstream event is missed.
@@ -3588,7 +3606,7 @@
           agentTypingTimeout = null;
         }, 45000);
       }
-    }, 80);
+    }, 0);
   }
 
   /**
@@ -3640,10 +3658,10 @@
       (data.isTyping === true || data.typing === true) && !isFromAgent && !isFromAi;
 
     // Many backends send generic typing start events without actor metadata.
-    // Treat them as AI typing while the thread is not handed off to a live agent.
-    const treatGenericAsAi = isGenericTypingStart && !isLiveAgentAssigned();
+    // Treat them as AI typing until a human agent has taken over the thread.
+    const treatGenericAsAi = isGenericTypingStart && !humanLiveAgentHandoff;
 
-    if (isLiveAgentAssigned() && isFromAi && !isFromAgent) {
+    if (humanLiveAgentHandoff && isFromAi && !isFromAgent) {
       return;
     }
 
@@ -3652,7 +3670,7 @@
     if (isFromAgent) {
       showTyping = true;
       typingKind = "agent";
-    } else if ((isFromAi || treatGenericAsAi) && !isLiveAgentAssigned()) {
+    } else if ((isFromAi || treatGenericAsAi) && !humanLiveAgentHandoff) {
       showTyping = true;
       typingKind = "ai";
     }
@@ -4466,8 +4484,9 @@
       })();
     }
 
-    // Typing state is now controlled by explicit backend typing events.
-    // No optimistic typing from the widget send path.
+    if (anyMediaWsSent) {
+      scheduleOptimisticAiTypingAfterSend(true);
+    }
   }
 
   /**
@@ -4597,8 +4616,8 @@
       // after every user send.  The indicator is cleared automatically when the
       // first bot reply arrives (see renderIncomingMessage) or when the server
       // sends an explicit typing:false event (handleTypingIndicator).
-      // In live-agent sessions scheduleOptimisticAiTypingAfterSend is a no-op.
-      scheduleOptimisticAiTypingAfterSend(true);
+      // In human live-chat sessions scheduleOptimisticAiTypingAfterSend is a no-op.
+      scheduleOptimisticAiTypingAfterSend(wsSent);
 
       if (wsSent) {
         console.log("UniBox: Message sent via WebSocket");
@@ -5943,6 +5962,7 @@
     wsSend({
       action: "typing",
       conversationId: conversationId,
+      userId,
       isTyping: typing,
     });
   }
@@ -6990,7 +7010,7 @@
 
         .chat-widget-typing-indicator {
           position: relative;
-          z-index: 1;
+          z-index: 6;
           display: flex;
           flex-direction: column;
           align-items: flex-start;
@@ -8015,7 +8035,7 @@
         body.appendChild(formContainer);
       } else {
         footerSection.classList.remove("hidden");
-        setInitialBodyLoading(waitingForFirstInboundMessage);
+        setInitialBodyLoading(false);
         syncAgentTitleUi();
         restoreThreadMessagesInBody(body);
 

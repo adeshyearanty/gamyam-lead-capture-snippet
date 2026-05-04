@@ -3576,11 +3576,11 @@
   }
 
   /**
-   * After a successful WS send, show typing immediately and keep it visible
-   * until an explicit stop/response arrives (with a safety timeout fallback).
+   * After a WS send attempt (sent or queued), show typing immediately and keep it
+   * visible until an explicit stop/response arrives (with a safety timeout fallback).
    */
-  function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
-    if (!wsDelivered) return;
+  function scheduleOptimisticAiTypingAfterSend(wsAttempted) {
+    if (!wsAttempted) return;
     // Human live-chat: rely on explicit agent typing events from the server.
     if (humanLiveAgentHandoff) return;
 
@@ -4376,7 +4376,7 @@
     // Get tenantId from config
     const tenantId = fetchedConfig?.tenantId || "unknown";
 
-    let anyMediaWsSent = false;
+    let anyMediaWsAttempted = false;
 
     for (const fileData of filesToSend) {
       const file = fileData.file;
@@ -4435,11 +4435,11 @@
       });
 
       if (wsSent) {
-        anyMediaWsSent = true;
         console.log("3️⃣ Message sent via WebSocket with S3 key:", s3Key);
       } else {
         console.log("3️⃣ Message queued for WebSocket delivery");
       }
+      anyMediaWsAttempted = true;
 
       // Cleanup local preview URL immediately (not needed for chip display)
       if (localPreviewUrl && localPreviewUrl.startsWith("blob:")) {
@@ -4484,7 +4484,7 @@
       })();
     }
 
-    if (anyMediaWsSent) {
+    if (anyMediaWsAttempted) {
       scheduleOptimisticAiTypingAfterSend(true);
     }
   }

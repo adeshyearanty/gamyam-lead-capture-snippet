@@ -814,6 +814,7 @@
     if (!name || typeof name !== "string") return;
     const t = name.trim();
     if (!t) return;
+    if (isPlaceholderVirtualAgentIdentity(t, null)) return;
     liveAgentDisplayName = t;
     // Human handoff: suppress optimistic bot typing; rely on explicit agent typing events.
     if (humanLiveAgentHandoff) {
@@ -960,6 +961,7 @@
           : flat.assigned_to.name || flat.assigned_to.displayName));
     if (typeof n !== "string") return null;
     const t = n.trim();
+    if (isPlaceholderVirtualAgentIdentity(t, null)) return null;
     return t.length ? t : null;
   }
 

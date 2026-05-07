@@ -1057,6 +1057,11 @@
     ) {
       return;
     }
+    // Don't treat Pulse AI / system agents as real live agents
+    const isPulseAi =
+      String(id || "").toLowerCase() === "pulse_welcome" ||
+      String(name || "").toLowerCase() === "pulse ai";
+    if (isPulseAi) return;
     if (name) setLiveAgentDisplayName(name);
     if (id) setLiveAgentId(id);
     if (profileKey !== null) void setLiveAgentProfileKey(profileKey);
@@ -2661,7 +2666,10 @@
           const evtIsAiReply =
             evt?.is_ai_reply === true || evt?.isAiReply === true;
           const evtSender = String(evt?.sender ?? "").toLowerCase();
-          if ((evtAgentName || evtAgentId) && !evtIsAiReply && evtSender === "agent") {
+          const isPulseAi =
+            String(evtAgentId || "").toLowerCase() === "pulse_welcome" ||
+            String(evtAgentName || "").toLowerCase() === "pulse ai";
+          if ((evtAgentName || evtAgentId) && !evtIsAiReply && evtSender === "agent" && !isPulseAi) {
             handleAgentAssignmentHandshake(evt, message);
           }
           // Some backends piggyback typing stop on message envelopes.
@@ -6422,11 +6430,9 @@
           font-size: ${fontSizes.body};
           line-height: 20px;
           font-weight: 500;
-          width: fit-content;
+          width: max-content;
           max-width: min(320px, calc(100vw - 24px));
-          white-space: normal;
-          overflow-wrap: break-word;
-          word-break: break-word;
+          white-space: nowrap;
           box-shadow: 0px 2px 7px 0px #0000001f;
           pointer-events: none;
           z-index: 2;

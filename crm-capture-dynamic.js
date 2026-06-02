@@ -46,7 +46,7 @@ console.log("CRM SCRIPT VERSION 123");
       }
 
       // Use the same encryption key (must match the one used in script generator)
-      const encryptionKey = "unibox-widget-encryption-key-2024";
+      const encryptionKey = "capture-widget-encryption-key-2026";
       const decryptedConfig = decryptConfig(encryptedConfig, encryptionKey);
 
       if (decryptedConfig) {

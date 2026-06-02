@@ -20,7 +20,15 @@ console.log("CRM SCRIPT VERSION 123");
       function decryptConfig(encryptedData, key) {
         try {
           // Decode from base64
-          const decoded = atob(encryptedData);
+         try {
+            const decoded = atob(encryptedData);
+            console.log("decoded ok");
+          } catch (e) {
+            console.log("encryptedData value:", encryptedData);
+            console.log("typeof:", typeof encryptedData);
+            console.log("constructor:", encryptedData?.constructor?.name);
+            throw e;
+          }
           const keyStr = String(key);
           // XOR decrypt (key bytes cycled)
           let decrypted = "";

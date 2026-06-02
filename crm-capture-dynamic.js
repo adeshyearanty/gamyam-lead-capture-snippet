@@ -1,3 +1,4 @@
+console.log("CRM SCRIPT VERSION 123");
 (function () {
   // --- 1. CONFIGURATION ---
   // Support both new encrypted method (window.GamyamLeadCaptureConfig) and legacy method (window.UniBoxSettings)

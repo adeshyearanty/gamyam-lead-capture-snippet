@@ -1,13 +1,13 @@
 (function () {
   // --- 1. CONFIGURATION ---
-  // Support both new encrypted method (window.UniBoxEmbedConfig) and legacy method (window.UniBoxSettings)
+  // Support both new encrypted method (window.GamyamLeadCaptureConfig) and legacy method (window.UniBoxSettings)
 
   let userConfig = null;
 
   // Check for new encrypted embed config
-  if (globalThis.UniBoxEmbedConfig) {
+  if (globalThis.GamyamLeadCaptureConfig) {
     try {
-      const embedConfig = globalThis.UniBoxEmbedConfig;
+      const embedConfig = globalThis.GamyamLeadCaptureConfig;
       const encryptedConfig = embedConfig.encryptedConfig;
 
       if (!encryptedConfig) {
@@ -56,7 +56,7 @@
     userConfig = window.UniBoxSettings;
   } else {
     console.error(
-      "UniBox: Settings missing. Please configure window.UniBoxEmbedConfig or window.UniBoxSettings.",
+      "UniBox: Settings missing. Please configure window.GamyamLeadCaptureConfig or window.UniBoxSettings.",
     );
     return;
   }

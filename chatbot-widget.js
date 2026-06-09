@@ -1,6 +1,7 @@
 (function () {
   // --- 1. CONFIGURATION ---
-  // Support both new encrypted method (window.UniBoxEmbedConfig) and legacy method (window.UniBoxSettings)
+  // Chatbot widget only: UniBoxEmbedConfig (encrypted) or UniBoxSettings (legacy).
+  // Lead capture uses GamyamLeadCaptureConfig in crm-capture-dynamic.js — do not share globals.
 
   let userConfig = null;
 
@@ -18,16 +19,15 @@
       // Decrypt config using the same fixed key used for encryption
       function decryptConfig(encryptedData, key) {
         try {
-          // Decode from base64
           const decoded = atob(encryptedData);
           const keyStr = String(key);
-          // XOR decrypt (key bytes cycled)
           let decrypted = '';
           for (let i = 0; i < decoded.length; i++) {
-            const k = keyStr.codePointAt(i % keyStr.length);
-            decrypted += String.fromCodePoint(decoded.codePointAt(i) ^ k);
+            const keyChar = keyStr[i % keyStr.length];
+            decrypted += String.fromCharCode(
+              decoded.charCodeAt(i) ^ keyChar.charCodeAt(0),
+            );
           }
-          // Decode from base64 to UTF-8 string
           const jsonString = decodeURIComponent(escape(atob(decrypted)));
           return JSON.parse(jsonString);
         } catch (e) {
@@ -36,8 +36,9 @@
         }
       }
 
-      // Use the same encryption key (must match the one used in script generator)
-      const encryptionKey = 'unibox-widget-encryption-key-2024';
+      // Must match WIDGET_ENCRYPTION_KEY / WidgetScriptGenerator fallback
+      const encryptionKey =
+        globalThis.UniBoxWidgetEncryptionKey || 'unibox-widget-encryption-key-2024';
       const decryptedConfig = decryptConfig(encryptedConfig, encryptionKey);
 
       if (decryptedConfig) {

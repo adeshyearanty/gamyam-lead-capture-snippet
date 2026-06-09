@@ -183,13 +183,9 @@
     }
 
     handleReactForm(form) {
-      const formData = new FormData(form);
-      const data = {};
-      formData.forEach((value, key) => {
-        data[key] = value;
-      });
-
-      const leadData = this.prepareLeadData(data);
+      // Must use extractFormData so data-crm-field-mappings are applied
+      // (e.g. fullName <- input name="name"), not raw FormData keys.
+      const leadData = this.prepareLeadData(this.extractFormData(form));
       if (this.validateLeadData(leadData)) {
         this.submitLead(leadData).then(() => {
           const event = new Event("crmLeadSuccess");
@@ -246,9 +242,16 @@
 
         const selectors = Array.isArray(mapping) ? mapping : [mapping];
         for (const selector of selectors) {
-          const element = form.querySelector(`[name="${selector}"], #${selector}`);
-          if (element?.value) {
-            formData[field] = this.sanitizeInput(element.value);
+          const element =
+            form.querySelector(`[name="${selector}"], #${selector}`) ||
+            form.elements?.namedItem?.(selector);
+          const rawValue =
+            element?.value ??
+            (typeof FormData !== "undefined"
+              ? new FormData(form).get(selector)
+              : null);
+          if (rawValue != null && String(rawValue).trim() !== "") {
+            formData[field] = this.sanitizeInput(String(rawValue));
             break;
           }
         }
@@ -408,9 +411,14 @@
     let finalOptions = { ...baseOptions };
 
     try {
-      // Lead capture only — do not read UniBoxEmbedConfig (reserved for chatbot-widget.js).
+      // Prefer lead-capture globals. UniBoxEmbedConfig is legacy-only for old embeds
+      // (safe when chatbot widget is not on the same page).
       const globalCfg =
-        window.GamyamLeadCaptureConfig || window.CRMLeadCaptureConfig || null;
+        window.GamyamLeadCaptureConfig ||
+        window.CRMLeadCaptureConfig ||
+        (window.UniBoxEmbedConfig?.encryptedConfig
+          ? window.UniBoxEmbedConfig
+          : null);
       const encryptedConfig = globalCfg?.encryptedConfig;
       const plainGlobal =
         globalCfg && typeof globalCfg === "object"

@@ -5218,17 +5218,85 @@
         return parts.join("");
     }
 
-    function setMessageTextContent(container, text, options) {
-        const opts = options && typeof options === "object" ? options : {};
-        if (!text) return;
-        const lines = String(text)
+    function parseFormattedFormSubmissionLines(text) {
+        if (!text) return null;
+        const normalized = String(text).trim();
+        if (!normalized) return null;
+
+        const lines = normalized
             .split("\n")
             .map((line) => line.trim())
             .filter(Boolean);
+        if (lines.length > 0) {
+            const multilineParsed = lines
+                .map((line) => line.match(/^\*(.+?)\*:\s*(.+)$/))
+                .filter(Boolean);
+            if (multilineParsed.length > 0 && multilineParsed.length === lines.length) {
+                return multilineParsed;
+            }
+        }
+
+        const inlinePattern = /\*(.+?)\*:\s*([^*]+?)(?=\s*\*|$)/g;
+        const inlineMatches = Array.from(normalized.matchAll(inlinePattern));
+        if (inlineMatches.length === 0) return null;
+        return inlineMatches;
+    }
+
+    function appendWorkflowFormPromptContent(container, flow) {
+        const nodeType = String(flow?.nodeType ?? flow?.type ?? "")
+            .trim()
+            .toLowerCase();
+        if (nodeType !== "form" || !flow?.form || typeof flow.form !== "object") {
+            return false;
+        }
+
+        const form = flow.form;
+        const fields = Array.isArray(form.fields)
+            ? form.fields
+            : form.field && typeof form.field === "object"
+                ? [form.field]
+                : [];
+        const title =
+            typeof form.formTitle === "string" && form.formTitle.trim()
+                ? form.formTitle.trim()
+                : "Form";
+
+        const titleEl = document.createElement("p");
+        titleEl.style.fontWeight = "600";
+        titleEl.style.margin = "0";
+        titleEl.textContent = title;
+        container.appendChild(titleEl);
+
+        if (fields.length > 0) {
+            const listEl = document.createElement("ul");
+            listEl.style.margin = "8px 0 0";
+            listEl.style.paddingLeft = "18px";
+            fields.forEach((field, index) => {
+                if (!field || typeof field !== "object") return;
+                const label =
+                    (typeof field.prompt === "string" && field.prompt.trim()) ||
+                    (typeof field.label === "string" && field.label.trim()) ||
+                    (typeof field.key === "string" && field.key.trim()) ||
+                    `Field ${index + 1}`;
+                const itemEl = document.createElement("li");
+                itemEl.style.marginBottom = "4px";
+                itemEl.textContent = label;
+                listEl.appendChild(itemEl);
+            });
+            if (listEl.childElementCount > 0) {
+                container.appendChild(listEl);
+            }
+        }
+
+        return true;
+    }
+
+    function setMessageTextContent(container, text, options) {
+        const opts = options && typeof options === "object" ? options : {};
+        if (!text) return;
+        const formattedLines = parseFormattedFormSubmissionLines(text);
         const isFormattedSubmission =
-            !opts.renderMarkdown &&
-            lines.length > 0 &&
-            lines.every((line) => /^\*.+?\*:\s*.+$/.test(line));
+            !opts.renderMarkdown && Array.isArray(formattedLines) && formattedLines.length > 0;
         if (opts.renderMarkdown) {
             container.innerHTML = `<div class="chat-message-markdown">${renderChatMarkdownToHtml(text)}</div>`;
             return;
@@ -5238,19 +5306,14 @@
             return;
         }
         container.innerHTML = "";
-        lines.forEach((line) => {
-            const match = line.match(/^\*(.+?)\*:\s*(.+)$/);
+        formattedLines.forEach((match) => {
             const row = document.createElement("div");
             row.style.marginBottom = "4px";
-            if (match) {
-                const label = document.createElement("span");
-                label.style.fontWeight = "600";
-                label.textContent = `${match[1]}: `;
-                row.appendChild(label);
-                row.appendChild(document.createTextNode(match[2]));
-            } else {
-                row.textContent = line;
-            }
+            const label = document.createElement("span");
+            label.style.fontWeight = "600";
+            label.textContent = `${match[1]}: `;
+            row.appendChild(label);
+            row.appendChild(document.createTextNode(match[2].trim()));
             container.appendChild(row);
         });
     }
@@ -5690,12 +5753,38 @@
         }
 
         // Handle text messages (non-media)
+        let formPromptRendered = false;
         if (!hasMedia) {
             // Only set text content if we have text (don't set empty string for null)
             if (normalizedText) {
-                setMessageTextContent(msgContent, normalizedText, {
-                    renderMarkdown: type === "agent" && isAiReply === true,
-                });
+                const shouldRenderFormPromptInstead =
+                    type === "agent" &&
+                    normalizedFlow &&
+                    String(normalizedFlow.nodeType ?? normalizedFlow.type ?? "")
+                        .trim()
+                        .toLowerCase() === "form" &&
+                    normalizedFlow.form &&
+                    typeof normalizedFlow.form === "object";
+                if (shouldRenderFormPromptInstead) {
+                    const formTitle =
+                        typeof normalizedFlow.form.formTitle === "string"
+                            ? normalizedFlow.form.formTitle.trim()
+                            : "";
+                    if (
+                        !formTitle ||
+                        normalizedText.trim().toLowerCase() === formTitle.toLowerCase()
+                    ) {
+                        formPromptRendered = appendWorkflowFormPromptContent(
+                            msgContent,
+                            normalizedFlow,
+                        );
+                    }
+                }
+                if (!formPromptRendered) {
+                    setMessageTextContent(msgContent, normalizedText, {
+                        renderMarkdown: type === "agent" && isAiReply === true,
+                    });
+                }
             } else {
                 // No text — only keep going if the flow payload has renderable content
                 // (options buttons, dropdown choices, or a question/form prompt).
@@ -5709,7 +5798,13 @@
                             normalizedFlow.form.fields.length > 0) ||
                         normalizedFlow.inputType ||
                         normalizedFlow.isEnd);
-                if (!hasFlowContent) {
+                if (type === "agent" && normalizedFlow) {
+                    formPromptRendered = appendWorkflowFormPromptContent(
+                        msgContent,
+                        normalizedFlow,
+                    );
+                }
+                if (!hasFlowContent && !formPromptRendered) {
                     return; // Truly empty — skip rendering
                 }
             }
@@ -5826,7 +5921,7 @@
         }
 
         // Only append if we have content (text or media or flow UI)
-        const hasFlowUI = !!(optionsWrap || dropdownWrap);
+        const hasFlowUI = !!(optionsWrap || dropdownWrap || formPromptRendered);
         if (!hasMedia && !normalizedText && !hasFlowUI) {
             return; // Safety check - don't render empty messages
         }

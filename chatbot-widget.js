@@ -5294,6 +5294,13 @@
     function setMessageTextContent(container, text, options) {
         const opts = options && typeof options === "object" ? options : {};
         if (!text) return;
+
+        // Workflow / rich-text message nodes store HTML — render before markdown/plain paths.
+        if (looksLikeChatMessageHtmlWidget(text)) {
+            container.innerHTML = `<div class="chat-message-html">${sanitizeChatMessageHtmlWidget(text)}</div>`;
+            return;
+        }
+
         const formattedLines = parseFormattedFormSubmissionLines(text);
         const isFormattedSubmission =
             !opts.renderMarkdown && Array.isArray(formattedLines) && formattedLines.length > 0;
@@ -5302,12 +5309,7 @@
             return;
         }
         if (!isFormattedSubmission) {
-            // Support message-node HTML (links) while staying safe.
-            if (looksLikeChatMessageHtmlWidget(text)) {
-                container.innerHTML = sanitizeChatMessageHtmlWidget(text);
-            } else {
-                container.textContent = text;
-            }
+            container.textContent = text;
             return;
         }
         container.innerHTML = "";
@@ -5323,13 +5325,30 @@
         });
     }
 
+    function decodeHtmlEntitiesWidget(text) {
+        if (!text || !/&lt;|&gt;|&amp;/.test(String(text))) return String(text || "");
+        const textarea = document.createElement("textarea");
+        textarea.innerHTML = String(text);
+        return textarea.value;
+    }
+
     function looksLikeChatMessageHtmlWidget(text) {
         if (!text) return false;
-        return /<\s*(a|p|br|ul|ol|li|strong|em|u)\b/i.test(String(text));
+        const raw = String(text).trim();
+        if (!raw) return false;
+        if (/<\s*(a|p|br|ul|ol|li|strong|b|em|i|u)\b/i.test(raw)) return true;
+        if (/&lt;\s*(a|p|br|ul|ol|li|strong|b|em|i|u)\b/i.test(raw)) return true;
+        return false;
+    }
+
+    function normalizeChatMessageHtmlInputWidget(text) {
+        const raw = String(text || "").trim();
+        if (!raw) return "";
+        return decodeHtmlEntitiesWidget(raw);
     }
 
     function sanitizeChatMessageHtmlWidget(html) {
-        const raw = String(html || "");
+        const raw = normalizeChatMessageHtmlInputWidget(html);
         if (!raw.trim()) return "";
 
         const allowed = new Set([
@@ -5776,11 +5795,11 @@
             ) {
                 const captionDiv = document.createElement("div");
                 captionDiv.className = "chat-widget-media-caption";
-                captionDiv.textContent = normalizedText;
                 captionDiv.style.marginTop = "8px";
                 captionDiv.style.fontSize = "14px";
                 captionDiv.style.lineHeight = "1.5";
                 captionDiv.style.color = "#18181e";
+                setMessageTextContent(captionDiv, normalizedText);
                 msgContent.appendChild(captionDiv);
             }
 
@@ -7237,6 +7256,33 @@
           }
           .chat-widget-message-content .chat-message-markdown a {
             color: #1f2937;
+            text-decoration: underline;
+          }
+          .chat-widget-message-content .chat-message-html > :first-child {
+            margin-top: 0;
+          }
+          .chat-widget-message-content .chat-message-html > :last-child {
+            margin-bottom: 0;
+          }
+          .chat-widget-message-content .chat-message-html p {
+            margin: 0 0 0.5rem;
+          }
+          .chat-widget-message-content .chat-message-html p:last-child {
+            margin-bottom: 0;
+          }
+          .chat-widget-message-content .chat-message-html a {
+            color: #1f2937;
+            text-decoration: underline;
+          }
+          .chat-widget-message-content .chat-message-html strong,
+          .chat-widget-message-content .chat-message-html b {
+            font-weight: 600;
+          }
+          .chat-widget-message-content .chat-message-html em,
+          .chat-widget-message-content .chat-message-html i {
+            font-style: italic;
+          }
+          .chat-widget-message-content .chat-message-html u {
             text-decoration: underline;
           }
           .chat-widget-message-content .chat-message-markdown .chat-md-table-wrap {

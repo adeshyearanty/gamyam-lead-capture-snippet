@@ -5302,7 +5302,12 @@
             return;
         }
         if (!isFormattedSubmission) {
-            container.textContent = text;
+            // Support message-node HTML (links) while staying safe.
+            if (looksLikeChatMessageHtmlWidget(text)) {
+                container.innerHTML = sanitizeChatMessageHtmlWidget(text);
+            } else {
+                container.textContent = text;
+            }
             return;
         }
         container.innerHTML = "";
@@ -5316,6 +5321,71 @@
             row.appendChild(document.createTextNode(match[2].trim()));
             container.appendChild(row);
         });
+    }
+
+    function looksLikeChatMessageHtmlWidget(text) {
+        if (!text) return false;
+        return /<\s*(a|p|br|ul|ol|li|strong|em|u)\b/i.test(String(text));
+    }
+
+    function sanitizeChatMessageHtmlWidget(html) {
+        const raw = String(html || "");
+        if (!raw.trim()) return "";
+
+        const allowed = new Set([
+            "P",
+            "BR",
+            "STRONG",
+            "B",
+            "EM",
+            "I",
+            "U",
+            "UL",
+            "OL",
+            "LI",
+            "A",
+        ]);
+
+        const isSafeHref = (href) => {
+            const t = String(href || "").trim().toLowerCase();
+            return t.startsWith("https://") || t.startsWith("http://") || t.startsWith("mailto:");
+        };
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(raw, "text/html");
+        const body = doc.body;
+        const elements = Array.from(body.querySelectorAll("*")).reverse();
+        elements.forEach((el) => {
+            const tag = String(el.tagName || "").toUpperCase();
+            if (!allowed.has(tag)) {
+                const parent = el.parentNode;
+                if (!parent) return;
+                while (el.firstChild) parent.insertBefore(el.firstChild, el);
+                parent.removeChild(el);
+                return;
+            }
+            if (tag === "A") {
+                const href = el.getAttribute("href") || "";
+                if (!href || !isSafeHref(href)) {
+                    const parent = el.parentNode;
+                    if (!parent) return;
+                    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+                    parent.removeChild(el);
+                    return;
+                }
+                Array.from(el.attributes).forEach((attr) => {
+                    if (attr.name === "href") return;
+                    el.removeAttribute(attr.name);
+                });
+                el.setAttribute("rel", "noopener noreferrer");
+                el.setAttribute("target", "_blank");
+            } else {
+                while (el.attributes.length > 0) {
+                    el.removeAttribute(el.attributes[0].name);
+                }
+            }
+        });
+        return body.innerHTML.trim();
     }
 
     function extractPopupFormConfig(flow) {

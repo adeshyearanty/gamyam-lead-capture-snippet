@@ -244,13 +244,24 @@
         const selectors = Array.isArray(mapping) ? mapping : [mapping];
         const fd = new FormData(form);
 
-        for (const selector of selectors) {
-          const rawValue = fd.get(selector);
-          console.log(selector, element, element?.value, new FormData(form).get(selector));
+        for (const [field, mapping] of Object.entries(this.config.fieldMappings)) {
+          if (formData[field]) continue;
         
-          if (rawValue != null && String(rawValue).trim() !== "") {
-            formData[field] = this.sanitizeInput(String(rawValue));
-            break;
+          const selectors = Array.isArray(mapping) ? mapping : [mapping];
+        
+          for (const selector of selectors) {
+            const rawValue = fd.get(selector);
+        
+            console.log({
+              field,
+              selector,
+              rawValue,
+            });
+        
+            if (typeof rawValue === "string" && rawValue.trim() !== "") {
+              formData[field] = this.sanitizeInput(rawValue);
+              break;
+            }
           }
         }
       }

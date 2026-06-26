@@ -241,15 +241,12 @@
         }
 
         const selectors = Array.isArray(mapping) ? mapping : [mapping];
+        const fd = new FormData(form);
+
         for (const selector of selectors) {
-          const element =
-            form.querySelector(`[name="${selector}"], #${selector}`) ||
-            form.elements?.namedItem?.(selector);
-          const rawValue =
-            element?.value ??
-            (typeof FormData !== "undefined"
-              ? new FormData(form).get(selector)
-              : null);
+          const rawValue = fd.get(selector);
+          console.log(selector, element, element?.value, new FormData(form).get(selector));
+        
           if (rawValue != null && String(rawValue).trim() !== "") {
             formData[field] = this.sanitizeInput(String(rawValue));
             break;

@@ -220,6 +220,7 @@
     extractFormData(form) {
       const formData = {};
       const elements = form.elements;
+      console.log("Field mappings:", this.config.fieldMappings);
 
       for (let element of elements) {
         if (element.hasAttribute("data-crm-field")) {
@@ -436,7 +437,15 @@
           const decrypted = normalizeDecryptedConfig(
             await decryptConfig(encryptedConfig, passphrase),
           );
-          finalOptions = { ...baseOptions, ...plainGlobal, ...decrypted };
+          finalOptions = {
+            ...baseOptions,
+            ...plainGlobal,
+            ...decrypted,
+            fieldMappings: {
+              ...(decrypted.fieldMappings || {}),
+              ...(baseOptions.fieldMappings || {}),
+            },
+          };
         } catch (decryptErr) {
           const parsed =
             typeof encryptedConfig === "string"

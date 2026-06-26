@@ -256,6 +256,7 @@
           }
         }
       }
+      console.log("Extracted formData:", formData);
 
       return formData;
     }

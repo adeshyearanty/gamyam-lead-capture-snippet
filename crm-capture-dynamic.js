@@ -219,54 +219,60 @@
 
     extractFormData(form) {
       const formData = {};
-      const elements = form.elements;
-      console.log("Field mappings:", this.config.fieldMappings);
-
-      for (let element of elements) {
-        if (element.hasAttribute("data-crm-field")) {
+      const fd = new FormData(form);
+    
+      // Read explicit CRM fields
+      for (const element of form.elements) {
+        if (element.hasAttribute?.("data-crm-field")) {
           const fieldName = element.getAttribute("data-crm-field");
           formData[fieldName] = this.sanitizeInput(element.value);
         }
       }
-
+    
+      console.log("Field mappings:", this.config.fieldMappings);
+    
+      // Read mapped fields
       for (const [field, mapping] of Object.entries(this.config.fieldMappings)) {
         if (formData[field]) continue;
-
-        if (typeof mapping === "object" && mapping.combine) {
-          const parts = mapping.combine.map((fieldName) => {
-            const el = form.querySelector(`[name="${fieldName}"], #${fieldName}`);
-            return el?.value?.trim() || "";
-          });
-          formData[field] = parts.filter(Boolean).join(mapping.separator || " ");
+    
+        // Handle combined fields
+        if (
+          mapping &&
+          typeof mapping === "object" &&
+          !Array.isArray(mapping) &&
+          mapping.combine
+        ) {
+          const value = mapping.combine
+            .map((name) => String(fd.get(name) ?? "").trim())
+            .filter(Boolean)
+            .join(mapping.separator || " ");
+    
+          if (value) {
+            formData[field] = this.sanitizeInput(value);
+          }
           continue;
         }
-
+    
         const selectors = Array.isArray(mapping) ? mapping : [mapping];
-        const fd = new FormData(form);
-
-        for (const [field, mapping] of Object.entries(this.config.fieldMappings)) {
-          if (formData[field]) continue;
-        
-          const selectors = Array.isArray(mapping) ? mapping : [mapping];
-        
-          for (const selector of selectors) {
-            const rawValue = fd.get(selector);
-        
-            console.log({
-              field,
-              selector,
-              rawValue,
-            });
-        
-            if (typeof rawValue === "string" && rawValue.trim() !== "") {
-              formData[field] = this.sanitizeInput(rawValue);
-              break;
-            }
+    
+        for (const selector of selectors) {
+          const rawValue = fd.get(selector);
+    
+          console.log({
+            field,
+            selector,
+            rawValue,
+          });
+    
+          if (typeof rawValue === "string" && rawValue.trim() !== "") {
+            formData[field] = this.sanitizeInput(rawValue);
+            break;
           }
         }
       }
+    
       console.log("Extracted formData:", formData);
-
+    
       return formData;
     }
 

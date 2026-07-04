@@ -8335,6 +8335,13 @@
 
                 const formEl = document.createElement("form");
                 activePopupFormConfig.fields.forEach((field) => {
+                    const displayKey = String(field.key || "")
+                        .split(" ")
+                        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                        .join(" ");
+                    const fieldLabel = field.prompt || displayKey;
+                    const fieldPlaceholder = field.prompt || ("Enter your " + displayKey);
+
                     const wrapper = document.createElement("div");
                     wrapper.style.marginBottom = "16px";
 
@@ -8344,7 +8351,7 @@
                     label.style.fontSize = "12px";
                     label.style.lineHeight = "16px";
                     label.style.color = "#4b5563";
-                    label.textContent = field.prompt;
+                    label.textContent = fieldLabel;
                     wrapper.appendChild(label);
 
                     if (field.inputType === "dropdown" && field.options.length > 0) {
@@ -8354,7 +8361,7 @@
                         select.value = String(popupFormValues[field.key] || "");
                         const emptyOption = document.createElement("option");
                         emptyOption.value = "";
-                        emptyOption.textContent = "Select";
+                        emptyOption.textContent = "Select " + displayKey;
                         select.appendChild(emptyOption);
                         field.options.forEach((option) => {
                             const optionEl = document.createElement("option");
@@ -8376,7 +8383,7 @@
                                     ? "email"
                                     : "text";
                         input.required = field.required;
-                        input.placeholder = field.prompt;
+                        input.placeholder = fieldPlaceholder;
                         input.value = String(popupFormValues[field.key] || "");
                         input.addEventListener("input", (event) => {
                             popupFormValues[field.key] = String(event.target.value || "");
@@ -8411,9 +8418,15 @@
                     activePopupFormConfig.fields.forEach((field) => {
                         const rawValue = String(popupFormValues[field.key] || "").trim();
                         formData[field.key] = rawValue;
+                        const displayKey = String(field.key || "")
+                            .split(" ")
+                            .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                            .join(" ");
+                        const fieldLabel = field.prompt || displayKey;
+
                         if (!firstError && field.required && !rawValue) {
                             firstError =
-                                field.retryMessage || `Please enter a valid value for ${field.prompt}`;
+                                field.retryMessage || `Please enter a valid value for ${fieldLabel}`;
                         } else if (!firstError && rawValue) {
                             if (
                                 field.inputType === "email" &&
@@ -8421,7 +8434,7 @@
                             ) {
                                 firstError =
                                     field.retryMessage ||
-                                    `Please enter a valid value for ${field.prompt}`;
+                                    `Please enter a valid value for ${fieldLabel}`;
                             }
                             if (
                                 !firstError &&
@@ -8430,7 +8443,7 @@
                             ) {
                                 firstError =
                                     field.retryMessage ||
-                                    `Please enter a valid value for ${field.prompt}`;
+                                    `Please enter a valid value for ${fieldLabel}`;
                             }
                         }
                     });

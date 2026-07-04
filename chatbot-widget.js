@@ -367,6 +367,7 @@
     let previewFile = null; // @deprecated - Not used. Was for single file upload preview modal.
     let selectedFiles = []; // Array of { file, previewUrl, mediaType, fileName } - ACTIVE file upload flow (shows as chips)
     let currentView = "chat";
+    let renderView = null;
     let activePopupFormConfig = null;
     let popupFormValues = {};
     let popupFormError = "";
@@ -5304,7 +5305,7 @@
         const formattedLines = parseFormattedFormSubmissionLines(text);
         const isFormattedSubmission =
             !opts.renderMarkdown && Array.isArray(formattedLines) && formattedLines.length > 0;
-        if (opts.renderMarkdown) {
+        if (opts.renderMarkdown || looksLikeChatMessageMarkdownWidget(text)) {
             container.innerHTML = `<div class="chat-message-markdown">${renderChatMarkdownToHtml(text)}</div>`;
             return;
         }
@@ -5336,9 +5337,26 @@
         if (!text) return false;
         const raw = String(text).trim();
         if (!raw) return false;
-        if (/<\s*(a|p|br|ul|ol|li|strong|b|em|i|u)\b/i.test(raw)) return true;
-        if (/&lt;\s*(a|p|br|ul|ol|li|strong|b|em|i|u)\b/i.test(raw)) return true;
+        if (/<\s*\/?[a-z][a-z0-9]*\b[^>]*>/i.test(raw)) return true;
+        if (/&lt;\s*\/?[a-z][a-z0-9]*\b/i.test(raw)) return true;
         return false;
+    }
+
+    function looksLikeChatMessageMarkdownWidget(text) {
+        if (!text) return false;
+        const raw = String(text).trim();
+        if (!raw) return false;
+        if (looksLikeChatMessageHtmlWidget(raw)) return false;
+        const patterns = [
+            /\*\*[^*\n]+\*\*/,
+            /(?<!\*)\*[^*\n]+\*(?!\*)/,
+            /\[.+?\]\(.+?\)/,
+            /^#{1,6}\s+/m,
+            /^\s*[-*+]\s+/m,
+            /^\s*\d+\.\s+/m,
+            /`[^`\n]+`/,
+        ];
+        return patterns.some((pattern) => pattern.test(raw));
     }
 
     function normalizeChatMessageHtmlInputWidget(text) {
@@ -7255,8 +7273,11 @@
             font-style: italic;
           }
           .chat-widget-message-content .chat-message-markdown a {
-            color: #1f2937;
+            color: #007bff;
             text-decoration: underline;
+          }
+          .chat-widget-message-content .chat-message-markdown a:hover {
+            color: #0056b3;
           }
           .chat-widget-message-content .chat-message-html > :first-child {
             margin-top: 0;
@@ -7271,8 +7292,11 @@
             margin-bottom: 0;
           }
           .chat-widget-message-content .chat-message-html a {
-            color: #1f2937;
+            color: #007bff;
             text-decoration: underline;
+          }
+          .chat-widget-message-content .chat-message-html a:hover {
+            color: #0056b3;
           }
           .chat-widget-message-content .chat-message-html strong,
           .chat-widget-message-content .chat-message-html b {
@@ -8115,7 +8139,7 @@
             });
         };
 
-        const renderView = () => {
+        renderView = () => {
             const body = shadow.getElementById("chatBody");
             const footerSection = shadow.getElementById("chatFooterSection");
             const footer = shadow.getElementById("chatFooter");

@@ -379,6 +379,10 @@
     let isConnecting = false; // Flag to prevent concurrent connection attempts
     let skipThreadFetchOnNextSocketConnect = false; // Skip history fetch after fresh conversation creation
     let workflowAutoStarted = false; // Prevent duplicate auto-starts of the workflow engine
+    /** Last workflow node type applied to the input (options, question, form, etc.). */
+    let activeFlowNodeType = null;
+    /** True when the current step is an options/quick-reply menu (free-text can skip to AI). */
+    let activeFlowAllowsOptionsBypass = false;
     let waitingForFirstInboundMessage = true; // Show body loader until first real inbound bot message
     let liveAgentProfileKey = "";
     let liveAgentProfileUrl = "";
@@ -2608,6 +2612,10 @@
                     const evtIsAiReply =
                         evt?.is_ai_reply === true || evt?.isAiReply === true;
                     const evtSender = String(evt?.sender ?? "").toLowerCase();
+                    const isHandoffAssignmentOnly =
+                        evt?.is_handoff_assignment === true ||
+                        evt?.handoff_assignment === true ||
+                        evt?.event_kind === "handoff_assignment";
                     if ((evtAgentName || evtAgentId) && !evtIsAiReply && evtSender === "agent") {
                         handleAgentAssignmentHandshake(evt, message);
                     }
@@ -2633,7 +2641,9 @@
                                         : undefined),
                         });
                     }
-                    if (evt.messageId || evt.text || evt.sender) {
+                    if (isHandoffAssignmentOnly) {
+                        handleAgentAssignmentHandshake(evt, message);
+                    } else if (evt.messageId || evt.text || evt.sender) {
                         handleIncomingMessage(evt);
                     }
                 }
@@ -3220,10 +3230,17 @@
         const sendBtn = host.shadowRoot.getElementById("sendBtn");
         if (!msgInput) return;
 
+        activeFlowNodeType = flow.nodeType || null;
+        activeFlowAllowsOptionsBypass = Boolean(
+            flow.nodeType === "options" || (flow.options && flow.options.length > 0),
+        );
+
         if (flow.isEnd) {
             msgInput.disabled = true;
             msgInput.placeholder = "Conversation ended";
             if (sendBtn) sendBtn.disabled = true;
+            activeFlowNodeType = null;
+            activeFlowAllowsOptionsBypass = false;
             return;
         }
 
@@ -3232,7 +3249,7 @@
         if (sendBtn) sendBtn.disabled = false;
 
         if (flow.inputType === "dropdown") {
-            // Dropdown is answered via buttons — typing is not expected
+            // Dropdown questions are part of the workflow — select via buttons.
             msgInput.disabled = true;
             msgInput.placeholder = "Select an option above…";
         } else if (
@@ -3252,14 +3269,26 @@
         ) {
             msgInput.placeholder = "Type your answer…";
         } else if (flow.nodeType === "options" || flow.options?.length > 0) {
-            // Options are answered via buttons — disable free text input
-            msgInput.disabled = true;
-            msgInput.placeholder = "Choose an option above…";
+            // Options menus allow free text to skip to AI / handoff; buttons still work.
+            msgInput.placeholder = "Type a message or choose an option above…";
         } else {
-            // Default / AI node — restore normal placeholder
+            // AI and other workflow nodes — normal chat input
             msgInput.placeholder =
                 settings?.behavior?.inputPlaceholder || "Type a message…";
         }
+    }
+
+    /** Restore normal typing after the user sends a free-text message. */
+    function resetChatInputToDefault() {
+        const host = document.getElementById("unibox-root");
+        if (!host || !host.shadowRoot) return;
+        const msgInput = host.shadowRoot.getElementById("msgInput");
+        const sendBtn = host.shadowRoot.getElementById("sendBtn");
+        if (!msgInput) return;
+        msgInput.disabled = false;
+        msgInput.placeholder =
+            settings?.behavior?.inputPlaceholder || "Type a message…";
+        if (sendBtn) sendBtn.disabled = false;
     }
 
     /**
@@ -3421,6 +3450,34 @@
         const textValue = message.text;
         const normalizedTextValue =
             textValue && textValue.trim() ? textValue.trim() : null;
+
+        const normalizedFlowEarly = extractFlowPayload(message);
+        const isMediaMessage =
+            message.type &&
+            ["image", "video", "audio", "document", "file"].includes(message.type);
+        const hasInteractivePayload = Boolean(
+            message.interactivePayload || message.interactive,
+        );
+        // Post-handoff assignment envelopes may carry agent identity only (no bubble).
+        if (
+            !isUserMessage &&
+            !normalizedTextValue &&
+            !isMediaMessage &&
+            !message.media_storage_url &&
+            !normalizedFlowEarly &&
+            !hasInteractivePayload
+        ) {
+            const agentNameOnly = extractVirtualAgentDisplayName(message);
+            const agentIdOnly = extractVirtualAgentId(message);
+            const profileKeyOnly = extractVirtualAgentProfileKey(message);
+            if (agentNameOnly || agentIdOnly || profileKeyOnly) {
+                maybeApplyVirtualAgentFromEvent(
+                    message,
+                    message.conversationId ?? message.conversation_id,
+                );
+                return;
+            }
+        }
 
         // Debug logging for media messages
         const isMedia =
@@ -8880,6 +8937,12 @@
             if (!text) return;
 
             msgInput.value = "";
+            // Only reset input chrome when escaping an options menu via free text.
+            if (activeFlowAllowsOptionsBypass) {
+                resetChatInputToDefault();
+                activeFlowNodeType = null;
+                activeFlowAllowsOptionsBypass = false;
+            }
 
             const messageId = `msg_${Date.now()}_${Math.random()
                 .toString(36)

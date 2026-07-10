@@ -8032,7 +8032,7 @@
                    <span class="chat-widget-powered-by-label">Powered by</span>
                    <div class="chat-widget-powered-by-trailing">
                      ${poweredByMarkSvg}
-                     <span class="chat-widget-powered-by-brand">CX-Astra</span>
+                     <span class="chat-widget-powered-by-brand">SalesAstra</span>
                    </div>
                  </div>
                </div>

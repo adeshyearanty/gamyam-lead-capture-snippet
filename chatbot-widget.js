@@ -379,10 +379,6 @@
     let isConnecting = false; // Flag to prevent concurrent connection attempts
     let skipThreadFetchOnNextSocketConnect = false; // Skip history fetch after fresh conversation creation
     let workflowAutoStarted = false; // Prevent duplicate auto-starts of the workflow engine
-    /** Last workflow node type applied to the input (options, question, form, etc.). */
-    let activeFlowNodeType = null;
-    /** True when the current step is an options/quick-reply menu (free-text can skip to AI). */
-    let activeFlowAllowsOptionsBypass = false;
     let waitingForFirstInboundMessage = true; // Show body loader until first real inbound bot message
     let liveAgentProfileKey = "";
     let liveAgentProfileUrl = "";
@@ -792,7 +788,9 @@
     }
 
     function setLiveAgentDisplayName(name) {
-        const t = (name && typeof name === "string" ? name.trim() : "") || "Support Agent";
+        if (!name || typeof name !== "string") return;
+        const t = name.trim();
+        if (!t) return;
         liveAgentDisplayName = t;
         // Once assigned, suppress optimistic bot typing; rely on explicit agent typing events.
         clearOptimisticAiTypingSchedule();
@@ -870,13 +868,14 @@
         }
 
         profileWrap.classList.remove("hidden");
-        const label = liveAgentDisplayName || "Support Agent";
-        profileWrap.innerHTML = createAgentAvatarHtml(
-            label,
-            liveAgentProfileKey,
-            userConfig && userConfig.pulseAvatarBaseUrl,
-            "medium"
-        );
+        const label = liveAgentDisplayName || "Agent";
+        if (liveAgentProfileUrl) {
+            profileWrap.innerHTML = `<img src="${liveAgentProfileUrl}" class="chat-widget-header-agent-profile" alt="${escapeHtmlWidget(label)}" />`;
+            return;
+        }
+        const initials = getNameInitials(label);
+        const fallbackStyle = getHeaderAvatarFallbackStyle(label);
+        profileWrap.innerHTML = `<div class="chat-widget-header-agent-profile chat-widget-header-agent-profile-fallback" aria-label="${escapeHtmlWidget(label)}" style="${fallbackStyle}">${escapeHtmlWidget(initials)}</div>`;
     }
 
     async function setLiveAgentProfileKey(profileKey) {
@@ -885,61 +884,25 @@
         liveAgentProfileUrl = "";
         const fetchToken = ++liveAgentProfileFetchToken;
         renderHeaderAgentProfile();
+        if (!nextKey) return;
 
         let resolved = "";
-        const base = (userConfig && userConfig.pulseAvatarBaseUrl) ? userConfig.pulseAvatarBaseUrl.replace(/\/+$/, "") : "";
+        const base = (userConfig && userConfig.pulseAvatarBaseUrl)
+            ? userConfig.pulseAvatarBaseUrl.replace(/\/+$/, "")
+            : "";
+        const isDirectUrl = /^https?:\/\//i.test(nextKey) || /^data:image\//i.test(nextKey);
+        const isNumeric = /^\d+$/.test(nextKey);
 
-        if (nextKey) {
-            const isDirectUrl =
-                /^https?:\/\//i.test(nextKey) || /^data:image\//i.test(nextKey);
-            const isNumeric = /^\d+$/.test(nextKey);
-            if (isNumeric && base) {
-                resolved = `${base}/avatar-${nextKey}.svg`;
-            } else {
-                resolved = isDirectUrl ? nextKey : await fetchLogoUrl(nextKey);
-            }
-        } else if (base) {
-            // Fallback: avatarId is missing, use avatar-1.svg
-            resolved = `${base}/avatar-1.svg`;
+        if (isNumeric && base) {
+            // Predefined avatar: construct URL from avatarId + pulseAvatarBaseUrl
+            resolved = `${base}/avatar-${nextKey}.svg`;
+        } else {
+            resolved = isDirectUrl ? nextKey : await fetchLogoUrl(nextKey);
         }
 
         if (fetchToken !== liveAgentProfileFetchToken) return;
         liveAgentProfileUrl = resolved || "";
         renderHeaderAgentProfile();
-    }
-
-    function createAgentAvatarHtml(displayName, avatarId, pulseAvatarBaseUrl, size = "medium") {
-        const finalName = (displayName && String(displayName).trim()) || "Support Agent";
-        const base = (pulseAvatarBaseUrl && String(pulseAvatarBaseUrl).trim()) || "";
-        const cleanBase = base ? base.replace(/\/+$/, "") : "";
-
-        let avatarUrl = "";
-        if (cleanBase) {
-            const finalAvatarId = (avatarId !== undefined && avatarId !== null) ? String(avatarId).trim() : "";
-            const isNumeric = /^\d+$/.test(finalAvatarId);
-            if (finalAvatarId && isNumeric) {
-                avatarUrl = `${cleanBase}/avatar-${finalAvatarId}.svg`;
-            } else {
-                avatarUrl = `${cleanBase}/avatar-1.svg`;
-            }
-        } else {
-            // Fallback if base URL not configured
-            avatarUrl = liveAgentProfileUrl || resolvedAvatarUrl || "";
-        }
-
-        const dimensions = {
-            small: "24px",
-            medium: "32px",
-            large: "40px",
-        }[size] || "32px";
-
-        if (avatarUrl) {
-            return `<img src="${escapeHtmlWidget(avatarUrl)}" class="chat-widget-message-avatar" style="width: ${dimensions}; height: ${dimensions}; border-radius: 50%; object-fit: cover;" alt="${escapeHtmlWidget(finalName)}" aria-hidden="true" />`;
-        } else {
-            const initials = getNameInitials(finalName);
-            const fallbackStyle = getHeaderAvatarFallbackStyle(finalName);
-            return `<div class="chat-widget-message-avatar chat-widget-header-agent-profile-fallback" aria-label="${escapeHtmlWidget(finalName)}" style="width: ${dimensions}; height: ${dimensions}; line-height: ${dimensions}; font-size: calc(${dimensions} * 0.45); display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: #fff; font-weight: 600; ${fallbackStyle}">${escapeHtmlWidget(initials)}</div>`;
-        }
     }
 
     function setLauncherEventBadgeVisible(visible) {
@@ -993,7 +956,6 @@
                 ? Object.assign({}, evt, evt.payload)
                 : evt;
         const id =
-            (flat.assignedAgent && flat.assignedAgent.userId) ??
             flat.agentId ??
             flat.agent_id ??
             flat.virtualAgentId ??
@@ -1021,6 +983,7 @@
                 ? Object.assign({}, evt, evt.payload)
                 : evt;
         const profileKey =
+            // avatarId from assignedAgent is the primary source when backend uses predefined avatars
             (flat.assignedAgent && flat.assignedAgent.avatarId) ??
             flat.agentProfileUrl ??
             flat.agent_profile_url ??
@@ -1062,6 +1025,7 @@
                     flat.assigned_to.profile_key ||
                     flat.assigned_to.avatarKey ||
                     flat.assigned_to.avatar_key));
+        // Allow numeric values (avatarId) through — convert to string
         if (profileKey == null) return null;
         const t = String(profileKey).trim();
         return t || null;
@@ -1082,9 +1046,9 @@
         ) {
             return;
         }
-        setLiveAgentDisplayName(name || "Support Agent");
-        setLiveAgentId(id || "assigned_agent");
-        void setLiveAgentProfileKey(profileKey);
+        if (name) setLiveAgentDisplayName(name);
+        if (id) setLiveAgentId(id);
+        if (profileKey !== null) void setLiveAgentProfileKey(profileKey);
     }
 
     function maybeApplyVirtualAgentFromConversation(conversation) {
@@ -1911,17 +1875,12 @@
 
             const previewForAvatar = settings.preview || {};
             if (previewForAvatar.chatAvatarUrl) {
-                const avatarKey = String(previewForAvatar.chatAvatarUrl).trim();
-                const isNumeric = /^\d+$/.test(avatarKey);
-                if (isNumeric && userConfig && userConfig.pulseAvatarBaseUrl) {
-                    const base = userConfig.pulseAvatarBaseUrl.replace(/\/+$/, "");
-                    resolvedAvatarUrl = `${base}/avatar-${avatarKey}.svg`;
-                } else {
-                    try {
-                        resolvedAvatarUrl = await fetchLogoUrl(avatarKey);
-                    } catch (err) {
-                        console.warn("UniBox: Failed to load chat avatar", err);
-                    }
+                try {
+                    resolvedAvatarUrl = await fetchLogoUrl(
+                        String(previewForAvatar.chatAvatarUrl),
+                    );
+                } catch (err) {
+                    console.warn("UniBox: Failed to load chat avatar", err);
                 }
             } else {
                 resolvedAvatarUrl = "";
@@ -2128,8 +2087,6 @@
                                 extractFlowPayload(msg),
                                 msg.agentName ?? msg.agent_name ?? null,
                                 msg.is_ai_reply === true || msg.isAiReply === true,
-                                undefined,
-                                resolveMessageAgentInfo(msg),
                             );
                         });
                         setTimeout(() => {
@@ -2666,10 +2623,6 @@
                     const evtIsAiReply =
                         evt?.is_ai_reply === true || evt?.isAiReply === true;
                     const evtSender = String(evt?.sender ?? "").toLowerCase();
-                    const isHandoffAssignmentOnly =
-                        evt?.is_handoff_assignment === true ||
-                        evt?.handoff_assignment === true ||
-                        evt?.event_kind === "handoff_assignment";
                     if ((evtAgentName || evtAgentId) && !evtIsAiReply && evtSender === "agent") {
                         handleAgentAssignmentHandshake(evt, message);
                     }
@@ -2695,9 +2648,7 @@
                                         : undefined),
                         });
                     }
-                    if (isHandoffAssignmentOnly) {
-                        handleAgentAssignmentHandshake(evt, message);
-                    } else if (evt.messageId || evt.text || evt.sender) {
+                    if (evt.messageId || evt.text || evt.sender) {
                         handleIncomingMessage(evt);
                     }
                 }
@@ -3284,17 +3235,10 @@
         const sendBtn = host.shadowRoot.getElementById("sendBtn");
         if (!msgInput) return;
 
-        activeFlowNodeType = flow.nodeType || null;
-        activeFlowAllowsOptionsBypass = Boolean(
-            flow.nodeType === "options" || (flow.options && flow.options.length > 0),
-        );
-
         if (flow.isEnd) {
             msgInput.disabled = true;
             msgInput.placeholder = "Conversation ended";
             if (sendBtn) sendBtn.disabled = true;
-            activeFlowNodeType = null;
-            activeFlowAllowsOptionsBypass = false;
             return;
         }
 
@@ -3303,7 +3247,7 @@
         if (sendBtn) sendBtn.disabled = false;
 
         if (flow.inputType === "dropdown") {
-            // Dropdown questions are part of the workflow — select via buttons.
+            // Dropdown is answered via buttons — typing is not expected
             msgInput.disabled = true;
             msgInput.placeholder = "Select an option above…";
         } else if (
@@ -3323,26 +3267,14 @@
         ) {
             msgInput.placeholder = "Type your answer…";
         } else if (flow.nodeType === "options" || flow.options?.length > 0) {
-            // Options menus allow free text to skip to AI / handoff; buttons still work.
-            msgInput.placeholder = "Type a message or choose an option above…";
+            // Options are answered via buttons — disable free text input
+            msgInput.disabled = true;
+            msgInput.placeholder = "Choose an option above…";
         } else {
-            // AI and other workflow nodes — normal chat input
+            // Default / AI node — restore normal placeholder
             msgInput.placeholder =
                 settings?.behavior?.inputPlaceholder || "Type a message…";
         }
-    }
-
-    /** Restore normal typing after the user sends a free-text message. */
-    function resetChatInputToDefault() {
-        const host = document.getElementById("unibox-root");
-        if (!host || !host.shadowRoot) return;
-        const msgInput = host.shadowRoot.getElementById("msgInput");
-        const sendBtn = host.shadowRoot.getElementById("sendBtn");
-        if (!msgInput) return;
-        msgInput.disabled = false;
-        msgInput.placeholder =
-            settings?.behavior?.inputPlaceholder || "Type a message…";
-        if (sendBtn) sendBtn.disabled = false;
     }
 
     /**
@@ -3505,34 +3437,6 @@
         const normalizedTextValue =
             textValue && textValue.trim() ? textValue.trim() : null;
 
-        const normalizedFlowEarly = extractFlowPayload(message);
-        const isMediaMessage =
-            message.type &&
-            ["image", "video", "audio", "document", "file"].includes(message.type);
-        const hasInteractivePayload = Boolean(
-            message.interactivePayload || message.interactive,
-        );
-        // Post-handoff assignment envelopes may carry agent identity only (no bubble).
-        if (
-            !isUserMessage &&
-            !normalizedTextValue &&
-            !isMediaMessage &&
-            !message.media_storage_url &&
-            !normalizedFlowEarly &&
-            !hasInteractivePayload
-        ) {
-            const agentNameOnly = extractVirtualAgentDisplayName(message);
-            const agentIdOnly = extractVirtualAgentId(message);
-            const profileKeyOnly = extractVirtualAgentProfileKey(message);
-            if (agentNameOnly || agentIdOnly || profileKeyOnly) {
-                maybeApplyVirtualAgentFromEvent(
-                    message,
-                    message.conversationId ?? message.conversation_id,
-                );
-                return;
-            }
-        }
-
         // Debug logging for media messages
         const isMedia =
             message.type &&
@@ -3562,8 +3466,6 @@
                 message.flow,
                 message.agent_name ?? message.agentName ?? null,
                 message.is_ai_reply === true || message.isAiReply === true,
-                undefined,
-                resolveMessageAgentInfo(message),
             );
 
             if (!isUserMessage) {
@@ -5594,21 +5496,6 @@
         };
     }
 
-    function resolveMessageAgentInfo(message) {
-        if (!message || typeof message !== "object") return null;
-        const flat =
-            message.payload && typeof message.payload === "object"
-                ? Object.assign({}, message, message.payload)
-                : message;
-        const agent = flat.agent;
-        if (!agent || typeof agent !== "object") return null;
-
-        const avatarId = agent.avatarId ?? agent.avatar_id;
-        const displayName = agent.displayName ?? agent.display_name ?? agent.name ?? agent.agent_name;
-
-        return { avatarId, displayName };
-    }
-
     // --- UPDATED APPEND MESSAGE FUNCTION WITH FIX ---
     function appendMessageToUI(
         text,
@@ -5625,49 +5512,17 @@
         agentLabelOverride,
         isAiReply,
         appendOptions,
-        agentObj,
     ) {
         const options = appendOptions && typeof appendOptions === "object" ? appendOptions : {};
         const normalizedAgentLabel =
             typeof agentLabelOverride === "string" && agentLabelOverride.trim()
                 ? agentLabelOverride.trim()
                 : null;
-
-        let localAvatarUrl = "";
-        let bubbleAgentLabel = "Pulse AI";
-
-        if (type === "agent") {
-            if (isAiReply === true) {
-                bubbleAgentLabel = "Pulse AI";
-                localAvatarUrl = resolvedAvatarUrl; // Default bot avatar
-            } else {
-                // Human agent
-                let dispName = "";
-                let avId = null;
-                if (agentObj) {
-                    dispName = agentObj.displayName;
-                    avId = agentObj.avatarId;
-                }
-
-                // Fallbacks:
-                // If displayName is missing, display "Support Agent"
-                const finalDisplayName = (dispName && String(dispName).trim()) || (normalizedAgentLabel && String(normalizedAgentLabel).trim()) || "Support Agent";
-                bubbleAgentLabel = finalDisplayName;
-
-                const base = (userConfig && userConfig.pulseAvatarBaseUrl) ? userConfig.pulseAvatarBaseUrl.replace(/\/+$/, "") : "";
-                if (base) {
-                    const finalAvatarId = (avId !== undefined && avId !== null) ? String(avId).trim() : "";
-                    if (finalAvatarId) {
-                        localAvatarUrl = `${base}/avatar-${finalAvatarId}.svg`;
-                    } else {
-                        localAvatarUrl = `${base}/avatar-1.svg`;
-                    }
-                } else {
-                    // Fallback to S3 presigned URL or default avatar if base URL not configured
-                    localAvatarUrl = liveAgentProfileUrl || resolvedAvatarUrl;
-                }
-            }
-        }
+        const useHumanAgentLabel =
+            type === "agent" && isAiReply !== true && Boolean(normalizedAgentLabel);
+        const bubbleAgentLabel = useHumanAgentLabel
+            ? normalizedAgentLabel
+            : "Pulse AI";
 
         const host = document.getElementById("unibox-root");
         if (!host || !host.shadowRoot) return;
@@ -5907,28 +5762,14 @@
         if (type === "agent") {
             const topRow = document.createElement("div");
             topRow.className = "chat-widget-message-bot-top";
-
-            let msgAvatarId = null;
-            if (agentObj) {
-                msgAvatarId = agentObj.avatarId;
-            } else if (!isAiReply) {
-                msgAvatarId = liveAgentProfileKey;
+            if (resolvedAvatarUrl) {
+                const av = document.createElement("img");
+                av.className = "chat-widget-message-avatar";
+                av.src = resolvedAvatarUrl;
+                av.alt = "";
+                av.setAttribute("aria-hidden", "true");
+                topRow.appendChild(av);
             }
-
-            const avatarHtmlStr = createAgentAvatarHtml(
-                bubbleAgentLabel,
-                msgAvatarId,
-                userConfig && userConfig.pulseAvatarBaseUrl,
-                "small"
-            );
-
-            const avContainer = document.createElement("div");
-            avContainer.innerHTML = avatarHtmlStr.trim();
-            const avNode = avContainer.firstChild;
-            if (avNode) {
-                topRow.appendChild(avNode);
-            }
-
             const labelEl = document.createElement("div");
             labelEl.className = "chat-widget-message-label";
             labelEl.textContent = bubbleAgentLabel;
@@ -6455,43 +6296,6 @@
             const kind = options?.kind === "agent" ? "agent" : "ai";
             typingIndicator.classList.remove("hidden");
             typingIndicator.setAttribute("data-typing-kind", kind);
-
-            const avContainer = typingIndicator.querySelector(".chat-widget-typing-avatar-container");
-            const labelEl = typingIndicator.querySelector(".chat-widget-typing-label");
-
-            if (kind === "agent") {
-                const avatarId = liveAgentProfileKey || "";
-                const displayName = liveAgentDisplayName || "Support Agent";
-
-                if (avContainer) {
-                    avContainer.innerHTML = createAgentAvatarHtml(
-                        displayName,
-                        avatarId,
-                        userConfig && userConfig.pulseAvatarBaseUrl,
-                        "small"
-                    );
-                    avContainer.style.display = "block";
-                }
-                if (labelEl) {
-                    labelEl.textContent = `${displayName} is typing`;
-                    labelEl.style.display = "block";
-                }
-            } else {
-                if (avContainer) {
-                    avContainer.innerHTML = createAgentAvatarHtml(
-                        "Pulse AI",
-                        null,
-                        null,
-                        "small"
-                    );
-                    avContainer.style.display = "block";
-                }
-                if (labelEl) {
-                    labelEl.textContent = "Pulse AI is typing";
-                    labelEl.style.display = "block";
-                }
-            }
-
             const body = host.shadowRoot.getElementById("chatBody");
             if (body) {
                 requestAnimationFrame(() => {
@@ -8371,16 +8175,10 @@
             typingIndicator.className = "chat-widget-typing-indicator hidden";
             typingIndicator.id = "typingIndicator";
             typingIndicator.innerHTML = `
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <div class="chat-widget-typing-avatar-container" style="display: none;"></div>
-            <div style="display: flex; flex-direction: column; gap: 2px;">
-              <span class="chat-widget-typing-label" style="font-size: 11px; color: #6b7280; font-weight: 500; display: none;"></span>
-              <div class="chat-widget-typing-dots" aria-live="polite" aria-label="Typing">
-                <div class="chat-widget-typing-dot"></div>
-                <div class="chat-widget-typing-dot"></div>
-                <div class="chat-widget-typing-dot"></div>
-              </div>
-            </div>
+          <div class="chat-widget-typing-dots" aria-live="polite" aria-label="Typing">
+            <div class="chat-widget-typing-dot"></div>
+            <div class="chat-widget-typing-dot"></div>
+            <div class="chat-widget-typing-dot"></div>
           </div>
         `;
             body.appendChild(typingIndicator);
@@ -9097,12 +8895,6 @@
             if (!text) return;
 
             msgInput.value = "";
-            // Only reset input chrome when escaping an options menu via free text.
-            if (activeFlowAllowsOptionsBypass) {
-                resetChatInputToDefault();
-                activeFlowNodeType = null;
-                activeFlowAllowsOptionsBypass = false;
-            }
 
             const messageId = `msg_${Date.now()}_${Math.random()
                 .toString(36)

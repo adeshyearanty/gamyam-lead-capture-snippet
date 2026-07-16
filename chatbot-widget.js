@@ -2782,6 +2782,10 @@
                 console.log("UniBox: Subscribed to conversation", data || message);
                 break;
 
+            case "conversation_rotated":
+                handleConversationRotatedEvent(data || message);
+                break;
+
             case "error":
                 console.error("UniBox: WebSocket error:", data || message);
                 break;
@@ -3247,16 +3251,14 @@
         if (sendBtn) sendBtn.disabled = false;
 
         if (flow.inputType === "dropdown") {
-            // Dropdown is answered via buttons — typing is not expected
-            msgInput.disabled = true;
-            msgInput.placeholder = "Select an option above…";
+            // Keep text input enabled so users can message at any point.
+            msgInput.placeholder = "Select an option above, or type your message…";
         } else if (
             flow.nodeType === "form" &&
             flow.form &&
             flow.form.mode === "popup"
         ) {
-            msgInput.disabled = true;
-            msgInput.placeholder = "Complete the form below…";
+            msgInput.placeholder = "Complete the form below, or type your message…";
         } else if (flow.inputType === "email") {
             msgInput.placeholder = "Enter your email address…";
         } else if (flow.inputType === "phone") {
@@ -3267,9 +3269,7 @@
         ) {
             msgInput.placeholder = "Type your answer…";
         } else if (flow.nodeType === "options" || flow.options?.length > 0) {
-            // Options are answered via buttons — disable free text input
-            msgInput.disabled = true;
-            msgInput.placeholder = "Choose an option above…";
+            msgInput.placeholder = "Choose an option above, or type your message…";
         } else {
             // Default / AI node — restore normal placeholder
             msgInput.placeholder =
@@ -3336,6 +3336,72 @@
         const payload =
             message.payload && typeof message.payload === "object" ? message.payload : null;
         return normalizeFlowPayload(payload?.flow);
+    }
+
+    function handleConversationRotatedEvent(rawEvent) {
+        const evt = rawEvent && typeof rawEvent === "object" ? rawEvent : {};
+        const nextConversationId =
+            evt.conversationId ??
+            evt.conversation_id ??
+            evt.newConversationId ??
+            evt.nextConversationId;
+        const previousConversationId =
+            evt.previousConversationId ??
+            evt.previous_conversation_id ??
+            evt.oldConversationId;
+
+        if (!nextConversationId) {
+            console.warn("UniBox: conversation_rotated received without next conversation id", evt);
+            return;
+        }
+
+        const nextId = String(nextConversationId);
+        const previousId =
+            previousConversationId != null ? String(previousConversationId) : null;
+        const currentId = conversationId != null ? String(conversationId) : null;
+
+        if (
+            previousId &&
+            currentId &&
+            previousId !== currentId &&
+            nextId !== currentId
+        ) {
+            return;
+        }
+
+        const hasSwitchedConversation = currentId !== nextId;
+        conversationId = nextId;
+        subscribedConversationId = null;
+
+        console.log("UniBox: Conversation rotated", {
+            previousConversationId: previousId,
+            nextConversationId: nextId,
+            switched: hasSwitchedConversation,
+        });
+
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            subscribeToConversation(nextId);
+        }
+
+        if (userId) {
+            fetch(`${API_BASE}/thread/${userId}?limit=50`, {
+                method: "GET",
+                headers: getHeaders(),
+            })
+                .then((res) => (res.ok ? res.json() : null))
+                .then((threadData) => {
+                    if (!threadData || !Array.isArray(threadData.messages)) return;
+                    threadData.messages.forEach((msg) => handleIncomingMessage(msg));
+                    sortMessagesByTimestamp();
+                    markVisibleMessagesAsRead();
+                })
+                .catch((error) => {
+                    console.warn(
+                        "UniBox: Failed to refresh thread after conversation rotation",
+                        error,
+                    );
+                });
+        }
     }
 
     function handleIncomingMessage(message) {
@@ -4939,6 +5005,104 @@
         }
     }
 
+    function getWidgetTimezone() {
+        return settings?.timezone || "Asia/Calcutta";
+    }
+
+    function getDateKeyInTimezone(date, timeZone) {
+        const parts = new Intl.DateTimeFormat("en-CA", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            timeZone: timeZone || getWidgetTimezone(),
+        }).formatToParts(date);
+        const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+        const month = parts.find((part) => part.type === "month")?.value ?? "01";
+        const day = parts.find((part) => part.type === "day")?.value ?? "01";
+        return `${year}-${month}-${day}`;
+    }
+
+    function formatDateDividerLabel(timestampMs) {
+        if (!Number.isFinite(timestampMs)) return "";
+        const timeZone = getWidgetTimezone();
+        const date = new Date(timestampMs);
+        const todayKey = getDateKeyInTimezone(new Date(), timeZone);
+        const messageDateKey = getDateKeyInTimezone(date, timeZone);
+        if (messageDateKey === todayKey) return "Today";
+
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        if (messageDateKey === getDateKeyInTimezone(yesterday, timeZone)) {
+            return "Yesterday";
+        }
+
+        return date.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            timeZone,
+        });
+    }
+
+    function shouldShowDateDivider(currentTimestampMs, previousTimestampMs) {
+        if (!Number.isFinite(currentTimestampMs)) return false;
+        if (!Number.isFinite(previousTimestampMs)) return true;
+        const timeZone = getWidgetTimezone();
+        return (
+            getDateKeyInTimezone(new Date(currentTimestampMs), timeZone) !==
+            getDateKeyInTimezone(new Date(previousTimestampMs), timeZone)
+        );
+    }
+
+    function createDateDividerElement(label) {
+        const divider = document.createElement("div");
+        divider.className = "chat-widget-date-divider";
+        divider.setAttribute("data-date-divider", "true");
+        divider.innerHTML = `
+            <div class="chat-widget-date-divider-line"></div>
+            <span class="chat-widget-date-divider-label">${escapeHtmlWidget(label)}</span>
+            <div class="chat-widget-date-divider-line"></div>
+        `;
+        return divider;
+    }
+
+    function refreshDateDividers() {
+        const host = document.getElementById("unibox-root");
+        if (!host || !host.shadowRoot) return;
+        const body = host.shadowRoot.getElementById("chatBody");
+        if (!body) return;
+
+        body.querySelectorAll("[data-date-divider]").forEach((node) => node.remove());
+
+        const messageElements = Array.from(body.children).filter((child) =>
+            child.hasAttribute("data-timestamp"),
+        );
+        if (messageElements.length === 0) return;
+
+        const typingIndicator = body.querySelector("#typingIndicator");
+        let previousTimestampMs = null;
+
+        messageElements.forEach((element) => {
+            const currentTimestampMs = Number.parseInt(
+                element.getAttribute("data-timestamp") || "",
+                10,
+            );
+            if (!Number.isFinite(currentTimestampMs)) return;
+
+            if (shouldShowDateDivider(currentTimestampMs, previousTimestampMs)) {
+                const divider = createDateDividerElement(
+                    formatDateDividerLabel(currentTimestampMs),
+                );
+                if (typingIndicator) {
+                    body.insertBefore(divider, element);
+                } else {
+                    body.insertBefore(divider, element);
+                }
+            }
+            previousTimestampMs = currentTimestampMs;
+        });
+    }
+
     function formatTimestamp(timestamp, showReadReceipt = false) {
         if (!timestamp) return "";
         const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
@@ -6107,6 +6271,8 @@
             body.scrollTop = body.scrollHeight;
         });
 
+        refreshDateDividers();
+
         if (waitingForFirstInboundMessage && isRealInboundBotMessage(type, normalizedId)) {
             waitingForFirstInboundMessage = false;
             setInitialBodyLoading(false);
@@ -6169,6 +6335,8 @@
         if (typingIndicator) {
             body.appendChild(typingIndicator);
         }
+
+        refreshDateDividers();
 
         requestAnimationFrame(() => {
             body.scrollTop = body.scrollHeight;
@@ -7173,6 +7341,29 @@
             display: flex;
             flex-direction: column;
             align-items: flex-start; /* let width shrink to content */
+          }
+
+          .chat-widget-date-divider {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 16px 0;
+            width: 100%;
+            max-width: 100%;
+            align-self: stretch;
+          }
+          .chat-widget-date-divider-line {
+            flex: 1;
+            height: 1px;
+            background: #eaebf2;
+          }
+          .chat-widget-date-divider-label {
+            font-size: 14px;
+            line-height: 16px;
+            font-weight: 400;
+            color: #525261;
+            white-space: nowrap;
+            padding: 4px 0;
           }
   
           .chat-widget-message.bot {

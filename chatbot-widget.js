@@ -5058,7 +5058,8 @@
 
     function shouldShowDateDivider(currentTimestampMs, previousTimestampMs) {
         if (!Number.isFinite(currentTimestampMs)) return false;
-        if (!Number.isFinite(previousTimestampMs)) return true;
+        // Do not render a date label before the very first message.
+        if (!Number.isFinite(previousTimestampMs)) return false;
         const timeZone = getWidgetTimezone();
         return (
             getDateKeyInTimezone(new Date(currentTimestampMs), timeZone) !==

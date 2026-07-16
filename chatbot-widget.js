@@ -2655,7 +2655,19 @@
                 break;
 
             case "typing":
-                handleTypingIndicator(data || message);
+                {
+                    const typingEvent = { ...(data || message || {}) };
+                    // Some fan-out paths emit bare { type: "TYPING" } without
+                    // isTyping/typing flags. Treat that as typing-start so the
+                    // indicator remains visible until stop/reply timeout.
+                    if (
+                        typingEvent.isTyping === undefined &&
+                        typingEvent.typing === undefined
+                    ) {
+                        typingEvent.typing = true;
+                    }
+                    handleTypingIndicator(typingEvent);
+                }
                 break;
 
             case "read":

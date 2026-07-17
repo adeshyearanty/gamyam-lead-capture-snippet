@@ -7124,6 +7124,8 @@
             min-height: 96px;
             color: #fff;
             display: flex;
+            position: relative;
+            z-index: 2;
           }
   
           .chat-widget-header-content {
@@ -7330,6 +7332,7 @@
             flex: 1;
             min-height: 0;
             position: relative;
+            z-index: 1;
             top: -${bodyHeaderOverlap}px;
             margin-bottom: -${bodyHeaderOverlap}px;
             display: flex;

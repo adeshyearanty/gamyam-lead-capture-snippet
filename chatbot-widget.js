@@ -344,9 +344,9 @@
     let resolvedHeaderLogoUrl = "";
     let resolvedBrandLogoUrl = "";
     let resolvedLauncherCustomUrl = "";
-    let resolvedAvatarUrl = "";
     let resolvedFontFamily = "";
     let messages = new Map();
+    let isExpanded = false;
     /** Peer (human agent) online — driven by assignment + presence events */
     let isAgentOnline = false;
     let staticWelcomeShown = false;
@@ -1482,11 +1482,19 @@
                 chatBubbleColor:
                     widgetAppearanceApi.chatBubbleColor ||
                     windowUiAppearance.chatBubbleColor ||
-                    "#ECE1FF",
+                    "#E4D6FF",
                 agentMessageColor:
                     widgetAppearanceApi.agentMessageColor ||
                     windowUiAppearance.agentMessageColor ||
                     "#ECEFF1",
+                userChatTextColor:
+                    widgetAppearanceApi.userChatTextColor ||
+                    windowUiAppearance.userChatTextColor ||
+                    "#18181e",
+                agentTextColor:
+                    widgetAppearanceApi.agentTextColor ||
+                    windowUiAppearance.agentTextColor ||
+                    "#18181e",
                 backgroundColor:
                     widgetAppearanceApi.backgroundColor ||
                     windowUiAppearance.backgroundColor ||
@@ -1531,6 +1539,14 @@
                 ),
                 // Layout
                 subtitle: String(windowUiLayout.subtitle || "").trim(),
+                headerTitleColor:
+                    widgetAppearanceApi.headerTitleColor ||
+                    windowUiLayout.headerTitleColor ||
+                    "#FFFFFF",
+                subtitleColor:
+                    widgetAppearanceApi.subtitleColor ||
+                    windowUiLayout.subtitleColor ||
+                    "#FFFFFF",
                 windowSize:
                     widgetAppearanceApi.windowSize ||
                     windowUiLayout.windowSize ||
@@ -1759,7 +1775,6 @@
             // Now initialize API URLs and socket config with the baseUrl
             API_BASE = baseUrl;
             // Use utilityApiBaseUrl from config if provided, otherwise construct it
-            // utilityApiBaseUrl should be like: https://dev-api.salesastra.ai/utilities/v1/s3
             if (fetchedConfig && fetchedConfig.utilityApiBaseUrl) {
                 UTILITY_API_BASE = normalizeUtilityS3Base(
                     fetchedConfig.utilityApiBaseUrl,
@@ -1871,19 +1886,6 @@
                 // No dedicated launcher icon — fall back to brand/logo URL
                 resolvedLauncherCustomUrl =
                     resolvedBrandLogoUrl || resolvedHeaderLogoUrl;
-            }
-
-            const previewForAvatar = settings.preview || {};
-            if (previewForAvatar.chatAvatarUrl) {
-                try {
-                    resolvedAvatarUrl = await fetchLogoUrl(
-                        String(previewForAvatar.chatAvatarUrl),
-                    );
-                } catch (err) {
-                    console.warn("UniBox: Failed to load chat avatar", err);
-                }
-            } else {
-                resolvedAvatarUrl = "";
             }
 
             renderWidget();
@@ -5154,10 +5156,14 @@
 
     function getReadReceiptIcon(status, readAt, readByUs, readByUsAt, sender) {
         if (sender !== "user") return "";
-        if (readByUs && readByUsAt) {
-            return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#8D53F8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+        if (status === "read" || (readByUs && readByUsAt)) {
+            return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1.75 9L4.25 11.5M7.75 7.5L10.25 5M5.75 9L8.25 11.5L14.25 5" stroke="#8D53F8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
         }
-        return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity:0.5"><path d="M15.8334 8.05566L7.81258 15.8334L4.16675 12.2981" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.8334 4.16699L7.81258 11.9448L4.16675 8.40942" stroke="#9DA2AB" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+        if (status === "delivered") {
+            return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1.75 9L4.25 11.5M7.75 7.5L10.25 5M5.75 9L8.25 11.5L14.25 5" stroke="#9DA2AB" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+        }
+        // Default or "sent"
+        return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 8.66406L6.5 11.1641L12.5 4.66406" stroke="#9DA2AB" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
     }
 
     // Helper function to check if a message is a welcome message
@@ -5939,14 +5945,6 @@
         if (type === "agent") {
             const topRow = document.createElement("div");
             topRow.className = "chat-widget-message-bot-top";
-            if (resolvedAvatarUrl) {
-                const av = document.createElement("img");
-                av.className = "chat-widget-message-avatar";
-                av.src = resolvedAvatarUrl;
-                av.alt = "";
-                av.setAttribute("aria-hidden", "true");
-                topRow.appendChild(av);
-            }
             const labelEl = document.createElement("div");
             labelEl.className = "chat-widget-message-label";
             labelEl.textContent = bubbleAgentLabel;
@@ -6646,18 +6644,35 @@
             fontSizeMap[preview.fontSize || "small"] || fontSizeMap.small;
 
         const windowSizeMap = {
-            compact: { width: 340, height: 460 },
-            medium: { width: 360, height: 500 },
-            large: { width: 400, height: 560 },
+            compact: { width: 340, height: 560 },
+            medium: { width: 360, height: 640 },
+            large: { width: 400, height: null },
         };
+        const selectedWindowSize = preview.windowSize || "medium";
         const windowSize =
-            windowSizeMap[preview.windowSize || "medium"] || windowSizeMap.medium;
+            windowSizeMap[selectedWindowSize] || windowSizeMap.medium;
+        const windowScreenClearancePx = 64;
+        const windowVerticalReservePx =
+            marginV +
+            launcherLayoutPx +
+            windowLauncherGapPx +
+            windowScreenClearancePx;
+        const availableWindowHeightCss =
+            `max(0px, calc(100vh - ${windowVerticalReservePx}px))`;
+        const windowHeightCss =
+            selectedWindowSize === "large"
+                ? availableWindowHeightCss
+                : `min(${windowSize.height}px, ${availableWindowHeightCss})`;
         const radiusByStyle = { rounded: "10px", minimal: "0px", card: "16px" };
         const windowRadius =
             radiusByStyle[preview.windowStyle || "rounded"] || radiusByStyle.rounded;
 
-        const chatBubbleColor = preview.chatBubbleColor || "#ECE1FF";
+        const chatBubbleColor = preview.chatBubbleColor || "#E4D6FF";
         const agentMessageColor = preview.agentMessageColor || "#F5F5F5";
+        const userChatTextColor = preview.userChatTextColor || "#18181e";
+        const agentTextColor = preview.agentTextColor || "#18181e";
+        const headerTitleColor = preview.headerTitleColor || "#FFFFFF";
+        const subtitleColor = preview.subtitleColor || "#FFFFFF";
         const backgroundColor = preview.backgroundColor || "#FFFFFF";
         const bodyHeaderOverlap = 36;
 
@@ -7016,6 +7031,18 @@
             transform: none !important;
             transition: none !important;
           }
+          /* Pulse: keep closed footprint when open so the close face stays centered/aligned. */
+          .chat-widget-launcher.chat-widget-launcher-pulse.open,
+          .chat-widget-launcher.chat-widget-launcher-pulse.open:hover,
+          .chat-widget-launcher.chat-widget-launcher-pulse.open.chat-widget-launcher-bounce {
+            width: ${launcherOuterPulsePx}px !important;
+            height: ${launcherOuterPulsePx}px !important;
+            min-width: ${launcherOuterPulsePx}px !important;
+            min-height: ${launcherOuterPulsePx}px !important;
+            max-width: ${launcherOuterPulsePx}px !important;
+            max-height: ${launcherOuterPulsePx}px !important;
+            box-shadow: none !important;
+          }
           .chat-widget-launcher.chat-widget-launcher-text.open {
             min-width: ${launcherFacePx}px !important;
             min-height: ${launcherFacePx}px !important;
@@ -7028,6 +7055,13 @@
             height: 100%;
             border-radius: 50% !important;
             transition: none !important;
+          }
+          .chat-widget-launcher.chat-widget-launcher-pulse.open
+            .chat-widget-launcher-inner {
+            inset: ${pulseRingInsetPx}px;
+            width: auto;
+            height: auto;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
           }
           .chat-widget-launcher.chat-widget-launcher-text.open .chat-widget-launcher-inner {
             position: absolute;
@@ -7055,12 +7089,9 @@
           .chat-widget-window {
             position: fixed; ${verticalWindowCss} ${horizontalWindowCss}
             width: ${windowSize.width}px;
-            height: min(
-              ${windowSize.height}px,
-              calc(100vh - ${marginV + 16}px)
-            );
+            height: ${windowHeightCss};
             max-width: calc(100vw - ${2 * marginH + 16}px);
-            max-height: calc(100vh - ${marginV + 16}px);
+            max-height: ${availableWindowHeightCss};
             background: #ffffff;
             border-radius: ${windowRadius};
             box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
@@ -7079,6 +7110,12 @@
             opacity: 1;
             pointer-events: auto;
             transform: translateY(0) scale(1);
+          }
+
+          .chat-widget-window.expanded {
+            width: ${windowSize.width * 1.5}px;
+            height: ${selectedWindowSize === "large" ? availableWindowHeightCss : `min(${windowSize.height * 1.5}px, ${availableWindowHeightCss})`};
+            max-width: calc(100vw - ${2 * marginH + 16}px);
           }
   
           .chat-widget-header {
@@ -7109,6 +7146,7 @@
             display: flex;
             flex-direction: column;
             justify-content: center;
+            min-width: 0;
           }
           .chat-widget-header-close {
             border: none;
@@ -7126,6 +7164,34 @@
           }
           .chat-widget-header-close:hover {
             background: rgba(255, 255, 255, 0.16);
+          }
+
+          .chat-widget-header-expand-minimize {
+            border: none;
+            background: transparent;
+            color: ${headerTitleColor};
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            flex-shrink: 0;
+            margin-left: 8px;
+            opacity: 0.92;
+            transition: background-color 0.15s ease, opacity 0.15s ease;
+          }
+          .chat-widget-header-expand-minimize:hover {
+            background: rgba(255, 255, 255, 0.16);
+            opacity: 1;
+          }
+          .chat-widget-header-expand-minimize svg {
+            width: 16px;
+            height: 16px;
+            color: ${headerTitleColor};
+            stroke: currentColor;
+            transition: transform 0.15s ease;
           }
   
           .chat-widget-header-logo {
@@ -7210,7 +7276,17 @@
           .chat-widget-header-title {
             font-weight: 600;
             font-size: ${fontSizes.title};
-            flex: 1;
+            color: ${headerTitleColor};
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            overflow: hidden;
+          }
+
+          .chat-widget-header-subtitle {
+            color: ${subtitleColor};
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            overflow: hidden;
           }
   
           .chat-widget-messages-pane {
@@ -7397,7 +7473,7 @@
   
           .chat-widget-message.bot .chat-widget-message-content {
             background: ${agentMessageColor};
-            color: #18181e;
+            color: ${agentTextColor};
             font-family: ${resolvedFontFamily} !important;
             font-size: ${fontSizes.body};
             line-height: 20px;
@@ -7551,7 +7627,7 @@
   
           .chat-widget-message.user .chat-widget-message-content {
             background: ${chatBubbleColor};
-            color: #18181e;
+            color: ${userChatTextColor};
             font-family: ${resolvedFontFamily} !important;
             font-size: ${fontSizes.body};
             line-height: 20px;
@@ -7581,14 +7657,6 @@
             align-items: center;
             gap: 8px;
             margin-bottom: 8px;
-          }
-  
-          .chat-widget-message-avatar {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            object-fit: cover;
-            flex-shrink: 0;
           }
   
           .chat-widget-message.bot .chat-widget-message-bot-top .chat-widget-message-label {
@@ -7878,7 +7946,86 @@
             width: 18px;
             height: 18px;
           }
-  
+
+          .chat-widget-emoji-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+          }
+
+          .chat-widget-emoji-btn {
+            cursor: pointer;
+            display: flex;
+            border: none;
+            padding: 2px;
+            width: 24px;
+            height: 24px;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            color: #18181e;
+            border-radius: 6px;
+            transition: background-color 0.15s ease, opacity 0.15s ease;
+          }
+
+          .chat-widget-emoji-btn:hover,
+          .chat-widget-emoji-btn:focus,
+          .chat-widget-emoji-btn:focus-visible,
+          .chat-widget-emoji-btn:active {
+            background: transparent;
+            outline: none;
+            box-shadow: none;
+          }
+
+          .chat-widget-emoji-btn svg {
+            width: 20px;
+            height: 20px;
+          }
+
+          .chat-widget-emoji-picker {
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            margin-bottom: 8px;
+            z-index: 9999;
+            background: white;
+            border: 1px solid #EFEFEF;
+            border-radius: 4px;
+            box-shadow: 0px 4px 12px rgba(0,0,0,0.15);
+            width: 240px;
+            max-height: 160px;
+            overflow-y: auto;
+            padding: 8px;
+          }
+
+          .chat-widget-emoji-picker.hidden {
+            display: none;
+          }
+
+          .chat-widget-emoji-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 4px;
+          }
+
+          .chat-widget-emoji-item {
+            border: none;
+            background: transparent;
+            padding: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.15s ease;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+
+          .chat-widget-emoji-item:hover {
+            background-color: #f3f4f6;
+          }
+
           .chat-widget-input {
             flex: 1;
             border: none;
@@ -8106,6 +8253,9 @@
 
         const closeIcon = `<svg class="chat-widget-launcher-close-icon" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M24 8L8 24" stroke="white" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8L24 24" stroke="white" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
+        const maximizeIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" x2="14" y1="3" y2="10"></line><line x1="3" x2="10" y1="21" y2="14"></line></svg>`;
+        const minimizeIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" x2="20" y1="10" y2="4"></line><line x1="10" x2="4" y1="14" y2="20"></line></svg>`;
+
         const container = document.createElement("div");
         container.className = "chat-widget-container";
 
@@ -8118,7 +8268,7 @@
             ? `<img src="${resolvedHeaderLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
             : `<div class="chat-widget-header-logo" style="display:flex;align-items:center;justify-content:center;color:#7c3aed">${headerFallbackSvg}</div>`;
         const headerSubtitleHtml = subtitle
-            ? `<div class="chat-widget-header-subtitle" style="font-size:${fontSizes.meta};opacity:0.9">${escapeHtmlWidget(subtitle)}</div>`
+            ? `<div class="chat-widget-header-subtitle" id="chatHeaderSubtitle" style="font-size:${fontSizes.meta};opacity:0.9" title="${escapeHtmlWidget(subtitle)}">${escapeHtmlWidget(subtitle)}</div>`
             : "";
         const showHeaderClose = Boolean(preview.showHeaderClose);
         const headerCloseHtml = showHeaderClose
@@ -8213,10 +8363,13 @@
                 <span class="chat-widget-online-dot hidden" id="headerOnlineDot" aria-hidden="true"></span>
               </div>
               <div class="chat-widget-header-text">
-                <div class="chat-widget-header-title" id="chatHeaderTitle">${escapeHtmlWidget(headerTitle)}</div>
+                <div class="chat-widget-header-title" id="chatHeaderTitle" title="${escapeHtmlWidget(headerTitle)}">${escapeHtmlWidget(headerTitle)}</div>
                 ${headerSubtitleHtml}
               </div>
               <div class="chat-widget-header-agent-profile-wrap hidden" id="chatHeaderAgentProfile"></div>
+              <button type="button" class="chat-widget-header-expand-minimize" id="expandMinimizeBtn" title="Expand">
+                ${maximizeIcon}
+              </button>
               ${headerCloseHtml}
             </div>
           </div>
@@ -8233,11 +8386,24 @@
                <div class="chat-widget-footer-row">
                <div class="chat-widget-input-wrapper">
                  <input type="file" id="fileInput" style="display: none;" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx" multiple />
-                <button type="button" class="chat-widget-attach-btn" id="attachBtn" title="Attach file" aria-label="Attach file">
+                 <button type="button" class="chat-widget-attach-btn" id="attachBtn" title="Attach file" aria-label="Attach file">
                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="0.75" stroke-linecap="round" stroke-linejoin="round">
                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                    </svg>
                  </button>
+                 <div class="chat-widget-emoji-container">
+                    <button type="button" class="chat-widget-emoji-btn" id="emojiBtn" title="Insert emoji" aria-label="Insert emoji">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 21C16.9706 21 21 16.9706 21 12C21 7.02944 16.9706 3 12 3C7.02944 3 3 7.02944 3 12C3 16.9706 7.02944 21 12 21Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M8.40039 13.7998C8.40039 13.7998 9.75039 15.5998 12.0004 15.5998C14.2504 15.5998 15.6004 13.7998 15.6004 13.7998" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M9.30078 9.2998H9.30978" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M14.6992 9.2998H14.7082" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </button>
+                    <div class="chat-widget-emoji-picker hidden" id="emojiPicker">
+                      <div class="chat-widget-emoji-grid" id="emojiGrid"></div>
+                    </div>
+                  </div>
                  <input type="text" class="chat-widget-input" id="msgInput" placeholder="Type your message here.." />
                </div>
                <button class="chat-widget-send-btn" id="sendBtn">
@@ -8249,10 +8415,10 @@
                <div class="chat-widget-powered-by">
                  <div class="chat-widget-powered-by-row">
                    <span class="chat-widget-powered-by-label">Powered by</span>
-                   <div class="chat-widget-powered-by-trailing">
+                   <a href="https://salesastra.ai" target="_blank" rel="noopener noreferrer" class="chat-widget-powered-by-trailing" style="text-decoration: none;">
                      ${poweredByMarkSvg}
                      <span class="chat-widget-powered-by-brand">SalesAstra</span>
-                   </div>
+                   </a>
                  </div>
                </div>
              </div>
@@ -9083,6 +9249,19 @@
         if (headerCloseBtn)
             headerCloseBtn.addEventListener("click", () => toggle(false));
 
+        const expandMinimizeBtn = host.shadowRoot.getElementById("expandMinimizeBtn");
+        if (expandMinimizeBtn) {
+            expandMinimizeBtn.addEventListener("click", () => {
+                isExpanded = !isExpanded;
+                const chatWindow = host.shadowRoot.getElementById("chatWindow");
+                if (chatWindow) {
+                    chatWindow.classList.toggle("expanded", isExpanded);
+                }
+                expandMinimizeBtn.innerHTML = isExpanded ? minimizeIcon : maximizeIcon;
+                expandMinimizeBtn.setAttribute("title", isExpanded ? "Minimize" : "Expand");
+            });
+        }
+
         const handleSend = () => {
             const text = msgInput.value.trim();
 
@@ -9171,6 +9350,60 @@
 
         msgInput.addEventListener("input", updateSendButtonState);
         updateSendButtonState();
+
+        // Emoji Picker Logic
+        const emojiBtn = shadow.getElementById("emojiBtn");
+        const emojiPicker = shadow.getElementById("emojiPicker");
+        const emojiGrid = shadow.getElementById("emojiGrid");
+
+        const emojisList = [
+            "😀", "😃", "😄", "😁", "😅", "😂", "🤣", "😊",
+            "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘",
+            "😗", "😙", "😚", "☺️", "😋", "😛", "😝", "😜",
+            "🤪", "🤨", "🧐", "🤓", "😎", "🥳", "😏", "😒",
+            "👍", "👎", "👏", "🙌", "👐", "🤝", "🙏", "✌️",
+            "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
+            "💯", "💢", "💥", "💫", "💦", "💨", "🕊️", "🦋",
+            "🌟", "⭐", "🌈", "☀️", "🌙", "⚡", "🔥", "💧"
+        ];
+
+        if (emojiBtn && emojiPicker && emojiGrid) {
+            // Populate grid
+            emojisList.forEach(emoji => {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "chat-widget-emoji-item";
+                btn.textContent = emoji;
+                btn.addEventListener("click", () => {
+                    if (msgInput) {
+                        const start = msgInput.selectionStart || 0;
+                        const end = msgInput.selectionEnd || 0;
+                        const text = msgInput.value;
+                        msgInput.value = text.substring(0, start) + emoji + text.substring(end);
+                        msgInput.focus();
+                        const newPos = start + emoji.length;
+                        msgInput.setSelectionRange(newPos, newPos);
+                        updateSendButtonState();
+                    }
+                    emojiPicker.classList.add("hidden");
+                });
+                emojiGrid.appendChild(btn);
+            });
+
+            emojiBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                emojiPicker.classList.toggle("hidden");
+            });
+
+            // Hide on outside click
+            document.addEventListener("click", (e) => {
+                const path = e.composedPath ? e.composedPath() : [];
+                const clickedInside = path.includes(emojiBtn) || path.includes(emojiPicker);
+                if (!clickedInside) {
+                    emojiPicker.classList.add("hidden");
+                }
+            });
+        }
 
         // Re-render chips when footer becomes visible (in case it was hidden)
         // Use debounce to prevent excessive calls from MutationObserver

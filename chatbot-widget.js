@@ -7288,6 +7288,43 @@
             white-space: nowrap;
             overflow: hidden;
           }
+
+          .chat-widget-tooltip-container {
+            position: relative;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+          }
+
+          .chat-widget-custom-tooltip {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            background: #ffffff;
+            color: #18181e;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 12px;
+            line-height: 1.4;
+            font-weight: 500;
+            white-space: normal;
+            box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.15);
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            z-index: 9999;
+            transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
+            width: max-content;
+            max-width: 240px;
+            word-break: break-word;
+          }
+
+          .chat-widget-tooltip-container:hover .chat-widget-custom-tooltip {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+            transition-delay: 0.15s;
+          }
   
           .chat-widget-messages-pane {
             flex: 1;
@@ -8268,7 +8305,10 @@
             ? `<img src="${resolvedHeaderLogoUrl}" class="chat-widget-header-logo" alt="Logo" />`
             : `<div class="chat-widget-header-logo" style="display:flex;align-items:center;justify-content:center;color:#7c3aed">${headerFallbackSvg}</div>`;
         const headerSubtitleHtml = subtitle
-            ? `<div class="chat-widget-header-subtitle" id="chatHeaderSubtitle" style="font-size:${fontSizes.meta};opacity:0.9" title="${escapeHtmlWidget(subtitle)}">${escapeHtmlWidget(subtitle)}</div>`
+            ? `<div class="chat-widget-tooltip-container">
+                 <div class="chat-widget-header-subtitle" id="chatHeaderSubtitle" style="font-size:${fontSizes.meta};opacity:0.9">${escapeHtmlWidget(subtitle)}</div>
+                 <div class="chat-widget-custom-tooltip">${escapeHtmlWidget(subtitle)}</div>
+               </div>`
             : "";
         const showHeaderClose = Boolean(preview.showHeaderClose);
         const headerCloseHtml = showHeaderClose
@@ -8363,7 +8403,10 @@
                 <span class="chat-widget-online-dot hidden" id="headerOnlineDot" aria-hidden="true"></span>
               </div>
               <div class="chat-widget-header-text">
-                <div class="chat-widget-header-title" id="chatHeaderTitle" title="${escapeHtmlWidget(headerTitle)}">${escapeHtmlWidget(headerTitle)}</div>
+                <div class="chat-widget-tooltip-container">
+                  <div class="chat-widget-header-title" id="chatHeaderTitle">${escapeHtmlWidget(headerTitle)}</div>
+                  <div class="chat-widget-custom-tooltip">${escapeHtmlWidget(headerTitle)}</div>
+                </div>
                 ${headerSubtitleHtml}
               </div>
               <div class="chat-widget-header-agent-profile-wrap hidden" id="chatHeaderAgentProfile"></div>
@@ -8394,10 +8437,10 @@
                  <div class="chat-widget-emoji-container">
                     <button type="button" class="chat-widget-emoji-btn" id="emojiBtn" title="Insert emoji" aria-label="Insert emoji">
                       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M12 21C16.9706 21 21 16.9706 21 12C21 7.02944 16.9706 3 12 3C7.02944 3 3 7.02944 3 12C3 16.9706 7.02944 21 12 21Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M8.40039 13.7998C8.40039 13.7998 9.75039 15.5998 12.0004 15.5998C14.2504 15.5998 15.6004 13.7998 15.6004 13.7998" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M9.30078 9.2998H9.30978" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M14.6992 9.2998H14.7082" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M12 21C16.9706 21 21 16.9706 21 12C21 7.02944 16.9706 3 12 3C7.02944 3 3 7.02944 3 12C3 16.9706 7.02944 21 12 21Z" stroke="currentColor" stroke-width="0.75" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M8.40039 13.7998C8.40039 13.7998 9.75039 15.5998 12.0004 15.5998C14.2504 15.5998 15.6004 13.7998 15.6004 13.7998" stroke="currentColor" stroke-width="0.75" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M9.30078 9.2998H9.30978" stroke="currentColor" stroke-width="0.75" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M14.6992 9.2998H14.7082" stroke="currentColor" stroke-width="0.75" stroke-linecap="round" stroke-linejoin="round"/>
                       </svg>
                     </button>
                     <div class="chat-widget-emoji-picker hidden" id="emojiPicker">

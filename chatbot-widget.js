@@ -7314,11 +7314,15 @@
             opacity: 0;
             visibility: hidden;
             pointer-events: none;
-            z-index: 9999;
+            z-index: 99999;
             transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
             width: max-content;
             max-width: 240px;
             word-break: break-word;
+          }
+
+          .chat-widget-tooltip-container:hover {
+            z-index: 99999;
           }
 
           .chat-widget-tooltip-container:hover .chat-widget-custom-tooltip {

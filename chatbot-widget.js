@@ -856,6 +856,12 @@
         return `background:${color.bg};color:${color.text};font-size:11px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;font-family:'DM Sans',sans-serif;`;
     }
 
+    function renderHeaderAgentProfileFallback(profileWrap, label) {
+        const initials = getNameInitials(label);
+        const fallbackStyle = getHeaderAvatarFallbackStyle(label);
+        profileWrap.innerHTML = `<div class="chat-widget-header-agent-profile chat-widget-header-agent-profile-fallback" aria-label="${escapeHtmlWidget(label)}" style="${fallbackStyle}">${escapeHtmlWidget(initials)}</div>`;
+    }
+
     function renderHeaderAgentProfile() {
         const host = document.getElementById("unibox-root");
         if (!host || !host.shadowRoot) return;
@@ -870,12 +876,23 @@
         profileWrap.classList.remove("hidden");
         const label = liveAgentDisplayName || "Agent";
         if (liveAgentProfileUrl) {
-            profileWrap.innerHTML = `<img src="${liveAgentProfileUrl}" class="chat-widget-header-agent-profile" alt="${escapeHtmlWidget(label)}" />`;
+            // Build via createElement (not innerHTML) so we can attach an error
+            // handler: custom-uploaded avatar URLs can fail to load (expired/
+            // unsigned/missing object) even though a URL was successfully
+            // resolved - fall back to the initials avatar instead of leaving a
+            // broken image icon in the header.
+            const img = document.createElement("img");
+            img.className = "chat-widget-header-agent-profile";
+            img.alt = label;
+            img.src = liveAgentProfileUrl;
+            img.onerror = () => {
+                renderHeaderAgentProfileFallback(profileWrap, label);
+            };
+            profileWrap.innerHTML = "";
+            profileWrap.appendChild(img);
             return;
         }
-        const initials = getNameInitials(label);
-        const fallbackStyle = getHeaderAvatarFallbackStyle(label);
-        profileWrap.innerHTML = `<div class="chat-widget-header-agent-profile chat-widget-header-agent-profile-fallback" aria-label="${escapeHtmlWidget(label)}" style="${fallbackStyle}">${escapeHtmlWidget(initials)}</div>`;
+        renderHeaderAgentProfileFallback(profileWrap, label);
     }
 
     async function setLiveAgentProfileKey(profileKey) {
@@ -2692,8 +2709,16 @@
                 break;
 
             case "read":
-                // User does NOT receive read receipts from agent
-                // This is intentionally ignored per design
+                // The agent/AI has read the conversation. This event carries no
+                // messageIds, so treat it as a broad "caught up" signal and mark
+                // every one of the user's own messages that isn't already
+                // flagged as read, refreshing their checkmark in place.
+                Array.from(messages.values()).forEach((msg) => {
+                    if (msg.sender !== "user" || msg.status === "read") return;
+                    msg.status = "read";
+                    msg.readAt = msg.readAt || new Date().toISOString();
+                    refreshMessageStatusIcon(msg);
+                });
                 break;
 
             case "media_upload_response":
@@ -3487,6 +3512,7 @@
             if (timeEl) {
                 timeEl.textContent = formatTimestamp(incomingTimestampMs, true);
             }
+            refreshMessageStatusIcon(existingMessage);
             sortMessagesByTimestamp();
             return;
         }
@@ -3533,6 +3559,7 @@
                 if (timeEl) {
                     timeEl.textContent = formatTimestamp(incomingTimestampMs, true);
                 }
+                refreshMessageStatusIcon(optimisticMessage);
                 if (oldId && oldId !== message.messageId) {
                     messages.delete(oldId);
                 }
@@ -5196,6 +5223,30 @@
         return `<span class="chat-widget-read-receipt" aria-hidden="true"><svg class="chat-widget-read-receipt-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 8.66406L6.5 11.1641L12.5 4.66406" stroke="#9DA2AB" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
     }
 
+    // Re-render the sent/delivered/read checkmark for an already-rendered user
+    // message. Needed because status updates (server echo of a message we sent
+    // optimistically, or a later "read" receipt) arrive after the message's DOM
+    // node already exists, and getReadReceiptIcon's markup is only ever injected
+    // at initial render time otherwise.
+    function refreshMessageStatusIcon(msg) {
+        if (!msg || !msg.element || msg.sender !== "user") return;
+        const metaEl = msg.element.querySelector(".chat-widget-message-meta");
+        if (!metaEl) return;
+        const iconHtml = getReadReceiptIcon(
+            msg.status,
+            msg.readAt,
+            msg.readByUs,
+            msg.readByUsAt,
+            msg.sender,
+        );
+        const existingIcon = metaEl.querySelector(".chat-widget-read-receipt");
+        if (existingIcon) {
+            existingIcon.outerHTML = iconHtml;
+        } else if (iconHtml) {
+            metaEl.insertAdjacentHTML("afterbegin", iconHtml);
+        }
+    }
+
     // Helper function to check if a message is a welcome message
     function isWelcomeMessage(text) {
         if (!text) return false;
@@ -6350,6 +6401,12 @@
         // earlier flow-driven message.
         if (type === "agent") {
             applyFlowState(normalizedFlow);
+        } else if (type === "user") {
+            // The user has just replied to whatever node was active (typed
+            // answer, quick-option click, dropdown pick, or form submit) - clear
+            // the flow-specific hint immediately rather than leaving it stuck
+            // until the bot's next message arrives.
+            applyFlowState(null);
         }
     }
 

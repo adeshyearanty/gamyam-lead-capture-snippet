@@ -2048,13 +2048,18 @@
 
                     if (data.messages && Array.isArray(data.messages)) {
                         if (staticWelcomeShown) {
-                            const staticWelcome = Array.from(messages.values()).find(
+                            // Remove ALL static placeholder messages (the welcome text AND
+                            // any "select any option" follow-up), not just the first match -
+                            // otherwise the follow-up stays orphaned in the UI.
+                            const staticPlaceholders = Array.from(messages.values()).filter(
                                 (msg) => msg.id && msg.id.startsWith("static_welcome_"),
                             );
-                            if (staticWelcome && staticWelcome.element) {
-                                staticWelcome.element.remove();
-                                messages.delete(staticWelcome.id);
-                            }
+                            staticPlaceholders.forEach((staticMsg) => {
+                                if (staticMsg.element) {
+                                    staticMsg.element.remove();
+                                }
+                                messages.delete(staticMsg.id);
+                            });
                             staticWelcomeShown = false;
                         }
 
@@ -2156,15 +2161,19 @@
                             const latestStatus = data.conversation.status || "active";
                             const isEndedSession = latestStatus !== "active";
 
-                            // Remove static welcome message before loading real messages
+                            // Remove ALL static placeholder messages before loading real
+                            // messages (the welcome text AND any "select any option"
+                            // follow-up) - otherwise the follow-up stays orphaned in the UI.
                             if (staticWelcomeShown) {
-                                const staticWelcome = Array.from(messages.values()).find(
+                                const staticPlaceholders = Array.from(messages.values()).filter(
                                     (msg) => msg.id && msg.id.startsWith("static_welcome_"),
                                 );
-                                if (staticWelcome && staticWelcome.element) {
-                                    staticWelcome.element.remove();
-                                    messages.delete(staticWelcome.id);
-                                }
+                                staticPlaceholders.forEach((staticMsg) => {
+                                    if (staticMsg.element) {
+                                        staticMsg.element.remove();
+                                    }
+                                    messages.delete(staticMsg.id);
+                                });
                                 staticWelcomeShown = false;
                             }
 
@@ -3256,12 +3265,23 @@
      * Called whenever a bot message with flow metadata is rendered.
      */
     function applyFlowState(flow) {
-        if (!flow) return;
         const host = document.getElementById("unibox-root");
         if (!host || !host.shadowRoot) return;
         const msgInput = host.shadowRoot.getElementById("msgInput");
         const sendBtn = host.shadowRoot.getElementById("sendBtn");
         if (!msgInput) return;
+
+        if (!flow) {
+            // No flow metadata means this message came from outside the workflow
+            // engine (e.g. a human agent manually intervening, or a plain AI
+            // reply) - clear any stale "choose an option"/"type your answer" hint
+            // left over from an earlier flow-driven message.
+            msgInput.disabled = false;
+            if (sendBtn) sendBtn.disabled = false;
+            msgInput.placeholder =
+                settings?.behavior?.inputPlaceholder || "Type a message…";
+            return;
+        }
 
         if (flow.isEnd) {
             msgInput.disabled = true;
@@ -5739,9 +5759,14 @@
             messageId &&
             !messageId.startsWith("static_welcome_") // Only replace if this is a REAL message ID
         ) {
-            // Find and remove the static welcome message
+            // Find and remove the static welcome message (but not the "select any
+            // option" follow-up placeholder, which is handled separately below since
+            // the real backend welcome message doesn't have a matching counterpart for it).
             const staticWelcome = Array.from(messages.values()).find(
-                (msg) => msg.id && msg.id.startsWith("static_welcome_"),
+                (msg) =>
+                    msg.id &&
+                    msg.id.startsWith("static_welcome_") &&
+                    !msg.id.startsWith("static_welcome_followup_"),
             );
             if (staticWelcome) {
                 const staticTsFromData = new Date(staticWelcome.timestamp).getTime();
@@ -5767,6 +5792,18 @@
                     messageId,
                 );
             }
+            // The real welcome message carries its options directly (no separate
+            // node), so the locally-synthesized "select any option" follow-up
+            // placeholder(s) would otherwise be left orphaned in the UI - remove them too.
+            const staticFollowUps = Array.from(messages.values()).filter(
+                (msg) => msg.id && msg.id.startsWith("static_welcome_followup_"),
+            );
+            staticFollowUps.forEach((followUpMsg) => {
+                if (followUpMsg.element) {
+                    followUpMsg.element.remove();
+                }
+                messages.delete(followUpMsg.id);
+            });
             staticWelcomeShown = false;
             // Continue to add the real welcome message below
         }
@@ -6299,8 +6336,12 @@
             setInitialBodyLoading(false);
         }
 
-        // Apply workflow-driven input state changes (disable on end, hint on question)
-        if (type === "agent" && normalizedFlow) {
+        // Apply workflow-driven input state changes (disable on end, hint on question).
+        // Called even when normalizedFlow is falsy (e.g. a human agent manually
+        // replying outside the workflow engine) so applyFlowState can clear any
+        // stale "choose an option" / "type your answer" hint left over from an
+        // earlier flow-driven message.
+        if (type === "agent") {
             applyFlowState(normalizedFlow);
         }
     }

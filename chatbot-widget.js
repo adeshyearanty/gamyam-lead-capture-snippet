@@ -904,9 +904,15 @@
         if (!nextKey) return;
 
         let resolved = "";
-        const base = (userConfig && userConfig.pulseAvatarBaseUrl)
-            ? userConfig.pulseAvatarBaseUrl.replace(/\/+$/, "")
-            : "";
+        // Prefer the value fetched live with the public widget config (settings)
+        // over the one baked into the embed snippet at generation time
+        // (userConfig) - the snippet's copy goes stale if PULSE_AVATAR_BASE_URL
+        // wasn't configured yet when the customer installed it.
+        const rawBase =
+            (settings && settings.pulseAvatarBaseUrl) ||
+            (userConfig && userConfig.pulseAvatarBaseUrl) ||
+            "";
+        const base = rawBase ? rawBase.replace(/\/+$/, "") : "";
         const isDirectUrl = /^https?:\/\//i.test(nextKey) || /^data:image\//i.test(nextKey);
         const isNumeric = /^\d+$/.test(nextKey);
 
@@ -3601,7 +3607,18 @@
                 message.type,
                 message.media_storage_url,
                 message.flow,
-                message.agent_name ?? message.agentName ?? null,
+                // Some fan-out payloads only carry agent id/avatar info (no
+                // name field at all) for the human agent's own message - fall
+                // back to the name already known from the assignment
+                // handshake instead of mislabeling the bubble as "Pulse AI".
+                message.agent_name ??
+                    message.agentName ??
+                    incomingAgentName ??
+                    (message.sender === "agent" &&
+                        message.is_ai_reply !== true &&
+                        message.isAiReply !== true
+                        ? liveAgentDisplayName
+                        : null),
                 message.is_ai_reply === true || message.isAiReply === true,
             );
 

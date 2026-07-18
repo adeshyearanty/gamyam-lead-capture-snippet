@@ -7124,8 +7124,6 @@
             min-height: 96px;
             color: #fff;
             display: flex;
-            position: relative;
-            z-index: 2;
           }
   
           .chat-widget-header-content {
@@ -7134,6 +7132,9 @@
             gap: 8px;
             align-items: center;
             transform: translateY(-${bodyHeaderOverlap / 2}px);
+            /* The transform creates a stacking context; z-index lets the
+               subtitle tooltip paint above the overlapping messages pane. */
+            z-index: 3;
           }
   
           .chat-widget-header-logo-wrap {
@@ -7336,7 +7337,6 @@
             flex: 1;
             min-height: 0;
             position: relative;
-            z-index: 1;
             top: -${bodyHeaderOverlap}px;
             margin-bottom: -${bodyHeaderOverlap}px;
             display: flex;

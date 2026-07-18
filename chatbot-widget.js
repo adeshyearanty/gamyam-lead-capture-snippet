@@ -898,29 +898,43 @@
     async function setLiveAgentProfileKey(profileKey) {
         const nextKey = String(profileKey || "").trim();
         liveAgentProfileKey = nextKey;
-        liveAgentProfileUrl = "";
         const fetchToken = ++liveAgentProfileFetchToken;
+        if (!nextKey) {
+            liveAgentProfileUrl = "";
+            renderHeaderAgentProfile();
+            return;
+        }
+
+        const isDirectUrl = /^https?:\/\//i.test(nextKey) || /^data:image\//i.test(nextKey);
+
+        // If the key is already a fully-constructed URL, apply it immediately
+        // without clearing the current profile URL — this prevents the
+        // "flash of initials" that happens when we blank the URL, render,
+        // then re-render once the URL resolves.
+        if (isDirectUrl) {
+            liveAgentProfileUrl = nextKey;
+            renderHeaderAgentProfile();
+            return;
+        }
+
+        // For non-URL keys (numeric avatarId or S3 keys), we need async
+        // resolution — clear the URL and show fallback while resolving.
+        liveAgentProfileUrl = "";
         renderHeaderAgentProfile();
-        if (!nextKey) return;
 
         let resolved = "";
-        // Prefer the value fetched live with the public widget config (settings)
-        // over the one baked into the embed snippet at generation time
-        // (userConfig) - the snippet's copy goes stale if PULSE_AVATAR_BASE_URL
-        // wasn't configured yet when the customer installed it.
         const rawBase =
             (settings && settings.pulseAvatarBaseUrl) ||
             (userConfig && userConfig.pulseAvatarBaseUrl) ||
             "";
         const base = rawBase ? rawBase.replace(/\/+$/, "") : "";
-        const isDirectUrl = /^https?:\/\//i.test(nextKey) || /^data:image\//i.test(nextKey);
         const isNumeric = /^\d+$/.test(nextKey);
 
         if (isNumeric && base) {
             // Predefined avatar: construct URL from avatarId + pulseAvatarBaseUrl
             resolved = `${base}/avatar-${nextKey}.svg`;
         } else {
-            resolved = isDirectUrl ? nextKey : await fetchLogoUrl(nextKey);
+            resolved = await fetchLogoUrl(nextKey);
         }
 
         if (fetchToken !== liveAgentProfileFetchToken) return;

@@ -1007,7 +1007,8 @@
                 : evt;
         const profileKey =
             // avatarId from assignedAgent is the primary source when backend uses predefined avatars
-            (flat.assignedAgent && flat.assignedAgent.avatarId) ??
+            (flat.assignedAgent && (flat.assignedAgent.avatarId ?? flat.assignedAgent.avatar_id)) ??
+            (flat.agent && (flat.agent.avatarId ?? flat.agent.avatar_id)) ??
             flat.agentProfileUrl ??
             flat.agent_profile_url ??
             flat.agentAvatarUrl ??
@@ -2980,8 +2981,8 @@
             source.agentName ??
             payload.agent_name ??
             payload.agentName ??
-            (source.agent && (source.agent.name ?? source.agent.agentName)) ??
-            (payload.agent && (payload.agent.name ?? payload.agent.agentName)) ??
+            (source.agent && (source.agent.displayName ?? source.agent.display_name ?? source.agent.name ?? source.agent.agentName)) ??
+            (payload.agent && (payload.agent.displayName ?? payload.agent.display_name ?? payload.agent.name ?? payload.agent.agentName)) ??
             message.agent_name ??
             message.agentName;
 
@@ -2991,12 +2992,16 @@
             payload.agent_profile_key ??
             payload.agentProfileKey ??
             (source.agent &&
-                (source.agent.profile_key ??
+                (source.agent.avatarId ??
+                    source.agent.avatar_id ??
+                    source.agent.profile_key ??
                     source.agent.profileKey ??
                     source.agent.avatar_key ??
                     source.agent.avatarKey)) ??
             (payload.agent &&
-                (payload.agent.profile_key ??
+                (payload.agent.avatarId ??
+                    payload.agent.avatar_id ??
+                    payload.agent.profile_key ??
                     payload.agent.profileKey ??
                     payload.agent.avatar_key ??
                     payload.agent.avatarKey)) ??

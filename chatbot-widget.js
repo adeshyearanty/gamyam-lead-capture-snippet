@@ -1006,13 +1006,16 @@
                 ? Object.assign({}, evt, evt.payload)
                 : evt;
         const profileKey =
-            // avatarId from assignedAgent is the primary source when backend uses predefined avatars
-            (flat.assignedAgent && (flat.assignedAgent.avatarId ?? flat.assignedAgent.avatar_id)) ??
-            (flat.agent && (flat.agent.avatarId ?? flat.agent.avatar_id)) ??
+            // Prioritize pre-constructed URLs first to avoid client-side URL generation issues
             flat.agentProfileUrl ??
             flat.agent_profile_url ??
             flat.agentAvatarUrl ??
             flat.agent_avatar_url ??
+            (flat.agent && (flat.agent.avatarUrl ?? flat.agent.profileUrl ?? flat.agent.profile_url ?? flat.agent.avatar_url)) ??
+            (flat.assignedAgent && (flat.assignedAgent.avatarUrl ?? flat.assignedAgent.profileUrl ?? flat.assignedAgent.profile_url ?? flat.assignedAgent.avatar_url)) ??
+            // Fall back to avatarId/avatar_id which generates the URL locally
+            (flat.assignedAgent && (flat.assignedAgent.avatarId ?? flat.assignedAgent.avatar_id)) ??
+            (flat.agent && (flat.agent.avatarId ?? flat.agent.avatar_id)) ??
             flat.avatarUrl ??
             flat.avatar_url ??
             flat.agentProfileKey ??
@@ -1022,20 +1025,12 @@
             flat.avatarKey ??
             flat.avatar_key ??
             (flat.agent &&
-                (flat.agent.profileUrl ||
-                    flat.agent.profile_url ||
-                    flat.agent.avatarUrl ||
-                    flat.agent.avatar_url ||
-                    flat.agent.profileKey ||
+                (flat.agent.profileKey ||
                     flat.agent.profile_key ||
                     flat.agent.avatarKey ||
                     flat.agent.avatar_key)) ??
             (flat.assignedAgent &&
-                (flat.assignedAgent.profileUrl ||
-                    flat.assignedAgent.profile_url ||
-                    flat.assignedAgent.avatarUrl ||
-                    flat.assignedAgent.avatar_url ||
-                    flat.assignedAgent.profileKey ||
+                (flat.assignedAgent.profileKey ||
                     flat.assignedAgent.profile_key ||
                     flat.assignedAgent.avatarKey ||
                     flat.assignedAgent.avatar_key)) ??

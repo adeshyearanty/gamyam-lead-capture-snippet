@@ -1092,7 +1092,11 @@
                 null,
             agentProfileKey:
                 (assigned &&
-                    (assigned.profileKey ||
+                    (assigned.avatarUrl ||
+                        assigned.profileUrl ||
+                        assigned.profile_url ||
+                        assigned.avatar_url ||
+                        assigned.profileKey ||
                         assigned.profile_key ||
                         assigned.avatarKey ||
                         assigned.avatar_key)) ||

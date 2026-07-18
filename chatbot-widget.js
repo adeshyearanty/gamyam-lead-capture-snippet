@@ -2058,7 +2058,8 @@
                             staticWelcomeShown = false;
                         }
 
-                        data.messages.forEach((msg) => {
+                        const lastMessageIndex = data.messages.length - 1;
+                        data.messages.forEach((msg, msgIndex) => {
                             // Normalize text - convert empty string to null
                             const textValue = msg.text || msg.text_body;
                             const normalizedTextValue =
@@ -2089,6 +2090,10 @@
                                 extractFlowPayload(msg),
                                 msg.agentName ?? msg.agent_name ?? null,
                                 msg.is_ai_reply === true || msg.isAiReply === true,
+                                // Only allow a popup form to (re)open when it is the most
+                                // recent message; historical forms that already have later
+                                // messages after them have been answered already.
+                                { suppressPopupForm: msgIndex !== lastMessageIndex },
                             );
                         });
                         setTimeout(() => {
@@ -2165,7 +2170,8 @@
 
                             // Render historical messages for this user (even if the last session is ended)
                             if (data.messages && Array.isArray(data.messages)) {
-                                data.messages.forEach((msg) => {
+                                const lastMessageIndex = data.messages.length - 1;
+                                data.messages.forEach((msg, msgIndex) => {
                                     // Normalize text - convert empty string to null
                                     const textValue = msg.text || msg.text_body;
                                     const normalizedTextValue =
@@ -2194,6 +2200,10 @@
                                         extractFlowPayload(msg),
                                         msg.agentName ?? msg.agent_name ?? null,
                                         msg.is_ai_reply === true || msg.isAiReply === true,
+                                        // Only allow a popup form to (re)open when it is the
+                                        // most recent message; historical forms already have
+                                        // later messages after them and were answered.
+                                        { suppressPopupForm: msgIndex !== lastMessageIndex },
                                     );
                                 });
                                 const hasInboundBotMessage = data.messages.some((msg) => {

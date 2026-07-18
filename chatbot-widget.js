@@ -5727,6 +5727,13 @@
         appendOptions,
     ) {
         const options = appendOptions && typeof appendOptions === "object" ? appendOptions : {};
+        // Once a human agent has manually taken over from the workflow/AI, the
+        // user is chatting live with a person rather than an async bot - treat
+        // their own outgoing messages as immediately "delivered" rather than
+        // just "sent" (mirrors how a live-chat handoff should read to the user).
+        if (type === "user" && isLiveAgentAssigned() && (!status || status === "sent")) {
+            status = "delivered";
+        }
         const normalizedAgentLabel =
             typeof agentLabelOverride === "string" && agentLabelOverride.trim()
                 ? agentLabelOverride.trim()

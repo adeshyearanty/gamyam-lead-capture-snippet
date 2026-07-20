@@ -357,10 +357,6 @@
     let isTyping = false;
     let agentTyping = false;
     let agentTypingTimeout = null; // Safety timeout for stuck typing indicator
-    /** Fires after botDelayMs so "Pulse AI" typing only shows once the AI path is likely active */
-    let optimisticAiTypingTimer = null;
-    /** True after user send until the next bot/agent reply is rendered */
-    let awaitingBotResponse = false;
     const TYPING_SAFETY_TIMEOUT_MS = 120000;
     let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
     let previewMediaRefreshTimer = null;
@@ -795,9 +791,6 @@
         const t = name.trim();
         if (!t) return;
         liveAgentDisplayName = t;
-        // Once assigned, suppress optimistic bot typing; rely on explicit agent typing events.
-        awaitingBotResponse = false;
-        clearOptimisticAiTypingSchedule();
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
             agentTypingTimeout = null;
@@ -812,9 +805,6 @@
         const t = String(agentId).trim();
         if (!t) return;
         liveAgentId = t;
-        // Assignment can arrive with id before display name.
-        awaitingBotResponse = false;
-        clearOptimisticAiTypingSchedule();
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
             agentTypingTimeout = null;
@@ -2733,7 +2723,6 @@
                         handleAgentAssignmentHandshake(evt, message);
                     }
                     // Some backends piggyback typing stop on message envelopes.
-                    // Ignore premature stop while waiting for the bot reply to render.
                     if (evt && (evt.isTyping === false || evt.typing === false)) {
                         const stopEvt = {
                             ...evt,
@@ -2753,9 +2742,7 @@
                                         ? "ai"
                                         : undefined),
                         };
-                        if (!shouldIgnoreAiTypingStop(stopEvt)) {
-                            handleTypingIndicator(stopEvt);
-                        }
+                        handleTypingIndicator(stopEvt);
                     }
                     if (evt.messageId || evt.text || evt.sender) {
                         handleIncomingMessage(evt);
@@ -2869,11 +2856,8 @@
 
                 if (evt.isTyping === false || evt.typing === false) {
                     // Clear the typing indicator — a presence event with isTyping:false means
-                    // the peer stopped typing. Route through the shared handler so all cleanup
-                    // (optimistic timer, agentTypingTimeout, showTypingIndicator) is applied.
-                    if (!shouldIgnoreAiTypingStop(evt)) {
-                        handleTypingIndicator(evt);
-                    }
+                    // the peer stopped typing.
+                    handleTypingIndicator(evt);
                     break;
                 }
 
@@ -3766,9 +3750,8 @@
                         );
                     }
                 }
-                // AI/agent replied — clear all typing UI (optimistic AI + server-driven)
-                awaitingBotResponse = false;
-                clearAgentTypingUi(false);
+                // AI/agent replied — clear typing UI
+                clearAgentTypingUi();
                 markVisibleMessagesAsRead();
             }
         };
@@ -3795,24 +3778,13 @@
         return !!(settings && settings.behavior?.aiEnabled === true);
     }
 
-    function clearOptimisticAiTypingSchedule() {
-        if (optimisticAiTypingTimer) {
-            clearTimeout(optimisticAiTypingTimer);
-            optimisticAiTypingTimer = null;
-        }
-    }
-
-    function clearAgentTypingUi(resetAwaitingBotResponse) {
-        clearOptimisticAiTypingSchedule();
+    function clearAgentTypingUi() {
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
             agentTypingTimeout = null;
         }
         agentTyping = false;
         showTypingIndicator(false);
-        if (resetAwaitingBotResponse !== false) {
-            awaitingBotResponse = false;
-        }
     }
 
     function isInboundReplyMessage(message) {
@@ -3823,8 +3795,7 @@
     }
 
     function clearTypingForInboundReply() {
-        awaitingBotResponse = false;
-        clearAgentTypingUi(false);
+        clearAgentTypingUi();
     }
 
     function armTypingSafetyTimeout() {
@@ -3833,46 +3804,9 @@
         }
         agentTypingTimeout = setTimeout(() => {
             agentTyping = false;
-            awaitingBotResponse = false;
             showTypingIndicator(false);
             agentTypingTimeout = null;
         }, TYPING_SAFETY_TIMEOUT_MS);
-    }
-
-    function shouldIgnoreAiTypingStop(data) {
-        if (!awaitingBotResponse || isLiveAgentAssigned()) {
-            return false;
-        }
-        if (!data || typeof data !== "object") {
-            return true;
-        }
-        const isExplicitLiveAgentStop =
-            data.isAgent === true ||
-            data.role === "agent" ||
-            data.principalType === "agent" ||
-            data.participant === "agent" ||
-            (data.from && String(data.from).toLowerCase().startsWith("agent"));
-        return !isExplicitLiveAgentStop;
-    }
-
-    /**
-     * After a successful WS send, show typing immediately and keep it visible
-     * until the bot reply is rendered (with a long safety timeout fallback).
-     */
-    function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
-        if (!wsDelivered) return;
-        // Live-agent sessions should rely on explicit agent typing events.
-        if (isLiveAgentAssigned()) return;
-
-        awaitingBotResponse = true;
-        clearOptimisticAiTypingSchedule();
-        if (agentTypingTimeout) {
-            clearTimeout(agentTypingTimeout);
-            agentTypingTimeout = null;
-        }
-        agentTyping = true;
-        showTypingIndicator(true, { kind: "ai", force: true });
-        armTypingSafetyTimeout();
     }
 
     /**
@@ -3891,9 +3825,6 @@
         }
 
         if (data.isTyping === false || data.typing === false) {
-            if (shouldIgnoreAiTypingStop(data)) {
-                return;
-            }
             const hasExplicitTypingActor =
                 data.isAgent === true ||
                 data.isAi === true ||
@@ -3942,14 +3873,6 @@
             return;
         }
 
-        // Server typing pings must not re-arm the indicator after a reply
-        // already arrived. Only the user-send path sets awaitingBotResponse;
-        // live-agent typing events are always honored.
-        if (!isFromAgent && !isLiveAgentAssigned() && !awaitingBotResponse) {
-            return;
-        }
-
-        clearOptimisticAiTypingSchedule();
         agentTyping = true;
         showTypingIndicator(true, { kind: typingKind, force: !isFromAgent });
         armTypingSafetyTimeout();
@@ -4872,12 +4795,7 @@
                 userEmail: userDetails.userEmail,
             });
 
-            // Optimistic typing: show the "bot is processing" indicator immediately
-            // after every user send. The indicator stays visible until the bot reply
-            // is rendered (renderIncomingMessage) or the safety timeout fires.
-            // In live-agent sessions scheduleOptimisticAiTypingAfterSend is a no-op.
-            scheduleOptimisticAiTypingAfterSend(true);
-
+            // Typing indicator is driven only by explicit backend typing events.
             if (wsSent) {
                 console.log("UniBox: Message sent via WebSocket");
             } else {
@@ -5436,7 +5354,7 @@
                 const value = String(rawValue ?? "").trim();
                 if (!value) return null;
                 const label = labelByKey[key] || key;
-                return `*${label}*: ${value}`;
+                return `**${label}**: ${value}`;
             })
             .filter(Boolean)
             .join("\n");
@@ -5674,14 +5592,14 @@
             .filter(Boolean);
         if (lines.length > 0) {
             const multilineParsed = lines
-                .map((line) => line.match(/^\*(.+?)\*:\s*(.+)$/))
+                .map((line) => line.match(/^\*{1,2}(.+?)\*{1,2}:\s*(.+)$/))
                 .filter(Boolean);
             if (multilineParsed.length > 0 && multilineParsed.length === lines.length) {
                 return multilineParsed;
             }
         }
 
-        const inlinePattern = /\*(.+?)\*:\s*([^*]+?)(?=\s*\*|$)/g;
+        const inlinePattern = /\*{1,2}(.+?)\*{1,2}:\s*([^*]+?)(?=\s*\*|$)/g;
         const inlineMatches = Array.from(normalized.matchAll(inlinePattern));
         if (inlineMatches.length === 0) return null;
         return inlineMatches;
@@ -5748,26 +5666,26 @@
 
         const formattedLines = parseFormattedFormSubmissionLines(text);
         const isFormattedSubmission =
-            !opts.renderMarkdown && Array.isArray(formattedLines) && formattedLines.length > 0;
+            Array.isArray(formattedLines) && formattedLines.length > 0;
+        if (isFormattedSubmission) {
+            container.innerHTML = "";
+            formattedLines.forEach((match) => {
+                const row = document.createElement("div");
+                row.style.marginBottom = "4px";
+                const label = document.createElement("span");
+                label.style.fontWeight = "600";
+                label.textContent = `${match[1]}: `;
+                row.appendChild(label);
+                row.appendChild(document.createTextNode(match[2].trim()));
+                container.appendChild(row);
+            });
+            return;
+        }
         if (opts.renderMarkdown || looksLikeChatMessageMarkdownWidget(text)) {
             container.innerHTML = `<div class="chat-message-markdown">${renderChatMarkdownToHtml(text)}</div>`;
             return;
         }
-        if (!isFormattedSubmission) {
-            container.textContent = text;
-            return;
-        }
-        container.innerHTML = "";
-        formattedLines.forEach((match) => {
-            const row = document.createElement("div");
-            row.style.marginBottom = "4px";
-            const label = document.createElement("span");
-            label.style.fontWeight = "600";
-            label.textContent = `${match[1]}: `;
-            row.appendChild(label);
-            row.appendChild(document.createTextNode(match[2].trim()));
-            container.appendChild(row);
-        });
+        container.textContent = text;
     }
 
     function decodeHtmlEntitiesWidget(text) {

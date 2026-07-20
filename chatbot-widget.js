@@ -2121,6 +2121,12 @@
                 if (data.conversation) {
                     conversationId = data.conversation.id;
                     maybeApplyVirtualAgentFromConversation(data.conversation);
+                    const latestStatus = data.conversation.status || "active";
+                    const isEndedSession = latestStatus !== "active";
+                    if (isEndedSession) {
+                        workflowAutoStarted = false;
+                        clearLiveAgentDisplayName();
+                    }
                     setLoading(false);
 
                     if (data.messages && Array.isArray(data.messages)) {
@@ -2178,6 +2184,7 @@
                                 { suppressPopupForm: msgIndex !== lastMessageIndex },
                             );
                         });
+                        applyThreadSessionMarkers(data.sessionMarkers);
                         setTimeout(() => {
                             sortMessagesByTimestamp();
                             markVisibleMessagesAsRead();
@@ -2305,30 +2312,19 @@
                             }
 
                             if (isEndedSession) {
-                                // Last session is already resolved/expired – rotate guest id so that
-                                // the next outbound message starts a completely new session/contact.
-                                if (typeof userId === "string" && userId.startsWith("guest_")) {
-                                    userId = `guest_${Date.now()}_${Math.random()
-                                        .toString(36)
-                                        .substr(2, 9)}`;
-                                    try {
-                                        localStorage.setItem(STORAGE_KEY_USER, userId);
-                                    } catch (e) {
-                                        console.warn(
-                                            "UniBox: Failed to persist rotated guest id after restore",
-                                            e,
-                                        );
-                                    }
-                                }
-
-                                // Do NOT reuse old conversationId – leave it null so that the next
-                                // sendMessageToApi()/sendSelectedFiles() call creates a fresh session.
-                                conversationId = null;
+                                // Keep the same guest/contact and conversation id so history
+                                // survives refresh. The next user message restarts a session
+                                // under this contact via the backend (no guest rotation).
+                                conversationId = data.conversation.id;
+                                workflowAutoStarted = false;
                                 clearLiveAgentDisplayName();
 
                                 if (showLoading) {
                                     setLoading(false);
                                 }
+                                connectSocket().then(() => {
+                                    subscribeToConversation(conversationId);
+                                });
                                 return;
                             }
 
@@ -3626,33 +3622,10 @@
                 (evt.isActive !== true && endedStatus);
 
             if (platform === "live_chat" && isInactive && endedStatus) {
-                if (
-                    evtConv &&
-                    (evtConv === currentConv ||
-                        evtConv ===
-                            (subscribedConversationId != null
-                                ? String(subscribedConversationId)
-                                : null))
-                ) {
-                    conversationId = null;
-                    subscribedConversationId = null;
-                    workflowAutoStarted = false;
-                    clearLiveAgentDisplayName();
-                }
-
-                if (typeof userId === "string" && userId.startsWith("guest_")) {
-                    userId = `guest_${Date.now()}_${Math.random()
-                        .toString(36)
-                        .substr(2, 9)}`;
-                    try {
-                        localStorage.setItem(STORAGE_KEY_USER, userId);
-                    } catch (e) {
-                        console.warn(
-                            "UniBox: Failed to persist rotated guest id to localStorage",
-                            e,
-                        );
-                    }
-                }
+                // Keep guest id and conversation id so history stays on this contact.
+                // Backend restarts a new session on the next user message.
+                workflowAutoStarted = false;
+                clearLiveAgentDisplayName();
             } else if (
                 platform === "live_chat" &&
                 (evt.isActive === true || normalizedStatus === "active")
@@ -5401,7 +5374,12 @@
         const body = host.shadowRoot.getElementById("chatBody");
         if (!body) return;
 
-        body.querySelectorAll("[data-date-divider]").forEach((node) => node.remove());
+        // Only rebuild calendar date dividers. Session/event dividers also use
+        // createDateDividerElement (data-date-divider) but are marked with
+        // data-chat-divider — wiping those made "Conversation resolved" vanish.
+        body
+            .querySelectorAll("[data-date-divider]:not([data-chat-divider])")
+            .forEach((node) => node.remove());
 
         const messageElements = Array.from(body.children).filter((child) =>
             child.hasAttribute("data-timestamp") &&

@@ -3576,6 +3576,9 @@
 
     function handleIncomingMessage(message) {
         message = normalizeSocketMessagePayload(message);
+        if (isInboundReplyMessage(message)) {
+            clearTypingForInboundReply();
+        }
         const isUserMessage = message.sender === "user";
         const incomingAgentName =
             message.sender === "agent" ? extractVirtualAgentDisplayName(message) : null;
@@ -3812,6 +3815,18 @@
         }
     }
 
+    function isInboundReplyMessage(message) {
+        if (!message || typeof message !== "object") return false;
+        const sender = String(message.sender ?? "").toLowerCase();
+        if (sender === "agent") return true;
+        return message.is_ai_reply === true || message.isAiReply === true;
+    }
+
+    function clearTypingForInboundReply() {
+        awaitingBotResponse = false;
+        clearAgentTypingUi(false);
+    }
+
     function armTypingSafetyTimeout() {
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
@@ -3927,10 +3942,14 @@
             return;
         }
 
-        clearOptimisticAiTypingSchedule();
-        if (!isFromAgent && !isLiveAgentAssigned()) {
-            awaitingBotResponse = true;
+        // Server typing pings must not re-arm the indicator after a reply
+        // already arrived. Only the user-send path sets awaitingBotResponse;
+        // live-agent typing events are always honored.
+        if (!isFromAgent && !isLiveAgentAssigned() && !awaitingBotResponse) {
+            return;
         }
+
+        clearOptimisticAiTypingSchedule();
         agentTyping = true;
         showTypingIndicator(true, { kind: typingKind, force: !isFromAgent });
         armTypingSafetyTimeout();

@@ -1614,6 +1614,14 @@
                     widgetAppearanceApi.subtitleColor ||
                     windowUiLayout.subtitleColor ||
                     "#FFFFFF",
+                poweredByBrandTextStyle:
+                    String(
+                        widgetAppearanceApi.poweredByBrandTextStyle ||
+                            windowUiLayout.poweredByBrandTextStyle ||
+                            "color",
+                    ).toLowerCase() === "gray"
+                        ? "gray"
+                        : "color",
                 windowSize:
                     widgetAppearanceApi.windowSize ||
                     windowUiLayout.windowSize ||
@@ -6856,6 +6864,11 @@
         const headerTitleColor = preview.headerTitleColor || "#FFFFFF";
         const subtitleColor = preview.subtitleColor || "#FFFFFF";
         const backgroundColor = preview.backgroundColor || "#FFFFFF";
+        const poweredByBrandTextStyle =
+            String(preview.poweredByBrandTextStyle || "color").toLowerCase() ===
+            "gray"
+                ? "gray"
+                : "color";
         const bodyHeaderOverlap = 36;
 
         const hasCustomZ =
@@ -7524,6 +7537,7 @@
             display: flex;
             flex-direction: column;
             background-color: ${backgroundColor};
+            border-top: 1px solid rgba(0, 0, 0, 0.08);
             border-radius: ${windowRadius} ${windowRadius} 0 0;
             overflow: hidden;
           }
@@ -7538,7 +7552,8 @@
           }
   
           .chat-widget-scroll-wrap:has(.chat-widget-body--chat)::after {
-            content: "*AI-generated content may be inaccurate.";
+            content: "";
+            /* content: "*AI-generated content may be inaccurate."; */
             position: absolute;
             bottom: 8px;
             left: 0;
@@ -8315,14 +8330,21 @@
             flex-shrink: 0;
             display: block;
           }
-          .chat-widget-powered-by-brand {
+          .chat-widget-powered-by-brand--color {
             background: ${poweredByBrandGradientCss};
             -webkit-background-clip: text;
             background-clip: text;
             color: transparent;
             -webkit-text-fill-color: transparent;
           }
-  
+          .chat-widget-powered-by-brand--gray {
+            background: none;
+            -webkit-background-clip: unset;
+            background-clip: unset;
+            color: #d9d9d9;
+            -webkit-text-fill-color: #d9d9d9;
+          }
+
           .chat-widget-message-content img {
             display: block;
             max-width: 100%;
@@ -8649,7 +8671,7 @@
                    <span class="chat-widget-powered-by-label">Powered by</span>
                    <a href="https://salesastra.ai" target="_blank" rel="noopener noreferrer" class="chat-widget-powered-by-trailing" style="text-decoration: none;">
                      ${poweredByMarkSvg}
-                     <span class="chat-widget-powered-by-brand">SalesAstra</span>
+                     <span class="chat-widget-powered-by-brand chat-widget-powered-by-brand--${poweredByBrandTextStyle}">SalesAstra</span>
                    </a>
                  </div>
                </div>

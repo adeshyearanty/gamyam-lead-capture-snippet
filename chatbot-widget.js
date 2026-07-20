@@ -356,9 +356,12 @@
     let typingTimeout = null;
     let isTyping = false;
     let agentTyping = false;
-    let agentTypingTimeout = null; // Timeout for hiding agent typing indicator
+    let agentTypingTimeout = null; // Safety timeout for stuck typing indicator
     /** Fires after botDelayMs so "Pulse AI" typing only shows once the AI path is likely active */
     let optimisticAiTypingTimer = null;
+    /** True after user send until the next bot/agent reply is rendered */
+    let awaitingBotResponse = false;
+    const TYPING_SAFETY_TIMEOUT_MS = 120000;
     let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
     let previewMediaRefreshTimer = null;
     // Cache access URLs briefly; refresh before they expire.
@@ -793,6 +796,7 @@
         if (!t) return;
         liveAgentDisplayName = t;
         // Once assigned, suppress optimistic bot typing; rely on explicit agent typing events.
+        awaitingBotResponse = false;
         clearOptimisticAiTypingSchedule();
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
@@ -809,6 +813,7 @@
         if (!t) return;
         liveAgentId = t;
         // Assignment can arrive with id before display name.
+        awaitingBotResponse = false;
         clearOptimisticAiTypingSchedule();
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
@@ -951,17 +956,61 @@
         else badge.classList.add("hidden");
     }
 
+    /**
+     * Prefer Pulse InboxUser `displayName` from a nested agent object.
+     * Top-level `agent_name` on thread messages can be a short JWT/given_name
+     * while `raw_payload.agent.displayName` holds the configured full name.
+     */
+    function pickAgentDisplayNameFromAgentObject(agent) {
+        if (!agent || typeof agent !== "object") return null;
+        const n =
+            agent.displayName ??
+            agent.display_name ??
+            agent.name ??
+            agent.agentName ??
+            agent.agent_name;
+        if (typeof n !== "string") return null;
+        const t = n.trim();
+        return t.length ? t : null;
+    }
+
     function extractVirtualAgentDisplayName(evt) {
         if (!evt || typeof evt !== "object") return null;
+        const raw =
+            (evt.raw_payload && typeof evt.raw_payload === "object"
+                ? evt.raw_payload
+                : null) ||
+            (evt.rawPayload && typeof evt.rawPayload === "object"
+                ? evt.rawPayload
+                : null);
         const flat =
             evt.payload && typeof evt.payload === "object"
                 ? Object.assign({}, evt, evt.payload)
                 : evt;
+
+        // Pulse display name (looked up by agent user id) wins over short
+        // top-level agent_name from JWT / request body.
+        const fromPulse =
+            pickAgentDisplayNameFromAgentObject(flat.agent) ||
+            pickAgentDisplayNameFromAgentObject(raw?.agent) ||
+            (typeof raw?.agent_name === "string" && raw.agent_name.trim()
+                ? raw.agent_name.trim()
+                : null) ||
+            (typeof raw?.agentName === "string" && raw.agentName.trim()
+                ? raw.agentName.trim()
+                : null) ||
+            (typeof flat.displayName === "string" && flat.displayName.trim()
+                ? flat.displayName.trim()
+                : null) ||
+            (typeof flat.agent_display_name === "string" &&
+            flat.agent_display_name.trim()
+                ? flat.agent_display_name.trim()
+                : null);
+        if (fromPulse) return fromPulse;
+
         const n =
             flat.agentName ??
             flat.agent_name ??
-            flat.displayName ??
-            flat.agent_display_name ??
             flat.virtualAgentName ??
             flat.assignedAgentName ??
             flat.virtual_agent_name ??
@@ -974,7 +1023,6 @@
             flat.principal_name ??
             (flat.user && (flat.user.name || flat.user.displayName)) ??
             (flat.profile && (flat.profile.name || flat.profile.displayName)) ??
-            (flat.agent && (flat.agent.name || flat.agent.displayName)) ??
             (flat.assignedAgent &&
                 (flat.assignedAgent.name || flat.assignedAgent.displayName)) ??
             (flat.assigned_to &&
@@ -2130,7 +2178,7 @@
                                 msg.type,
                                 msg.media_storage_url,
                                 extractFlowPayload(msg),
-                                msg.agentName ?? msg.agent_name ?? null,
+                                extractVirtualAgentDisplayName(msg),
                                 msg.is_ai_reply === true || msg.isAiReply === true,
                                 // Only allow a popup form to (re)open when it is the most
                                 // recent message; historical forms that already have later
@@ -2244,7 +2292,7 @@
                                         msg.type,
                                         msg.media_storage_url,
                                         extractFlowPayload(msg),
-                                        msg.agentName ?? msg.agent_name ?? null,
+                                        extractVirtualAgentDisplayName(msg),
                                         msg.is_ai_reply === true || msg.isAiReply === true,
                                         // Only allow a popup form to (re)open when it is the
                                         // most recent message; historical forms already have
@@ -2535,7 +2583,7 @@
                                                 msg.type,
                                                 msg.media_storage_url,
                                                 extractFlowPayload(msg),
-                                                msg.agentName ?? msg.agent_name ?? null,
+                                                extractVirtualAgentDisplayName(msg),
                                                 msg.is_ai_reply === true || msg.isAiReply === true,
                                             );
                                         });
@@ -2685,9 +2733,9 @@
                         handleAgentAssignmentHandshake(evt, message);
                     }
                     // Some backends piggyback typing stop on message envelopes.
-                    // Apply stop immediately, then continue processing the message payload.
+                    // Ignore premature stop while waiting for the bot reply to render.
                     if (evt && (evt.isTyping === false || evt.typing === false)) {
-                        handleTypingIndicator({
+                        const stopEvt = {
                             ...evt,
                             isAgent:
                                 evt.isAgent === true ||
@@ -2704,7 +2752,10 @@
                                     : evt.sender === "ai" || evt.is_ai_reply === true
                                         ? "ai"
                                         : undefined),
-                        });
+                        };
+                        if (!shouldIgnoreAiTypingStop(stopEvt)) {
+                            handleTypingIndicator(stopEvt);
+                        }
                     }
                     if (evt.messageId || evt.text || evt.sender) {
                         handleIncomingMessage(evt);
@@ -2820,7 +2871,9 @@
                     // Clear the typing indicator — a presence event with isTyping:false means
                     // the peer stopped typing. Route through the shared handler so all cleanup
                     // (optimistic timer, agentTypingTimeout, showTypingIndicator) is applied.
-                    handleTypingIndicator(evt);
+                    if (!shouldIgnoreAiTypingStop(evt)) {
+                        handleTypingIndicator(evt);
+                    }
                     break;
                 }
 
@@ -2989,14 +3042,38 @@
             message.agent_id ??
             message.agentId;
 
+        // Prefer Pulse InboxUser displayName (nested on agent / raw_payload)
+        // over short top-level agent_name (JWT given_name / request body).
+        const rawPayloadForName =
+            (source.raw_payload && typeof source.raw_payload === "object"
+                ? source.raw_payload
+                : null) ||
+            (source.rawPayload && typeof source.rawPayload === "object"
+                ? source.rawPayload
+                : null) ||
+            (message.raw_payload && typeof message.raw_payload === "object"
+                ? message.raw_payload
+                : null) ||
+            (message.rawPayload && typeof message.rawPayload === "object"
+                ? message.rawPayload
+                : null);
         normalized.agent_name =
-            source.agent_name ??
-            source.agentName ??
-            payload.agent_name ??
-            payload.agentName ??
-            (source.agent && (source.agent.displayName ?? source.agent.display_name ?? source.agent.name ?? source.agent.agentName)) ??
-            (payload.agent && (payload.agent.displayName ?? payload.agent.display_name ?? payload.agent.name ?? payload.agent.agentName)) ??
-            message.agent_name ??
+            pickAgentDisplayNameFromAgentObject(source.agent) ||
+            pickAgentDisplayNameFromAgentObject(payload.agent) ||
+            pickAgentDisplayNameFromAgentObject(rawPayloadForName?.agent) ||
+            (typeof rawPayloadForName?.agent_name === "string" &&
+            rawPayloadForName.agent_name.trim()
+                ? rawPayloadForName.agent_name.trim()
+                : null) ||
+            (typeof rawPayloadForName?.agentName === "string" &&
+            rawPayloadForName.agentName.trim()
+                ? rawPayloadForName.agentName.trim()
+                : null) ||
+            source.agent_name ||
+            source.agentName ||
+            payload.agent_name ||
+            payload.agentName ||
+            message.agent_name ||
             message.agentName;
 
         normalized.agent_profile_key =
@@ -3647,13 +3724,13 @@
                     message.type,
                     message.media_storage_url,
                     message.flow,
-                    // Some fan-out payloads only carry agent id/avatar info (no
-                    // name field at all) for the human agent's own message - fall
-                    // back to the name already known from the assignment
-                    // handshake instead of mislabeling the bubble as "Pulse AI".
-                    message.agent_name ??
+                    // Prefer Pulse displayName (via extractVirtualAgentDisplayName /
+                    // incomingAgentName) over short top-level agent_name. Fall
+                    // back to the assignment-handshake name when the payload
+                    // only carries agent id/avatar info.
+                    incomingAgentName ??
+                        message.agent_name ??
                         message.agentName ??
-                        incomingAgentName ??
                         (message.sender === "agent" &&
                             message.is_ai_reply !== true &&
                             message.isAiReply !== true
@@ -3687,13 +3764,8 @@
                     }
                 }
                 // AI/agent replied — clear all typing UI (optimistic AI + server-driven)
-                clearOptimisticAiTypingSchedule();
-                if (agentTypingTimeout) {
-                    clearTimeout(agentTypingTimeout);
-                    agentTypingTimeout = null;
-                }
-                agentTyping = false;
-                showTypingIndicator(false);
+                awaitingBotResponse = false;
+                clearAgentTypingUi(false);
                 markVisibleMessagesAsRead();
             }
         };
@@ -3727,15 +3799,7 @@
         }
     }
 
-    /**
-     * After a successful WS send, show typing immediately and keep it visible
-     * until an explicit stop/response arrives (with a safety timeout fallback).
-     */
-    function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
-        if (!wsDelivered) return;
-        // Live-agent sessions should rely on explicit agent typing events.
-        if (isLiveAgentAssigned()) return;
-
+    function clearAgentTypingUi(resetAwaitingBotResponse) {
         clearOptimisticAiTypingSchedule();
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
@@ -3743,22 +3807,57 @@
         }
         agentTyping = false;
         showTypingIndicator(false);
+        if (resetAwaitingBotResponse !== false) {
+            awaitingBotResponse = false;
+        }
+    }
 
-        // Show immediately for workflow UX: user should see bot is processing
-        // until the next bot response arrives.
-        optimisticAiTypingTimer = setTimeout(() => {
-            optimisticAiTypingTimer = null;
-            if (!isLiveAgentAssigned()) {
-                agentTyping = true;
-                showTypingIndicator(true, { kind: "ai", force: true });
-                // Fallback auto-clear in case a downstream event is missed.
-                agentTypingTimeout = setTimeout(() => {
-                    agentTyping = false;
-                    showTypingIndicator(false);
-                    agentTypingTimeout = null;
-                }, 45000);
-            }
-        }, 80);
+    function armTypingSafetyTimeout() {
+        if (agentTypingTimeout) {
+            clearTimeout(agentTypingTimeout);
+        }
+        agentTypingTimeout = setTimeout(() => {
+            agentTyping = false;
+            awaitingBotResponse = false;
+            showTypingIndicator(false);
+            agentTypingTimeout = null;
+        }, TYPING_SAFETY_TIMEOUT_MS);
+    }
+
+    function shouldIgnoreAiTypingStop(data) {
+        if (!awaitingBotResponse || isLiveAgentAssigned()) {
+            return false;
+        }
+        if (!data || typeof data !== "object") {
+            return true;
+        }
+        const isExplicitLiveAgentStop =
+            data.isAgent === true ||
+            data.role === "agent" ||
+            data.principalType === "agent" ||
+            data.participant === "agent" ||
+            (data.from && String(data.from).toLowerCase().startsWith("agent"));
+        return !isExplicitLiveAgentStop;
+    }
+
+    /**
+     * After a successful WS send, show typing immediately and keep it visible
+     * until the bot reply is rendered (with a long safety timeout fallback).
+     */
+    function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
+        if (!wsDelivered) return;
+        // Live-agent sessions should rely on explicit agent typing events.
+        if (isLiveAgentAssigned()) return;
+
+        awaitingBotResponse = true;
+        clearOptimisticAiTypingSchedule();
+        if (agentTypingTimeout) {
+            clearTimeout(agentTypingTimeout);
+            agentTypingTimeout = null;
+        }
+        agentTyping = true;
+        showTypingIndicator(true, { kind: "ai", force: true });
+        armTypingSafetyTimeout();
     }
 
     /**
@@ -3777,6 +3876,9 @@
         }
 
         if (data.isTyping === false || data.typing === false) {
+            if (shouldIgnoreAiTypingStop(data)) {
+                return;
+            }
             const hasExplicitTypingActor =
                 data.isAgent === true ||
                 data.isAi === true ||
@@ -3789,13 +3891,7 @@
             if (!hasExplicitTypingActor) {
                 return;
             }
-            clearOptimisticAiTypingSchedule();
-            if (agentTypingTimeout) {
-                clearTimeout(agentTypingTimeout);
-                agentTypingTimeout = null;
-            }
-            agentTyping = false;
-            showTypingIndicator(false);
+            clearAgentTypingUi();
             return;
         }
 
@@ -3832,18 +3928,12 @@
         }
 
         clearOptimisticAiTypingSchedule();
-        if (agentTypingTimeout) {
-            clearTimeout(agentTypingTimeout);
+        if (!isFromAgent && !isLiveAgentAssigned()) {
+            awaitingBotResponse = true;
         }
-
         agentTyping = true;
-        showTypingIndicator(true, { kind: typingKind });
-
-        agentTypingTimeout = setTimeout(() => {
-            agentTyping = false;
-            showTypingIndicator(false);
-            agentTypingTimeout = null;
-        }, 4000);
+        showTypingIndicator(true, { kind: typingKind, force: !isFromAgent });
+        armTypingSafetyTimeout();
     }
 
     // --- MEDIA UPLOAD FUNCTIONS ---
@@ -4764,9 +4854,8 @@
             });
 
             // Optimistic typing: show the "bot is processing" indicator immediately
-            // after every user send.  The indicator is cleared automatically when the
-            // first bot reply arrives (see renderIncomingMessage) or when the server
-            // sends an explicit typing:false event (handleTypingIndicator).
+            // after every user send. The indicator stays visible until the bot reply
+            // is rendered (renderIncomingMessage) or the safety timeout fires.
             // In live-agent sessions scheduleOptimisticAiTypingAfterSend is a no-op.
             scheduleOptimisticAiTypingAfterSend(true);
 
@@ -4881,7 +4970,7 @@
                         msg.type,
                         msg.media_storage_url,
                         extractFlowPayload(msg),
-                        msg.agentName ?? msg.agent_name ?? null,
+                        extractVirtualAgentDisplayName(msg),
                         msg.is_ai_reply === true || msg.isAiReply === true,
                     );
                 });

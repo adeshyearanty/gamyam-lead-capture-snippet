@@ -3612,33 +3612,56 @@
             });
         }
 
+        // The workflow engine sends a distinct MESSAGE_CREATED event per node it
+        // traverses. A "message" node that immediately falls through to an
+        // "options" node (i.e. the options node has no prompt text of its own)
+        // gets its options list attached to *both* events - the message node
+        // already renders those options alongside its text (see the
+        // `normalizedFlow.options` handling in appendMessageToUI), so replaying
+        // the follow-up empty-text "options" node would just draw the same
+        // buttons a second time. Only treat an "options" node as its own
+        // message when it carries real prompt text (i.e. it isn't a pure
+        // options-duplication of the preceding message node).
+        const normalizedFlow = extractFlowPayload(message);
+        const incomingFlowNodeType = String(
+            normalizedFlow?.nodeType ?? normalizedFlow?.type ?? "",
+        )
+            .trim()
+            .toLowerCase();
+        const isDuplicateOptionsOnlyNode =
+            !isUserMessage &&
+            !normalizedTextValue &&
+            incomingFlowNodeType === "options";
+
         const renderIncomingMessage = () => {
-            appendMessageToUI(
-                normalizedTextValue,
-                message.sender,
-                message.messageId,
-                incomingTimestampMs,
-                message.status,
-                message.readAt,
-                message.readByUs,
-                message.readByUsAt,
-                message.type,
-                message.media_storage_url,
-                message.flow,
-                // Some fan-out payloads only carry agent id/avatar info (no
-                // name field at all) for the human agent's own message - fall
-                // back to the name already known from the assignment
-                // handshake instead of mislabeling the bubble as "Pulse AI".
-                message.agent_name ??
-                    message.agentName ??
-                    incomingAgentName ??
-                    (message.sender === "agent" &&
-                        message.is_ai_reply !== true &&
-                        message.isAiReply !== true
-                        ? liveAgentDisplayName
-                        : null),
-                message.is_ai_reply === true || message.isAiReply === true,
-            );
+            if (!isDuplicateOptionsOnlyNode) {
+                appendMessageToUI(
+                    normalizedTextValue,
+                    message.sender,
+                    message.messageId,
+                    incomingTimestampMs,
+                    message.status,
+                    message.readAt,
+                    message.readByUs,
+                    message.readByUsAt,
+                    message.type,
+                    message.media_storage_url,
+                    message.flow,
+                    // Some fan-out payloads only carry agent id/avatar info (no
+                    // name field at all) for the human agent's own message - fall
+                    // back to the name already known from the assignment
+                    // handshake instead of mislabeling the bubble as "Pulse AI".
+                    message.agent_name ??
+                        message.agentName ??
+                        incomingAgentName ??
+                        (message.sender === "agent" &&
+                            message.is_ai_reply !== true &&
+                            message.isAiReply !== true
+                            ? liveAgentDisplayName
+                            : null),
+                    message.is_ai_reply === true || message.isAiReply === true,
+                );
+            }
 
             if (!isUserMessage) {
                 const storedMessage = messages.get(message.messageId);
@@ -3675,7 +3698,6 @@
             }
         };
 
-        const normalizedFlow = extractFlowPayload(message);
         const delayMs =
             !isUserMessage &&
                 normalizedFlow &&

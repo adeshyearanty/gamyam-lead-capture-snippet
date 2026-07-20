@@ -3497,8 +3497,11 @@
         const isActive =
             evt.isActive === true ||
             String(evt.status ?? "").toLowerCase() === "active";
+        // Restart / new-session events do not need a divider — an ended/
+        // resolved marker already separates sessions, and anything after
+        // that is implicitly a new conversation.
         if (isActive) {
-            return "New conversation started";
+            return "";
         }
 
         const status = String(evt.status ?? "").toLowerCase();
@@ -3511,27 +3514,6 @@
             return "Conversation resolved";
         }
         return "Conversation ended";
-    }
-
-    /**
-     * Place "New conversation started" just before the user message that
-     * reopened the session (typically the latest user bubble already in the DOM).
-     */
-    function resolveNewConversationStartedTimestamp(preferredTs) {
-        let latestUserTs = -Infinity;
-        for (const msg of messages.values()) {
-            if (!msg || msg.sender !== "user") continue;
-            const ts =
-                getCanonicalMessageTimestamp(msg) ??
-                toTimestampMs(msg.timestamp) ??
-                0;
-            if (ts > latestUserTs) latestUserTs = ts;
-        }
-        if (Number.isFinite(latestUserTs) && latestUserTs > 0) {
-            return latestUserTs - 1;
-        }
-        const preferred = toTimestampMs(preferredTs);
-        return Number.isFinite(preferred) ? preferred : Date.now();
     }
 
     function appendChatDivider(label, timestampMs, kind, options) {
@@ -3549,15 +3531,9 @@
                 ? String(opts.conversationId).trim()
                 : "";
 
-        let normalizedTimestamp = Number.isFinite(timestampMs)
+        const normalizedTimestamp = Number.isFinite(timestampMs)
             ? timestampMs
             : Date.now();
-
-        // Restart divider must sit above the user message that triggered it.
-        if (trimmedLabel === "New conversation started") {
-            normalizedTimestamp =
-                resolveNewConversationStartedTimestamp(normalizedTimestamp);
-        }
 
         // One session divider per conversation+label (live WS fan-out + thread
         // restore often deliver the same close event twice with different ms).
@@ -3690,18 +3666,11 @@
                 status: normalizedStatus,
             });
             if (label) {
-                const isRestart = label === "New conversation started";
-                const ts = isRestart
-                    ? resolveNewConversationStartedTimestamp(
-                          getCanonicalMessageTimestamp(evt) ??
-                              toTimestampMs(evt.restartedAt) ??
-                              toTimestampMs(evt.timestamp) ??
-                              Date.now(),
-                      )
-                    : getCanonicalMessageTimestamp(evt) ??
-                      toTimestampMs(evt.closedAt) ??
-                      toTimestampMs(evt.timestamp) ??
-                      Date.now();
+                const ts =
+                    getCanonicalMessageTimestamp(evt) ??
+                    toTimestampMs(evt.closedAt) ??
+                    toTimestampMs(evt.timestamp) ??
+                    Date.now();
                 console.log("UniBox: Applying session_status_change divider", {
                     label,
                     evtConv,
@@ -3783,14 +3752,8 @@
             switched: hasSwitchedConversation,
         });
 
-        if (hasSwitchedConversation) {
-            appendChatDivider(
-                "New conversation started",
-                resolveNewConversationStartedTimestamp(Date.now()),
-                "session",
-                { conversationId: nextId },
-            );
-        }
+        // No "New conversation started" divider — ended/resolved markers already
+        // separate sessions; chat after that is implicitly a new conversation.
 
         if (socket && socket.readyState === WebSocket.OPEN) {
             subscribeToConversation(nextId);

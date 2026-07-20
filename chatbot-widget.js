@@ -2800,7 +2800,11 @@
             }
 
             case "session_status_change": {
-                handleSessionStatusChangeEvent(data || message);
+                const evtPayload =
+                    data && typeof data === "object"
+                        ? Object.assign({}, message, data)
+                        : message;
+                handleSessionStatusChangeEvent(evtPayload);
                 break;
             }
 
@@ -3558,6 +3562,24 @@
         });
     }
 
+    function isSessionStatusEventForCurrentConversation(evtConv) {
+        if (!evtConv) return true;
+        const currentConv =
+            conversationId != null ? String(conversationId) : null;
+        const subscribedConv =
+            subscribedConversationId != null
+                ? String(subscribedConversationId)
+                : null;
+        if (currentConv && evtConv === currentConv) return true;
+        if (subscribedConv && evtConv === subscribedConv) return true;
+        // Still viewing a thread whose latest messages belong to this conversation
+        // even after conversationId was cleared for an ended session.
+        if (!currentConv && subscribedConv && evtConv === subscribedConv) {
+            return true;
+        }
+        return !currentConv && !subscribedConv;
+    }
+
     function handleSessionStatusChangeEvent(rawEvent) {
         const evt = normalizeSessionStatusEvent(rawEvent);
         try {
@@ -3567,29 +3589,51 @@
             const currentConv =
                 conversationId != null ? String(conversationId) : null;
 
-            if (evtConv && currentConv && evtConv !== currentConv) {
+            if (!isSessionStatusEventForCurrentConversation(evtConv)) {
+                console.log(
+                    "UniBox: Ignoring session_status_change for unrelated conversation",
+                    { evtConv, currentConv, subscribedConversationId },
+                );
                 return;
             }
 
-            const label = formatSessionStatusDividerLabel(evt);
+            const normalizedStatus = String(evt.status ?? "").toLowerCase();
+            const label = formatSessionStatusDividerLabel({
+                ...evt,
+                status: normalizedStatus,
+            });
             if (label) {
                 const ts =
                     getCanonicalMessageTimestamp(evt) ??
                     toTimestampMs(evt.closedAt) ??
                     toTimestampMs(evt.restartedAt) ??
                     Date.now();
+                console.log("UniBox: Applying session_status_change divider", {
+                    label,
+                    evtConv,
+                    currentConv,
+                    status: normalizedStatus,
+                    reason: evt.reason,
+                    isActive: evt.isActive,
+                });
                 appendChatDivider(label, ts, "session");
             }
 
-            const status = evt.status;
             const endedStatus =
-                status && (status === "resolved" || status === "expired");
+                normalizedStatus === "resolved" || normalizedStatus === "expired";
             const isInactive =
                 evt.isActive === false ||
-                (evt.isActive !== true && Boolean(endedStatus));
+                (evt.isActive !== true && endedStatus);
 
             if (platform === "live_chat" && isInactive && endedStatus) {
-                if (evtConv && currentConv && evtConv === currentConv) {
+                if (
+                    evtConv &&
+                    (evtConv === currentConv ||
+                        evtConv ===
+                            (subscribedConversationId != null
+                                ? String(subscribedConversationId)
+                                : null))
+                ) {
                     conversationId = null;
                     subscribedConversationId = null;
                     workflowAutoStarted = false;
@@ -3607,6 +3651,16 @@
                             "UniBox: Failed to persist rotated guest id to localStorage",
                             e,
                         );
+                    }
+                }
+            } else if (
+                platform === "live_chat" &&
+                (evt.isActive === true || normalizedStatus === "active")
+            ) {
+                if (evtConv && !currentConv) {
+                    conversationId = evtConv;
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        subscribeToConversation(evtConv);
                     }
                 }
             }

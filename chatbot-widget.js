@@ -791,12 +791,8 @@
         const t = name.trim();
         if (!t) return;
         liveAgentDisplayName = t;
-        if (agentTypingTimeout) {
-            clearTimeout(agentTypingTimeout);
-            agentTypingTimeout = null;
-        }
-        agentTyping = false;
-        showTypingIndicator(false);
+        // Live agent assigned — drop optimistic AI typing; rely on agent typing events.
+        clearAgentTypingUi();
         syncAgentTitleUi();
     }
 
@@ -805,12 +801,8 @@
         const t = String(agentId).trim();
         if (!t) return;
         liveAgentId = t;
-        if (agentTypingTimeout) {
-            clearTimeout(agentTypingTimeout);
-            agentTypingTimeout = null;
-        }
-        agentTyping = false;
-        showTypingIndicator(false);
+        // Assignment can arrive with id before display name.
+        clearAgentTypingUi();
         syncAgentTitleUi();
     }
 
@@ -3560,10 +3552,13 @@
 
     function handleIncomingMessage(message) {
         message = normalizeSocketMessagePayload(message);
-        if (isInboundReplyMessage(message)) {
-            clearTypingForInboundReply();
-        }
+        // Reset typing as soon as any bot/agent reply arrives (including workflow
+        // options / delayed message nodes). Do this before early-return paths so
+        // duplicate/update events still clear a stuck indicator.
         const isUserMessage = message.sender === "user";
+        if (!isUserMessage) {
+            clearAgentTypingUi();
+        }
         const incomingAgentName =
             message.sender === "agent" ? extractVirtualAgentDisplayName(message) : null;
         const incomingAgentId =
@@ -3765,6 +3760,10 @@
                 ? Math.max(0, Math.floor(normalizedFlow.typingDelayMs))
                 : 0;
         if (delayMs > 0) {
+            // Keep the dots visible for the configured delay, then clear on render.
+            agentTyping = true;
+            showTypingIndicator(true, { kind: "ai", force: true });
+            armTypingSafetyTimeout();
             setTimeout(renderIncomingMessage, delayMs);
             return;
         }
@@ -3787,17 +3786,6 @@
         showTypingIndicator(false);
     }
 
-    function isInboundReplyMessage(message) {
-        if (!message || typeof message !== "object") return false;
-        const sender = String(message.sender ?? "").toLowerCase();
-        if (sender === "agent") return true;
-        return message.is_ai_reply === true || message.isAiReply === true;
-    }
-
-    function clearTypingForInboundReply() {
-        clearAgentTypingUi();
-    }
-
     function armTypingSafetyTimeout() {
         if (agentTypingTimeout) {
             clearTimeout(agentTypingTimeout);
@@ -3810,7 +3798,25 @@
     }
 
     /**
-     * Handle typing indicator from agent or AI (explicit roles only — no anonymous dots).
+     * Optimistic AI typing after a user send. Cleared when any bot/agent
+     * message arrives (handleIncomingMessage). Live-agent sessions skip this
+     * and rely on explicit agent typing events instead.
+     */
+    function scheduleOptimisticAiTypingAfterSend(wsDelivered) {
+        if (!wsDelivered) return;
+        if (isLiveAgentAssigned()) return;
+
+        clearAgentTypingUi();
+        agentTyping = true;
+        showTypingIndicator(true, { kind: "ai", force: true });
+        armTypingSafetyTimeout();
+    }
+
+    /**
+     * Handle typing indicator from a live agent.
+     * AI typing is driven by scheduleOptimisticAiTypingAfterSend on send —
+     * server AI typing:true events are ignored so late pings cannot leave the
+     * dots stuck after a reply (e.g. after workflow options are shown).
      */
     function handleTypingIndicator(data) {
         if (!data) return;
@@ -3833,7 +3839,6 @@
                 data.principalType === "agent" ||
                 data.participant === "agent";
             // Ignore ambiguous generic stop-typing events (often presence churn).
-            // We only stop typing for explicit agent/AI typing-stop signals.
             if (!hasExplicitTypingActor) {
                 return;
             }
@@ -3845,36 +3850,14 @@
             data.isAgent === true ||
             (data.from && String(data.from).toLowerCase().startsWith("agent"));
 
-        const isFromAi =
-            data.isAi === true ||
-            (data.from && String(data.from).toLowerCase() === "ai");
-        const isGenericTypingStart =
-            (data.isTyping === true || data.typing === true) && !isFromAgent && !isFromAi;
-
-        // Many backends send generic typing start events without actor metadata.
-        // Treat them as AI typing while the thread is not handed off to a live agent.
-        const treatGenericAsAi = isGenericTypingStart && !isLiveAgentAssigned();
-
-        if (isLiveAgentAssigned() && isFromAi && !isFromAgent) {
-            return;
-        }
-
-        let showTyping = false;
-        let typingKind = "ai";
-        if (isFromAgent) {
-            showTyping = true;
-            typingKind = "agent";
-        } else if ((isFromAi || treatGenericAsAi) && !isLiveAgentAssigned()) {
-            showTyping = true;
-            typingKind = "ai";
-        }
-
-        if (!showTyping) {
+        // Only honor live-agent typing starts. AI/generic typing is optimistic
+        // on the send path and must not re-arm after a reply has already landed.
+        if (!isFromAgent || !isLiveAgentAssigned()) {
             return;
         }
 
         agentTyping = true;
-        showTypingIndicator(true, { kind: typingKind, force: !isFromAgent });
+        showTypingIndicator(true, { kind: "agent" });
         armTypingSafetyTimeout();
     }
 
@@ -4560,8 +4543,6 @@
         // Get tenantId from config
         const tenantId = fetchedConfig?.tenantId || "unknown";
 
-        let anyMediaWsSent = false;
-
         for (const fileData of filesToSend) {
             const file = fileData.file;
             const mediaType = fileData.mediaType;
@@ -4619,7 +4600,6 @@
             });
 
             if (wsSent) {
-                anyMediaWsSent = true;
                 console.log("3️⃣ Message sent via WebSocket with S3 key:", s3Key);
             } else {
                 console.log("3️⃣ Message queued for WebSocket delivery");
@@ -4668,8 +4648,8 @@
             })();
         }
 
-        // Typing state is now controlled by explicit backend typing events.
-        // No optimistic typing from the widget send path.
+        // Optimistic typing after media send (same as text path).
+        scheduleOptimisticAiTypingAfterSend(true);
     }
 
     /**
@@ -4795,7 +4775,11 @@
                 userEmail: userDetails.userEmail,
             });
 
-            // Typing indicator is driven only by explicit backend typing events.
+            // Optimistic typing: show dots right after send; cleared when any
+            // bot/agent message arrives (handleIncomingMessage). Live-agent
+            // sessions skip this and use explicit agent typing events.
+            scheduleOptimisticAiTypingAfterSend(true);
+
             if (wsSent) {
                 console.log("UniBox: Message sent via WebSocket");
             } else {

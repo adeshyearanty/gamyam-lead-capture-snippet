@@ -2146,8 +2146,12 @@
                             staticWelcomeShown = false;
                         }
 
-                        const lastMessageIndex = data.messages.length - 1;
-                        data.messages.forEach((msg, msgIndex) => {
+                        const displayMessages = collapseWorkflowMessagesForDisplay(
+                            data.messages,
+                        );
+                        const lastMessageIndex = displayMessages.length - 1;
+                        displayMessages.forEach(
+                            (msg, msgIndex) => {
                             // Normalize text - convert empty string to null
                             const textValue = msg.text || msg.text_body;
                             const normalizedTextValue =
@@ -2263,8 +2267,11 @@
 
                             // Render historical messages for this user (even if the last session is ended)
                             if (data.messages && Array.isArray(data.messages)) {
-                                const lastMessageIndex = data.messages.length - 1;
-                                data.messages.forEach((msg, msgIndex) => {
+                                const displayMessages = collapseWorkflowMessagesForDisplay(
+                                    data.messages,
+                                );
+                                const lastMessageIndex = displayMessages.length - 1;
+                                displayMessages.forEach((msg, msgIndex) => {
                                     // Normalize text - convert empty string to null
                                     const textValue = msg.text || msg.text_body;
                                     const normalizedTextValue =
@@ -3836,27 +3843,67 @@
 
         // The workflow engine sends a distinct MESSAGE_CREATED event per node it
         // traverses. A "message" node that immediately falls through to an
-        // "options" node (i.e. the options node has no prompt text of its own)
-        // gets its options list attached to *both* events - the message node
-        // already renders those options alongside its text (see the
-        // `normalizedFlow.options` handling in appendMessageToUI), so replaying
-        // the follow-up empty-text "options" node would just draw the same
-        // buttons a second time. Only treat an "options" node as its own
-        // message when it carries real prompt text (i.e. it isn't a pure
-        // options-duplication of the preceding message node).
+        // "options" node (no prompt text of its own) attaches the *same* options
+        // list to both events — skip only that duplicate. A later options step
+        // (empty text, different option titles) after the user replies must still
+        // render as its own bubble with buttons.
         const normalizedFlow = extractFlowPayload(message);
         const incomingFlowNodeType = String(
             normalizedFlow?.nodeType ?? normalizedFlow?.type ?? "",
         )
             .trim()
             .toLowerCase();
+        const incomingOptionsSig = flowOptionsSignature(normalizedFlow?.options);
+        const previousAgentMessage = !isUserMessage
+            ? getLatestAgentMessageRecord()
+            : null;
+        const previousOptionsSig = flowOptionsSignature(
+            previousAgentMessage?.flow?.options,
+        );
+        const latestOverallMessage = !isUserMessage
+            ? getLatestMessageRecord()
+            : null;
+        const previousAgentIsStillLatest =
+            Boolean(previousAgentMessage) &&
+            Boolean(latestOverallMessage) &&
+            latestOverallMessage.sender === "agent" &&
+            (latestOverallMessage === previousAgentMessage ||
+                latestOverallMessage.id === previousAgentMessage.id ||
+                latestOverallMessage.messageId ===
+                    previousAgentMessage.messageId);
+        // Same option set already rendered on the previous agent bubble —
+        // only while that bubble is still the latest (message→options
+        // fallthrough). After a user reply, a new options step must render
+        // even if titles happen to match an earlier step.
         const isDuplicateOptionsOnlyNode =
             !isUserMessage &&
             !normalizedTextValue &&
-            incomingFlowNodeType === "options";
+            incomingFlowNodeType === "options" &&
+            Boolean(incomingOptionsSig) &&
+            Boolean(previousOptionsSig) &&
+            incomingOptionsSig === previousOptionsSig &&
+            previousAgentIsStillLatest;
+        // Message node with no options yet, then empty options follow-up —
+        // attach buttons to that bubble instead of an empty second row.
+        const shouldBundleOptionsOntoPrevious =
+            !isUserMessage &&
+            !normalizedTextValue &&
+            incomingFlowNodeType === "options" &&
+            Boolean(incomingOptionsSig) &&
+            previousAgentIsStillLatest &&
+            !previousOptionsSig;
 
         const renderIncomingMessage = () => {
-            if (!isDuplicateOptionsOnlyNode) {
+            if (isDuplicateOptionsOnlyNode || shouldBundleOptionsOntoPrevious) {
+                // Same options already on the previous agent bubble — ensure
+                // buttons exist there, but do not draw a second empty bubble.
+                if (previousAgentMessage) {
+                    ensureOptionsButtonsOnMessageElement(
+                        previousAgentMessage,
+                        normalizedFlow,
+                    );
+                }
+            } else {
                 appendMessageToUI(
                     normalizedTextValue,
                     message.sender,
@@ -5028,7 +5075,7 @@
                 }
 
                 // Now render all messages from thread in correct order
-                threadData.messages.forEach((msg) => {
+                collapseWorkflowMessagesForDisplay(threadData.messages).forEach((msg) => {
                     // Normalize text - convert empty string to null
                     const textValue = msg.text || msg.text_body;
                     const normalizedTextValue =
@@ -5996,6 +6043,262 @@
         };
     }
 
+    function normalizeWidgetPlainText(text) {
+        if (!text) return "";
+        return String(text)
+            .replace(/<[^>]*>/g, " ")
+            .replace(/&nbsp;/gi, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+    }
+
+    /** Stable signature for comparing option button sets across workflow events. */
+    function flowOptionsSignature(options) {
+        if (!Array.isArray(options) || options.length === 0) return "";
+        return options
+            .map((opt) => {
+                if (!opt || typeof opt !== "object") return "";
+                const id = typeof opt.id === "string" ? opt.id.trim() : "";
+                const title = typeof opt.title === "string" ? opt.title.trim() : "";
+                return (id || title).toLowerCase();
+            })
+            .filter(Boolean)
+            .sort()
+            .join("|");
+    }
+
+    function getLatestAgentMessageRecord() {
+        let latest = null;
+        let latestTs = -Infinity;
+        for (const msg of messages.values()) {
+            if (!msg || msg.sender !== "agent") continue;
+            const ts =
+                getCanonicalMessageTimestamp(msg) ??
+                toTimestampMs(msg.timestamp) ??
+                0;
+            if (ts >= latestTs) {
+                latestTs = ts;
+                latest = msg;
+            }
+        }
+        return latest;
+    }
+
+    function getLatestMessageRecord() {
+        let latest = null;
+        let latestTs = -Infinity;
+        const seen = new Set();
+        for (const msg of messages.values()) {
+            if (!msg) continue;
+            const key = msg.messageId || msg.id;
+            if (key && seen.has(key)) continue;
+            if (key) seen.add(key);
+            const ts =
+                getCanonicalMessageTimestamp(msg) ??
+                toTimestampMs(msg.timestamp) ??
+                0;
+            if (ts >= latestTs) {
+                latestTs = ts;
+                latest = msg;
+            }
+        }
+        return latest;
+    }
+
+    /** Remove quick-option / dropdown chips so prior steps do not linger. */
+    function clearVisibleFlowOptionButtons(exceptElement) {
+        const host = document.getElementById("unibox-root");
+        if (!host || !host.shadowRoot) return;
+        const body = host.shadowRoot.getElementById("chatBody");
+        if (!body) return;
+        body.querySelectorAll(".chat-widget-flow-options").forEach((el) => {
+            if (
+                exceptElement &&
+                (el === exceptElement || exceptElement.contains?.(el))
+            ) {
+                return;
+            }
+            if (el.parentNode) {
+                el.parentNode.removeChild(el);
+            }
+        });
+    }
+
+    function mergeFlowOptionsLists(primaryOptions, secondaryOptions) {
+        const merged = [];
+        const seen = new Set();
+        for (const opt of [...(primaryOptions || []), ...(secondaryOptions || [])]) {
+            if (!opt || typeof opt !== "object") continue;
+            const id = typeof opt.id === "string" ? opt.id.trim() : "";
+            const title = typeof opt.title === "string" ? opt.title.trim() : "";
+            const key = (id || title).toLowerCase();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            merged.push(opt);
+        }
+        return merged;
+    }
+
+    /**
+     * Collapse consecutive agent workflow bubbles that are options-only or share
+     * the same prompt text (mirrors admin ConversationView + avoids duplicate
+     * "Great! Which type…" rows when restoring a thread).
+     */
+    function collapseWorkflowMessagesForDisplay(rawMessages) {
+        if (!Array.isArray(rawMessages) || rawMessages.length === 0) return [];
+        const collapsed = [];
+        for (const msg of rawMessages) {
+            const sender =
+                msg.sender || (msg.direction === "inbound" ? "user" : "agent");
+            const previous = collapsed[collapsed.length - 1];
+            const prevSender = previous
+                ? previous.sender ||
+                  (previous.direction === "inbound" ? "user" : "agent")
+                : null;
+            if (!previous || sender !== "agent" || prevSender !== "agent") {
+                collapsed.push(msg);
+                continue;
+            }
+            const prevText = normalizeWidgetPlainText(
+                previous.text || previous.text_body,
+            );
+            const curText = normalizeWidgetPlainText(msg.text || msg.text_body);
+            const prevFlow = extractFlowPayload(previous);
+            const curFlow = extractFlowPayload(msg);
+            const curNodeType = String(
+                curFlow?.nodeType ?? curFlow?.type ?? "",
+            )
+                .trim()
+                .toLowerCase();
+            const isOptionsOnly =
+                !curText &&
+                (curNodeType === "options" ||
+                    (Array.isArray(curFlow?.options) &&
+                        curFlow.options.length > 0));
+            const isSamePrompt =
+                Boolean(prevText) && Boolean(curText) && prevText === curText;
+            // Only fold an empty options follow-up into the previous agent bubble
+            // when it is the same option set (message→options fallthrough). A
+            // later options step with different titles must stay its own row.
+            if (isOptionsOnly) {
+                const prevSig = flowOptionsSignature(prevFlow?.options);
+                const curSig = flowOptionsSignature(curFlow?.options);
+                if (curSig && prevSig && prevSig !== curSig) {
+                    collapsed.push(msg);
+                    continue;
+                }
+            }
+            if (!isOptionsOnly && !isSamePrompt) {
+                collapsed.push(msg);
+                continue;
+            }
+            const mergedOptions = mergeFlowOptionsLists(
+                prevFlow?.options,
+                curFlow?.options,
+            );
+            const keptFlow = {
+                ...(curFlow?.options?.length ? curFlow : prevFlow || {}),
+                ...(mergedOptions.length ? { options: mergedOptions } : {}),
+            };
+            collapsed[collapsed.length - 1] = {
+                ...previous,
+                text: previous.text || previous.text_body || msg.text || msg.text_body,
+                text_body:
+                    previous.text_body || previous.text || msg.text_body || msg.text,
+                flow: keptFlow,
+                raw_payload: {
+                    ...(previous.raw_payload && typeof previous.raw_payload === "object"
+                        ? previous.raw_payload
+                        : {}),
+                    flow: keptFlow,
+                },
+            };
+        }
+        return collapsed;
+    }
+
+    function ensureOptionsButtonsOnMessageElement(messageRecord, flowData) {
+        const normalizedFlow = normalizeFlowPayload(flowData);
+        if (
+            !messageRecord?.element ||
+            !normalizedFlow ||
+            !Array.isArray(normalizedFlow.options) ||
+            normalizedFlow.options.length === 0
+        ) {
+            return;
+        }
+        if (messageRecord.element.querySelector(".chat-widget-flow-options")) {
+            messageRecord.flow = {
+                ...(messageRecord.flow || {}),
+                ...normalizedFlow,
+                options: mergeFlowOptionsLists(
+                    messageRecord.flow?.options,
+                    normalizedFlow.options,
+                ),
+            };
+            return;
+        }
+        clearVisibleFlowOptionButtons(messageRecord.element);
+        const optionsWrap = document.createElement("div");
+        optionsWrap.className = "chat-widget-flow-options";
+        normalizedFlow.options.forEach((opt) => {
+            const label = opt.title || opt.id || "";
+            if (!label) return;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "chat-widget-flow-option-btn";
+            btn.textContent = label;
+            btn.onclick = () => {
+                clearVisibleFlowOptionButtons();
+                const outgoingText = opt.title || opt.id || "";
+                if (!outgoingText) return;
+                const localMessageId = `msg_${Date.now()}_${Math.random()
+                    .toString(36)
+                    .substr(2, 9)}`;
+                appendMessageToUI(
+                    outgoingText,
+                    "user",
+                    localMessageId,
+                    new Date(),
+                    "sent",
+                    null,
+                    false,
+                    null,
+                    "text",
+                    null,
+                );
+                const optionValue = opt.value || opt.id || outgoingText;
+                sendMessageToApi(outgoingText, {
+                    interactivePayload: { value: optionValue },
+                    interactive: {
+                        button_reply: { id: optionValue, title: outgoingText },
+                    },
+                }).catch((err) => {
+                    console.error("UniBox: Failed to send flow option", err);
+                });
+            };
+            optionsWrap.appendChild(btn);
+        });
+        if (!optionsWrap.childElementCount) return;
+        const content = messageRecord.element.querySelector(
+            ".chat-widget-message-content",
+        );
+        if (content) {
+            content.appendChild(optionsWrap);
+        } else {
+            messageRecord.element.appendChild(optionsWrap);
+        }
+        messageRecord.flow = {
+            ...(messageRecord.flow || {}),
+            ...normalizedFlow,
+            options: mergeFlowOptionsLists(
+                messageRecord.flow?.options,
+                normalizedFlow.options,
+            ),
+        };
+    }
+
     // --- UPDATED APPEND MESSAGE FUNCTION WITH FIX ---
     function appendMessageToUI(
         text,
@@ -6040,6 +6343,12 @@
         // Convert empty string to null for consistent handling
         const normalizedText = text && text.trim() ? text.trim() : null;
         const normalizedFlow = normalizeFlowPayload(flowData);
+
+        // Once the user replies (typed, option click, form, etc.), hide any
+        // remaining option chips from earlier steps so they cannot be re-clicked.
+        if (type === "user") {
+            clearVisibleFlowOptionButtons();
+        }
 
         let preservedStaticWelcomeTimestamp = null;
 
@@ -6134,9 +6443,16 @@
                     );
                 }
 
-                // 3. Text + Timestamp Fuzzy Match (Fixes ghosting)
-                // Check if text matches, sender matches, and time is within 30 seconds
-                if (normalizedText && m.text === normalizedText && m.sender === type) {
+                // 3. Text + Timestamp Fuzzy Match (Fixes ghosting / workflow duplicates)
+                // Compare plain text so HTML vs plain copies of the same prompt match.
+                const existingPlain = normalizeWidgetPlainText(m.text);
+                const incomingPlain = normalizeWidgetPlainText(normalizedText);
+                if (
+                    incomingPlain &&
+                    existingPlain &&
+                    existingPlain === incomingPlain &&
+                    m.sender === type
+                ) {
                     const timeDiff = Math.abs(
                         new Date(m.timestamp).getTime() - normalizedTimestamp,
                     );
@@ -6184,6 +6500,11 @@
                     "data-timestamp",
                     normalizedTimestamp.toString(),
                 );
+            }
+            // Workflow often emits message+options as two events with the same
+            // prompt — merge options onto the kept bubble instead of dropping them.
+            if (type === "agent") {
+                ensureOptionsButtonsOnMessageElement(existingInMap, flowData);
             }
             return;
         }
@@ -6456,6 +6777,8 @@
             Array.isArray(normalizedFlow.options) &&
             normalizedFlow.options.length > 0
         ) {
+            // Only the latest options step should stay interactive.
+            clearVisibleFlowOptionButtons();
             optionsWrap = document.createElement("div");
             optionsWrap.className = "chat-widget-flow-options";
             normalizedFlow.options.forEach((opt) => {
@@ -6466,12 +6789,9 @@
                 btn.className = "chat-widget-flow-option-btn";
                 btn.textContent = label;
                 btn.onclick = () => {
-                    // Hide the entire options wrap after a selection — keeping the
-                    // disabled buttons visible is confusing once the user has picked
-                    // one (and is explicitly called out as bad UX on the widget).
-                    if (optionsWrap && optionsWrap.parentNode) {
-                        optionsWrap.parentNode.removeChild(optionsWrap);
-                    }
+                    // Hide all option chips after a selection — keeping disabled
+                    // buttons visible is confusing once the user has picked one.
+                    clearVisibleFlowOptionButtons();
                     const outgoingText = opt.title || opt.id || "";
                     if (!outgoingText) return;
                     const localMessageId = `msg_${Date.now()}_${Math.random()
@@ -6516,6 +6836,7 @@
             Array.isArray(normalizedFlow.dropdownOptions) &&
             normalizedFlow.dropdownOptions.length > 0
         ) {
+            clearVisibleFlowOptionButtons();
             dropdownWrap = document.createElement("div");
             dropdownWrap.className = "chat-widget-flow-options";
             normalizedFlow.dropdownOptions.forEach((optValue) => {
@@ -6528,9 +6849,7 @@
                     // Hide the dropdown options after the user picks one; keeping them
                     // around (disabled) is visually noisy and matches the quick-options
                     // behaviour above.
-                    if (dropdownWrap && dropdownWrap.parentNode) {
-                        dropdownWrap.parentNode.removeChild(dropdownWrap);
-                    }
+                    clearVisibleFlowOptionButtons();
                     const selected = String(optValue);
                     const localMessageId = `msg_${Date.now()}_${Math.random()
                         .toString(36)

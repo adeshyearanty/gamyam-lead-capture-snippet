@@ -3513,7 +3513,28 @@
         return "Conversation ended";
     }
 
-    function appendChatDivider(label, timestampMs, kind) {
+    /**
+     * Place "New conversation started" just before the user message that
+     * reopened the session (typically the latest user bubble already in the DOM).
+     */
+    function resolveNewConversationStartedTimestamp(preferredTs) {
+        let latestUserTs = -Infinity;
+        for (const msg of messages.values()) {
+            if (!msg || msg.sender !== "user") continue;
+            const ts =
+                getCanonicalMessageTimestamp(msg) ??
+                toTimestampMs(msg.timestamp) ??
+                0;
+            if (ts > latestUserTs) latestUserTs = ts;
+        }
+        if (Number.isFinite(latestUserTs) && latestUserTs > 0) {
+            return latestUserTs - 1;
+        }
+        const preferred = toTimestampMs(preferredTs);
+        return Number.isFinite(preferred) ? preferred : Date.now();
+    }
+
+    function appendChatDivider(label, timestampMs, kind, options) {
         const trimmedLabel = String(label ?? "").trim();
         if (!trimmedLabel) return;
 
@@ -3522,16 +3543,47 @@
         const body = host.shadowRoot.getElementById("chatBody");
         if (!body) return;
 
-        const normalizedTimestamp = Number.isFinite(timestampMs)
+        const opts = options && typeof options === "object" ? options : {};
+        const conversationKey =
+            opts.conversationId != null && String(opts.conversationId).trim()
+                ? String(opts.conversationId).trim()
+                : "";
+
+        let normalizedTimestamp = Number.isFinite(timestampMs)
             ? timestampMs
             : Date.now();
-        const dedupeKey = `${kind || "event"}:${trimmedLabel}:${normalizedTimestamp}`;
-        if (seenChatDividerKeys.has(dedupeKey)) return;
-        seenChatDividerKeys.add(dedupeKey);
+
+        // Restart divider must sit above the user message that triggered it.
+        if (trimmedLabel === "New conversation started") {
+            normalizedTimestamp =
+                resolveNewConversationStartedTimestamp(normalizedTimestamp);
+        }
+
+        // One session divider per conversation+label (live WS fan-out + thread
+        // restore often deliver the same close event twice with different ms).
+        if (conversationKey) {
+            const stableKey = `${kind || "event"}:${trimmedLabel}:${conversationKey}`;
+            if (seenChatDividerKeys.has(stableKey)) return;
+            seenChatDividerKeys.add(stableKey);
+        } else {
+            // Soft window dedupe when conversation id is missing (duplicate fan-out).
+            const softBucket = Math.floor(normalizedTimestamp / 15000);
+            const softKey = `${kind || "event"}:${trimmedLabel}:~${softBucket}`;
+            if (seenChatDividerKeys.has(softKey)) return;
+            seenChatDividerKeys.add(softKey);
+        }
+
+        const exactKey = `${kind || "event"}:${trimmedLabel}:${normalizedTimestamp}`;
+        if (seenChatDividerKeys.has(exactKey)) return;
+        seenChatDividerKeys.add(exactKey);
 
         const divider = createDateDividerElement(trimmedLabel);
         divider.setAttribute("data-chat-divider", kind || "event");
         divider.setAttribute("data-timestamp", String(normalizedTimestamp));
+        divider.setAttribute("data-divider-label", trimmedLabel);
+        if (conversationKey) {
+            divider.setAttribute("data-divider-conversation-id", conversationKey);
+        }
 
         const typingIndicator = body.querySelector("#typingIndicator");
         if (typingIndicator) {
@@ -3541,6 +3593,35 @@
         }
 
         sortMessagesByTimestamp();
+    }
+
+    /** Drop back-to-back identical session/event dividers after sort. */
+    function dedupeConsecutiveChatDividers() {
+        const host = document.getElementById("unibox-root");
+        if (!host || !host.shadowRoot) return;
+        const body = host.shadowRoot.getElementById("chatBody");
+        if (!body) return;
+
+        let previousLabel = null;
+        Array.from(body.children).forEach((child) => {
+            if (!child.hasAttribute("data-chat-divider")) {
+                previousLabel = null;
+                return;
+            }
+            const label =
+                child.getAttribute("data-divider-label") ||
+                child
+                    .querySelector(".chat-widget-date-divider-label")
+                    ?.textContent?.trim() ||
+                "";
+            if (label && label === previousLabel) {
+                const exactKey = `${child.getAttribute("data-chat-divider") || "event"}:${label}:${child.getAttribute("data-timestamp") || ""}`;
+                seenChatDividerKeys.delete(exactKey);
+                child.remove();
+                return;
+            }
+            previousLabel = label || null;
+        });
     }
 
     function applyThreadSessionMarkers(sessionMarkers) {
@@ -3561,7 +3642,10 @@
                 toTimestampMs(marker.closedAt) ??
                 toTimestampMs(marker.closedAt_iso) ??
                 Date.now();
-            appendChatDivider(label, ts, "session");
+            appendChatDivider(label, ts, "session", {
+                conversationId:
+                    marker.conversationId ?? marker.conversation_id ?? null,
+            });
         });
     }
 
@@ -3606,11 +3690,18 @@
                 status: normalizedStatus,
             });
             if (label) {
-                const ts =
-                    getCanonicalMessageTimestamp(evt) ??
-                    toTimestampMs(evt.closedAt) ??
-                    toTimestampMs(evt.restartedAt) ??
-                    Date.now();
+                const isRestart = label === "New conversation started";
+                const ts = isRestart
+                    ? resolveNewConversationStartedTimestamp(
+                          getCanonicalMessageTimestamp(evt) ??
+                              toTimestampMs(evt.restartedAt) ??
+                              toTimestampMs(evt.timestamp) ??
+                              Date.now(),
+                      )
+                    : getCanonicalMessageTimestamp(evt) ??
+                      toTimestampMs(evt.closedAt) ??
+                      toTimestampMs(evt.timestamp) ??
+                      Date.now();
                 console.log("UniBox: Applying session_status_change divider", {
                     label,
                     evtConv,
@@ -3619,7 +3710,9 @@
                     reason: evt.reason,
                     isActive: evt.isActive,
                 });
-                appendChatDivider(label, ts, "session");
+                appendChatDivider(label, ts, "session", {
+                    conversationId: evtConv,
+                });
             }
 
             const endedStatus =
@@ -3691,7 +3784,12 @@
         });
 
         if (hasSwitchedConversation) {
-            appendChatDivider("New conversation started", Date.now(), "session");
+            appendChatDivider(
+                "New conversation started",
+                resolveNewConversationStartedTimestamp(Date.now()),
+                "session",
+                { conversationId: nextId },
+            );
         }
 
         if (socket && socket.readyState === WebSocket.OPEN) {
@@ -7020,6 +7118,7 @@
             body.appendChild(typingIndicator);
         }
 
+        dedupeConsecutiveChatDividers();
         refreshDateDividers();
 
         requestAnimationFrame(() => {

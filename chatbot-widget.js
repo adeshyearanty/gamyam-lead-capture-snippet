@@ -358,6 +358,8 @@
     let agentTyping = false;
     let agentTypingTimeout = null; // Safety timeout for stuck typing indicator
     const TYPING_SAFETY_TIMEOUT_MS = 120000;
+    /** Dedupes session/event divider inserts on reconnect or duplicate fan-out. */
+    const seenChatDividerKeys = new Set();
     let previewMedia = null; // { url, filename, type, mediaKey } - for viewing received media
     let previewMediaRefreshTimer = null;
     // Cache access URLs briefly; refresh before they expire.
@@ -2298,6 +2300,7 @@
                                 if (hasInboundBotMessage) {
                                     waitingForFirstInboundMessage = false;
                                 }
+                                applyThreadSessionMarkers(data.sessionMarkers);
                                 markVisibleMessagesAsRead();
                             }
 
@@ -2671,7 +2674,7 @@
      * Handle incoming WebSocket messages
      */
     function handleWebSocketMessage(message) {
-        let type = message.type ?? message.event ?? message.Event;
+        let type = message.type ?? message.event ?? message.Event ?? message.eventType;
         let data = message.data;
         if (data === undefined && message.payload !== undefined) {
             data = message.payload;
@@ -2797,46 +2800,7 @@
             }
 
             case "session_status_change": {
-                const evt = data || message;
-                try {
-                    // Only handle live_chat session lifecycle events for this widget.
-                    const platform = evt && (evt.platform || evt.channel || "live_chat");
-                    const status = evt && evt.status;
-                    const endedStatus =
-                        status && (status === "resolved" || status === "expired");
-
-                    if (platform === "live_chat" && endedStatus) {
-                        // If this event is for the current conversation, clear it so the
-                        // next user message starts a fresh session.
-                        if (evt.conversationId && conversationId === evt.conversationId) {
-                            conversationId = null;
-                            subscribedConversationId = null;
-                            workflowAutoStarted = false; // Allow workflow to re-boot on next open
-                            clearLiveAgentDisplayName();
-                        }
-
-                        // Rotate guest id so that a new live_chat contact/session is created
-                        // on the next message, instead of reusing the old userId.
-                        if (typeof userId === "string" && userId.startsWith("guest_")) {
-                            userId = `guest_${Date.now()}_${Math.random()
-                                .toString(36)
-                                .substr(2, 9)}`;
-                            try {
-                                localStorage.setItem(STORAGE_KEY_USER, userId);
-                            } catch (e) {
-                                console.warn(
-                                    "UniBox: Failed to persist rotated guest id to localStorage",
-                                    e,
-                                );
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.error(
-                        "UniBox: Failed to handle session_status_change event",
-                        e,
-                    );
-                }
+                handleSessionStatusChangeEvent(data || message);
                 break;
             }
 
@@ -3492,6 +3456,165 @@
         return normalizeFlowPayload(payload?.flow);
     }
 
+    function normalizeSessionStatusEvent(rawEvent) {
+        const evt = rawEvent && typeof rawEvent === "object" ? rawEvent : {};
+        const nested =
+            evt.data && typeof evt.data === "object" ? evt.data : evt;
+        return {
+            conversationId:
+                nested.conversationId ??
+                nested.conversation_id ??
+                evt.conversationId ??
+                evt.conversation_id,
+            platform: nested.platform ?? nested.channel ?? evt.platform ?? "live_chat",
+            status: nested.status ?? evt.status,
+            isActive:
+                nested.isActive ??
+                nested.is_active ??
+                evt.isActive ??
+                evt.is_active,
+            reason: nested.reason ?? evt.reason,
+            closedAt: nested.closedAt ?? nested.closed_at ?? evt.closedAt,
+            restartedAt:
+                nested.restartedAt ?? nested.restarted_at ?? evt.restartedAt,
+            timestamp:
+                nested.timestamp ??
+                evt.timestamp ??
+                nested.closedAt ??
+                nested.restartedAt,
+        };
+    }
+
+    function formatSessionStatusDividerLabel(evt) {
+        if (!evt || typeof evt !== "object") return "";
+        const isActive =
+            evt.isActive === true ||
+            String(evt.status ?? "").toLowerCase() === "active";
+        if (isActive) {
+            return "New conversation started";
+        }
+
+        const status = String(evt.status ?? "").toLowerCase();
+        const reason = String(evt.reason ?? "").toUpperCase();
+
+        if (status === "expired" || reason === "INACTIVITY_TIMEOUT") {
+            return "Conversation ended due to inactivity";
+        }
+        if (status === "resolved" || reason === "MANUAL") {
+            return "Conversation resolved";
+        }
+        return "Conversation ended";
+    }
+
+    function appendChatDivider(label, timestampMs, kind) {
+        const trimmedLabel = String(label ?? "").trim();
+        if (!trimmedLabel) return;
+
+        const host = document.getElementById("unibox-root");
+        if (!host || !host.shadowRoot) return;
+        const body = host.shadowRoot.getElementById("chatBody");
+        if (!body) return;
+
+        const normalizedTimestamp = Number.isFinite(timestampMs)
+            ? timestampMs
+            : Date.now();
+        const dedupeKey = `${kind || "event"}:${trimmedLabel}:${normalizedTimestamp}`;
+        if (seenChatDividerKeys.has(dedupeKey)) return;
+        seenChatDividerKeys.add(dedupeKey);
+
+        const divider = createDateDividerElement(trimmedLabel);
+        divider.setAttribute("data-chat-divider", kind || "event");
+        divider.setAttribute("data-timestamp", String(normalizedTimestamp));
+
+        const typingIndicator = body.querySelector("#typingIndicator");
+        if (typingIndicator) {
+            body.insertBefore(divider, typingIndicator);
+        } else {
+            body.appendChild(divider);
+        }
+
+        sortMessagesByTimestamp();
+    }
+
+    function applyThreadSessionMarkers(sessionMarkers) {
+        if (!Array.isArray(sessionMarkers) || sessionMarkers.length === 0) {
+            return;
+        }
+
+        sessionMarkers.forEach((marker) => {
+            if (!marker || typeof marker !== "object") return;
+            const label = formatSessionStatusDividerLabel({
+                status: marker.status,
+                reason: marker.reason ?? marker.closedReason,
+                isActive: false,
+            });
+            if (!label) return;
+
+            const ts =
+                toTimestampMs(marker.closedAt) ??
+                toTimestampMs(marker.closedAt_iso) ??
+                Date.now();
+            appendChatDivider(label, ts, "session");
+        });
+    }
+
+    function handleSessionStatusChangeEvent(rawEvent) {
+        const evt = normalizeSessionStatusEvent(rawEvent);
+        try {
+            const platform = evt.platform || "live_chat";
+            const evtConv =
+                evt.conversationId != null ? String(evt.conversationId) : null;
+            const currentConv =
+                conversationId != null ? String(conversationId) : null;
+
+            if (evtConv && currentConv && evtConv !== currentConv) {
+                return;
+            }
+
+            const label = formatSessionStatusDividerLabel(evt);
+            if (label) {
+                const ts =
+                    getCanonicalMessageTimestamp(evt) ??
+                    toTimestampMs(evt.closedAt) ??
+                    toTimestampMs(evt.restartedAt) ??
+                    Date.now();
+                appendChatDivider(label, ts, "session");
+            }
+
+            const status = evt.status;
+            const endedStatus =
+                status && (status === "resolved" || status === "expired");
+            const isInactive =
+                evt.isActive === false ||
+                (evt.isActive !== true && Boolean(endedStatus));
+
+            if (platform === "live_chat" && isInactive && endedStatus) {
+                if (evtConv && currentConv && evtConv === currentConv) {
+                    conversationId = null;
+                    subscribedConversationId = null;
+                    workflowAutoStarted = false;
+                    clearLiveAgentDisplayName();
+                }
+
+                if (typeof userId === "string" && userId.startsWith("guest_")) {
+                    userId = `guest_${Date.now()}_${Math.random()
+                        .toString(36)
+                        .substr(2, 9)}`;
+                    try {
+                        localStorage.setItem(STORAGE_KEY_USER, userId);
+                    } catch (e) {
+                        console.warn(
+                            "UniBox: Failed to persist rotated guest id to localStorage",
+                            e,
+                        );
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("UniBox: Failed to handle session_status_change event", e);
+        }
+    }
+
     function handleConversationRotatedEvent(rawEvent) {
         const evt = rawEvent && typeof rawEvent === "object" ? rawEvent : {};
         const nextConversationId =
@@ -3533,6 +3656,10 @@
             switched: hasSwitchedConversation,
         });
 
+        if (hasSwitchedConversation) {
+            appendChatDivider("New conversation started", Date.now(), "session");
+        }
+
         if (socket && socket.readyState === WebSocket.OPEN) {
             subscribeToConversation(nextId);
         }
@@ -3546,6 +3673,7 @@
                 .then((threadData) => {
                     if (!threadData || !Array.isArray(threadData.messages)) return;
                     threadData.messages.forEach((msg) => handleIncomingMessage(msg));
+                    applyThreadSessionMarkers(threadData.sessionMarkers);
                     sortMessagesByTimestamp();
                     markVisibleMessagesAsRead();
                 })
@@ -5222,7 +5350,8 @@
         body.querySelectorAll("[data-date-divider]").forEach((node) => node.remove());
 
         const messageElements = Array.from(body.children).filter((child) =>
-            child.hasAttribute("data-timestamp"),
+            child.hasAttribute("data-timestamp") &&
+            !child.hasAttribute("data-chat-divider"),
         );
         if (messageElements.length === 0) return;
 
@@ -6497,7 +6626,10 @@
         }
 
         const messageElements = Array.from(body.children).filter((child) => {
-            return child.hasAttribute("data-timestamp");
+            return (
+                child.hasAttribute("data-timestamp") ||
+                child.hasAttribute("data-chat-divider")
+            );
         });
 
         // Debug: Log timestamps before sorting

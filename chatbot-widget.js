@@ -3504,15 +3504,6 @@
             return "";
         }
 
-        const status = String(evt.status ?? "").toLowerCase();
-        const reason = String(evt.reason ?? "").toUpperCase();
-
-        if (status === "expired" || reason === "INACTIVITY_TIMEOUT") {
-            return "Conversation ended due to inactivity";
-        }
-        if (status === "resolved" || reason === "MANUAL") {
-            return "Conversation resolved";
-        }
         return "Conversation ended";
     }
 
